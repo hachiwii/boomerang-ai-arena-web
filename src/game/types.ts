@@ -92,6 +92,7 @@ export interface MatchConfig {
   mapMeta: MapMeta;
   slots: SlotConfig[];
   seed: number;
+  speed: number; // 0.1 .. 2.0 (scales 20Hz base logic tick rate to 2Hz .. 40Hz)
 }
 
 export interface EngineMapData {

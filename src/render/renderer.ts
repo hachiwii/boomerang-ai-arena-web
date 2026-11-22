@@ -40,10 +40,12 @@ export class GameRenderer {
   private slots: SlotConfig[] = [];
   private humanSeat = -1;
 
-  // 20Hz interpolation state pair
+  // Logic tick interpolation state pair
   private prevState: TickSnapshot | null = null;
   private currState: TickSnapshot | null = null;
   private tickReceivedAtMs = 0;
+  private tickIntervalMs = LOGIC_DT_MS;
+  private gameSpeed = 1.0;
 
   // Dynamic camera framing
   private camTargetX = 9;
@@ -207,11 +209,14 @@ export class GameRenderer {
     slots: SlotConfig[],
     initialState: TickSnapshot,
     humanSeat: number,
+    speed = 1.0,
   ) {
     this.clearMatchObjects();
     this.previewMode = false;
     this.slots = slots;
     this.humanSeat = humanSeat;
+    this.gameSpeed = Math.max(0.1, Math.min(2.0, speed || 1.0));
+    this.tickIntervalMs = LOGIC_DT_MS / this.gameSpeed;
 
     this.applyThemeLighting(themeName);
     this.arena = new ArenaMap3D(mapData, themeName);
@@ -496,7 +501,7 @@ export class GameRenderer {
     const tWork0 = performance.now();
     const frameDt = Math.min(0.05, Math.max(0.0005, (tWork0 - this.lastFrameMs) / 1000));
     this.lastFrameMs = tWork0;
-    this.elapsedSec += frameDt;
+    this.elapsedSec += frameDt * (this.previewMode ? 1.0 : this.gameSpeed);
 
     // Measure actual Render Hz (rolling 0.5s window)
     this.frameTimes.push(tWork0);
@@ -522,12 +527,12 @@ export class GameRenderer {
       this.camera.lookAt(this.camTargetX, 0, this.camTargetZ);
       this.arena.update(0, this.elapsedSec);
     } else if (this.arena && this.prevState && this.currState) {
-      // Smooth sub-tick interpolation factor [0..1] between 20Hz logic states!
+      // Smooth sub-tick interpolation factor [0..1] adapted to current game speed (0.1x..2.0x)!
       const alpha = this.currState.over
         ? 1.0
-        : Math.max(0, Math.min(1, (tWork0 - this.tickReceivedAtMs) / LOGIC_DT_MS));
+        : Math.max(0, Math.min(1, (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs));
       const gt = this.currState.over
-        ? this.currState.t + (tWork0 - this.tickReceivedAtMs) / LOGIC_DT_MS
+        ? this.currState.t + (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs
         : this.prevState.t + alpha;
 
       // Subtle camera shake decay

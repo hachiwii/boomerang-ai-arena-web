@@ -1586,3 +1586,117 @@ kbd {
 .rand-switch.is-on .rand-thumb {
   transform: translateX(12px);
 }
+
+/* ---------- Lobby Game Speed Slider ---------- */
+.speed-box {
+  margin-top: 12px;
+  padding: 11px 14px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.speed-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 9px;
+  gap: 8px;
+}
+
+.speed-title {
+  font-size: 13px;
+  font-weight: 800;
+  color: #e8f0ff;
+}
+
+.speed-readout {
+  font-size: 12px;
+  color: #9ecbff;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.speed-readout strong {
+  color: #ffffff;
+  font-size: 13.5px;
+}
+
+.speed-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 6px;
+  border-radius: 999px;
+  outline: none;
+  cursor: pointer;
+  background: linear-gradient(
+    to right,
+    #3d7eff 0%,
+    #635bff var(--speed-pct, 47.4%),
+    rgba(255, 255, 255, 0.16) var(--speed-pct, 47.4%),
+    rgba(255, 255, 255, 0.16) 100%
+  );
+}
+
+.speed-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3px solid #4d88ff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  cursor: grab;
+  transition: transform 0.12s ease;
+}
+
+.speed-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.12);
+}
+
+.speed-slider::-webkit-slider-thumb:active {
+  cursor: grabbing;
+  transform: scale(1.18);
+}
+
+.speed-slider::-moz-range-thumb {
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 3px solid #4d88ff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  cursor: grab;
+}
+
+.speed-ticks {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 8px;
+  gap: 4px;
+}
+
+.speed-tick {
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  padding: 2px 7px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.12s ease;
+}
+
+.speed-tick:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.speed-tick.active {
+  color: #fff;
+  background: rgba(61, 126, 255, 0.3);
+}

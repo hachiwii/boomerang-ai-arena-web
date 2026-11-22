@@ -113,7 +113,7 @@ export class HudUI {
       </div>
 
       <div class="hud-center-pill">
-        <div class="hud-map-label">${config.mapMeta.title} ${humanSeat < 0 ? '· 观战' : ''}</div>
+        <div class="hud-map-label">${config.mapMeta.title}${humanSeat < 0 ? ' · 观战' : ''}${Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${(config.speed).toFixed(1)}x` : ''}</div>
         <div class="hud-timer" id="hud-timer">40.0s</div>
         <div class="hud-collapse" id="hud-collapse">塌陷倒计时 12s</div>
       </div>
@@ -237,10 +237,12 @@ export class HudUI {
     }
   }
 
-  public updateTelemetry(logicHz: number, renderHz: number, frameWorkMs: number, botMaxMs: number) {
+  public updateTelemetry(logicHz: number, renderHz: number, frameWorkMs: number, botMaxMs: number, speed = 1.0) {
     if (!this.perfEl) return;
     const capHz = frameWorkMs > 0.05 ? Math.min(999, Math.round(1000 / frameWorkMs)) : 999;
-    this.perfEl.textContent = `逻辑 ${logicHz.toFixed(0)}Hz · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz · AI ${botMaxMs.toFixed(1)}ms)`;
+    const logicStr = logicHz < 10 ? logicHz.toFixed(1) : logicHz.toFixed(0);
+    const spdTag = Math.abs(speed - 1) > 0.01 ? ` (${speed.toFixed(1)}x)` : '';
+    this.perfEl.textContent = `逻辑 ${logicStr}Hz${spdTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz · AI ${botMaxMs.toFixed(1)}ms)`;
   }
 
   public showMatchResult(finalState: TickSnapshot, eloResult: EloUpdateResult | null = null) {

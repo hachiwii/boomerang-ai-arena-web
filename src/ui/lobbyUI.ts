@@ -160,6 +160,7 @@ export class LobbyUI {
   private selectedMapId: string;
   private drafts: DraftSlot[];
   private randomizeOrder = true;
+  private gameSpeed = 1.0;
   private openSlotIdx: number | null = null;
   private loadingMessage: string | null = null;
 
@@ -453,6 +454,7 @@ export class LobbyUI {
       mapMeta,
       slots,
       seed,
+      speed: this.gameSpeed,
     });
   }
 
@@ -521,6 +523,33 @@ export class LobbyUI {
             </div>
             <div class="map-desc-box">
               <strong>${selectedMap.title} (${selectedMap.id})</strong>：${selectedMap.desc}
+            </div>
+
+            <div class="speed-box">
+              <div class="speed-head">
+                <span class="speed-title">游戏速度</span>
+                <span class="speed-readout" id="speed-readout">
+                  <strong>${this.gameSpeed.toFixed(1)}x</strong> · ${Math.round(this.gameSpeed * 20)} Hz 逻辑 tick
+                </span>
+              </div>
+              <input
+                type="range"
+                id="speed-slider"
+                class="speed-slider"
+                min="0.1"
+                max="2.0"
+                step="0.1"
+                value="${this.gameSpeed.toFixed(1)}"
+                style="--speed-pct:${(((this.gameSpeed - 0.1) / 1.9) * 100).toFixed(1)}%"
+              />
+              <div class="speed-ticks">
+                ${[0.1, 0.5, 1.0, 1.5, 2.0]
+                  .map(
+                    (v) =>
+                      `<button type="button" class="speed-tick ${Math.abs(this.gameSpeed - v) < 0.01 ? 'active' : ''}" data-speed="${v}">${v.toFixed(1)}x</button>`,
+                  )
+                  .join('')}
+              </div>
             </div>
           </section>
 
@@ -661,6 +690,34 @@ export class LobbyUI {
     this.container.querySelector('#btn-toggle-random')?.addEventListener('click', () => {
       this.randomizeOrder = !this.randomizeOrder;
       this.render();
+    });
+
+    const speedSlider = this.container.querySelector<HTMLInputElement>('#speed-slider');
+    const speedReadout = this.container.querySelector<HTMLElement>('#speed-readout');
+    const syncSpeedUI = (val: number) => {
+      const clamped = Math.round(Math.max(0.1, Math.min(2.0, val)) * 10) / 10;
+      this.gameSpeed = clamped;
+      const pct = ((clamped - 0.1) / 1.9) * 100;
+      if (speedSlider) {
+        speedSlider.value = clamped.toFixed(1);
+        speedSlider.style.setProperty('--speed-pct', `${pct.toFixed(1)}%`);
+      }
+      if (speedReadout) {
+        speedReadout.innerHTML = `<strong>${clamped.toFixed(1)}x</strong> · ${Math.round(clamped * 20)} Hz 逻辑 tick`;
+      }
+      this.container.querySelectorAll<HTMLButtonElement>('.speed-tick').forEach((tb) => {
+        tb.classList.toggle('active', Math.abs(Number(tb.dataset.speed) - clamped) < 0.01);
+      });
+    };
+
+    speedSlider?.addEventListener('input', () => {
+      syncSpeedUI(Number(speedSlider.value));
+    });
+
+    this.container.querySelectorAll<HTMLButtonElement>('.speed-tick').forEach((tb) => {
+      tb.addEventListener('click', () => {
+        syncSpeedUI(Number(tb.dataset.speed));
+      });
     });
 
     this.container.querySelectorAll<HTMLButtonElement>('.preset-btn').forEach((btn) => {

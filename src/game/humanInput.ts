@@ -35,12 +35,19 @@ export class HumanInputController {
   private queuedMeleeAt = -1;
   private queuedDashAt = -1;
 
-  private readonly BUFFER_MS = 140;
+  private bufferMs = 140;
+  private recallHoldDelayMs = 160;
   private canvas: HTMLCanvasElement;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.bindEvents();
+  }
+
+  public setTickIntervalMs(tickMs: number) {
+    // Ensure clicks between slow-motion ticks (e.g. 500ms at 0.1x) never expire before the next tick!
+    this.bufferMs = Math.max(140, tickMs * 1.15);
+    this.recallHoldDelayMs = Math.min(240, Math.max(120, tickMs * 1.1));
   }
 
   public setEnabled(v: boolean) {
@@ -176,9 +183,9 @@ export class HumanInputController {
       this.groundSinceMs = -1;
     }
 
-    const hasBufferedDash = this.queuedDashAt > 0 && now - this.queuedDashAt <= this.BUFFER_MS;
-    const hasBufferedMelee = this.queuedMeleeAt > 0 && now - this.queuedMeleeAt <= this.BUFFER_MS;
-    const hasBufferedThrow = this.queuedThrowAt > 0 && now - this.queuedThrowAt <= this.BUFFER_MS;
+    const hasBufferedDash = this.queuedDashAt > 0 && now - this.queuedDashAt <= this.bufferMs;
+    const hasBufferedMelee = this.queuedMeleeAt > 0 && now - this.queuedMeleeAt <= this.bufferMs;
+    const hasBufferedThrow = this.queuedThrowAt > 0 && now - this.queuedThrowAt <= this.bufferMs;
 
     const canStartNew = me.st === PState.FREE || me.st === PState.RECALL;
     // Dash-slash/kick window: S_DASH and timer in [3..6] (dash_post+1 .. dash_t+dash_post)
@@ -212,7 +219,7 @@ export class HumanInputController {
       this.leftDown &&
       (dart.st === DState.RISE ||
         (dart.st === DState.GROUND &&
-          (!this.leftThrowConsumed || (this.groundSinceMs > 0 && now - this.groundSinceMs >= 160))));
+          (!this.leftThrowConsumed || (this.groundSinceMs > 0 && now - this.groundSinceMs >= this.recallHoldDelayMs))));
 
     if (wantsRecall && (me.st === PState.FREE || me.st === PState.RECALL)) {
       // Must send mx=0, my=0 to keep recall channeling without cancelling!
@@ -229,7 +236,7 @@ export class HumanInputController {
     }
 
     // Expire old throw click if dart wasn't in hand
-    if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.BUFFER_MS) {
+    if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.bufferMs) {
       this.queuedThrowAt = -1;
     }
 

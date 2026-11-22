@@ -2,6 +2,7 @@ import { HumanInputController } from './humanInput';
 import {
   EngineMapData,
   LOGIC_DT_MS,
+  LOGIC_HZ,
   MatchConfig,
   TickSnapshot,
 } from './types';
@@ -35,13 +36,15 @@ export class MatchController {
   private stopped = false;
 
   private currentState: TickSnapshot | null = null;
+  private tickIntervalMs = LOGIC_DT_MS;
+  private gameSpeed = 1.0;
   private nextTickDeadline = 0;
   private timerHandle: number | null = null;
   private pendingBots: PendingBotDecision[] = [];
   private stepping = false;
 
   // Measured logic tick rate telemetry
-  public actualLogicHz = 20;
+  public actualLogicHz = LOGIC_HZ;
   public lastBotMaxMs = 0;
   private tickTimes: number[] = [];
 
@@ -98,8 +101,10 @@ export class MatchController {
     this.stop();
     this.stopped = false;
     this.config = config;
+    this.gameSpeed = Math.max(0.1, Math.min(2.0, config.speed || 1.0));
+    this.tickIntervalMs = LOGIC_DT_MS / this.gameSpeed;
     this.tickTimes = [];
-    this.actualLogicHz = 20;
+    this.actualLogicHz = LOGIC_HZ * this.gameSpeed;
     this.lastBotMaxMs = 0;
 
     this.humanSeat = config.slots.findIndex((s) => s.kind === 'human');
@@ -161,6 +166,7 @@ export class MatchController {
 
     // Enable human controls if a human is participating
     this.input.reset();
+    this.input.setTickIntervalMs(this.tickIntervalMs);
     this.input.setEnabled(this.humanSeat >= 0);
 
     // Pre-dispatch tick 0 bot decisions immediately so they are ready at the first tick boundary!
@@ -238,9 +244,10 @@ export class MatchController {
       nextState.timestampMs = tickNow;
       const nextObs = stepRes.obs as Record<number, string>;
 
-      // Update measured logic tick Hz (rolling 20-tick window)
+      // Update measured logic tick Hz (adaptive rolling window ~1s across 0.1x..2.0x)
+      const maxWin = Math.max(4, Math.min(25, Math.round(LOGIC_HZ * this.gameSpeed) + 1));
       this.tickTimes.push(tickNow);
-      if (this.tickTimes.length > 21) this.tickTimes.shift();
+      while (this.tickTimes.length > maxWin) this.tickTimes.shift();
       if (this.tickTimes.length >= 2) {
         const span = this.tickTimes[this.tickTimes.length - 1] - this.tickTimes[0];
         if (span > 0) {
@@ -249,7 +256,7 @@ export class MatchController {
       }
 
       this.currentState = nextState;
-      this.callbacks.onTick(prevState, nextState, LOGIC_DT_MS);
+      this.callbacks.onTick(prevState, nextState, this.tickIntervalMs);
 
       if (nextState.over) {
         this.running = false;
@@ -258,13 +265,14 @@ export class MatchController {
         return;
       }
 
-      // Immediately start bots thinking for next tick while we wait out the 50ms interval!
+      // Immediately start bots thinking for next tick while we wait out the tick interval!
       this.dispatchBots(nextObs);
 
-      // Drift-corrected 20Hz clock (if we fell >150ms behind e.g. tab backgrounded, resync cleanly)
-      this.nextTickDeadline += LOGIC_DT_MS;
-      if (tickNow - this.nextTickDeadline > 150) {
-        this.nextTickDeadline = tickNow + LOGIC_DT_MS;
+      // Drift-corrected logic clock (resync cleanly if tab was backgrounded)
+      this.nextTickDeadline += this.tickIntervalMs;
+      const maxLag = Math.max(150, this.tickIntervalMs * 3);
+      if (tickNow - this.nextTickDeadline > maxLag) {
+        this.nextTickDeadline = tickNow + this.tickIntervalMs;
       }
     } catch (err) {
       if (!this.stopped) {

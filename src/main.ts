@@ -102,6 +102,7 @@ async function bootstrap() {
           renderer.renderHz,
           renderer.avgFrameWorkMs,
           controller.lastBotMaxMs,
+          activeConfig?.speed ?? 1.0,
         );
       }
     };
@@ -174,7 +175,7 @@ async function bootstrap() {
       activeMapData = mapData;
       const cfg = activeConfig;
       const hSeat = controller.getHumanSeat();
-      await renderer.setupMatch(mapData, cfg.mapMeta.theme, cfg.slots, initialState, hSeat);
+      await renderer.setupMatch(mapData, cfg.mapMeta.theme, cfg.slots, initialState, hSeat, cfg.speed);
       mode = 'playing';
       lobbyUI.hide();
       hudUI.showMatch(cfg, hSeat);
