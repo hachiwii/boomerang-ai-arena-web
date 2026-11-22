@@ -159,6 +159,7 @@ export class LobbyUI {
   private activeTab: 'play' | 'leaderboard' = 'play';
   private selectedMapId: string;
   private drafts: DraftSlot[];
+  private randomizeOrder = true;
   private openSlotIdx: number | null = null;
   private loadingMessage: string | null = null;
 
@@ -439,6 +440,13 @@ export class LobbyUI {
     if (this.loadingMessage) return;
     const mapMeta = this.getSelectedMap();
     const slots = resolveSlots(this.drafts, this.roster);
+    if (this.randomizeOrder) {
+      // Fisher-Yates shuffle spawn order on entry while keeping lobby order intact
+      for (let i = slots.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [slots[i], slots[j]] = [slots[j], slots[i]];
+      }
+    }
     const seed = Math.floor(Math.random() * 900000) + 1;
     this.callbacks.onStartMatch({
       mapId: mapMeta.id,
@@ -518,7 +526,20 @@ export class LobbyUI {
 
           <section class="lobby-section">
             <div class="section-head">
-              <h2>参赛选手 (${this.drafts.length} 人)</h2>
+              <div class="section-title-group">
+                <h2>参赛选手 (${this.drafts.length} 人)</h2>
+                <button
+                  type="button"
+                  class="rand-switch ${this.randomizeOrder ? 'is-on' : ''}"
+                  id="btn-toggle-random"
+                  role="switch"
+                  aria-checked="${this.randomizeOrder}"
+                  title="开启后大厅顺序不变，进入对局时随机打乱出生站位"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">随机站位</span>
+                </button>
+              </div>
               <div class="slot-controls">
                 <div class="seg-group">
                   ${[2, 3, 4]
@@ -635,6 +656,11 @@ export class LobbyUI {
 
     this.container.querySelector('#btn-toggle-human')?.addEventListener('click', () => {
       this.toggleHumanMode();
+    });
+
+    this.container.querySelector('#btn-toggle-random')?.addEventListener('click', () => {
+      this.randomizeOrder = !this.randomizeOrder;
+      this.render();
     });
 
     this.container.querySelectorAll<HTMLButtonElement>('.preset-btn').forEach((btn) => {
