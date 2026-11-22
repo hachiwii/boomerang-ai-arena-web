@@ -120,4 +120,15 @@ export class SoundFX {
       this.tone(f, f * 1.01, 0.22, 'triangle', 0.12, i * 0.08);
     });
   }
+
+  public playCountdownTick(num: 3 | 2 | 1) {
+    const base = num === 3 ? 523.25 : num === 2 ? 587.33 : 659.25;
+    this.tone(base, base * 0.98, 0.13, 'triangle', 0.14);
+    this.tone(base * 2, base * 1.96, 0.08, 'sine', 0.05);
+  }
+
+  public playCountdownGo() {
+    this.tone(1046.5, 1060, 0.24, 'triangle', 0.16);
+    this.tone(1318.5, 1340, 0.22, 'sine', 0.11, 0.04);
+  }
 }

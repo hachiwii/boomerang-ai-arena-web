@@ -12,10 +12,13 @@ interface PendingBotDecision {
   promise: Promise<{ action: string; ms: number }>;
 }
 
+export type CountdownStage = 3 | 2 | 1 | 'GO' | null;
+
 export interface MatchCallbacks {
   onMapLoaded: (mapData: EngineMapData, initialState: TickSnapshot) => Promise<void> | void;
   onTick: (prevState: TickSnapshot, nextState: TickSnapshot, tickDurationMs: number) => void;
   onMatchOver: (finalState: TickSnapshot) => void;
+  onCountdown?: (stage: CountdownStage) => void;
   onStatus?: (msg: string) => void;
   onError?: (err: string) => void;
 }
@@ -40,6 +43,7 @@ export class MatchController {
   private gameSpeed = 1.0;
   private nextTickDeadline = 0;
   private timerHandle: number | null = null;
+  private countdownTimers: number[] = [];
   private pendingBots: PendingBotDecision[] = [];
   private stepping = false;
 
@@ -164,18 +168,56 @@ export class MatchController {
     await this.callbacks.onMapLoaded(mapData, initialState);
     if (this.stopped) return;
 
-    // Enable human controls if a human is participating
+    // Configure human input timing & pre-dispatch tick 0 bot decisions immediately
     this.input.reset();
     this.input.setTickIntervalMs(this.tickIntervalMs);
-    this.input.setEnabled(this.humanSeat >= 0);
-
-    // Pre-dispatch tick 0 bot decisions immediately so they are ready at the first tick boundary!
     this.dispatchBots(initialObs);
 
-    // Brief ready pause (450ms) so players see spawn positions before tick 0 executes
-    this.running = true;
-    this.nextTickDeadline = performance.now() + 450;
-    this.scheduleNextTick();
+    if (this.humanSeat >= 0) {
+      // Human match: 3-second real-time pre-match countdown (3 -> 2 -> 1 -> GO!)
+      this.input.setInputMode('countdown');
+      this.clearCountdownTimers();
+      this.callbacks.onCountdown?.(3);
+
+      const scheduleStep = (delayMs: number, fn: () => void) => {
+        const h = window.setTimeout(() => {
+          if (this.stopped) return;
+          fn();
+        }, delayMs);
+        this.countdownTimers.push(h);
+      };
+
+      scheduleStep(1000, () => {
+        this.callbacks.onCountdown?.(2);
+      });
+      scheduleStep(2000, () => {
+        this.callbacks.onCountdown?.(1);
+      });
+      scheduleStep(3000, () => {
+        this.input.setInputMode('active');
+        this.callbacks.onCountdown?.('GO');
+        this.running = true;
+        this.nextTickDeadline = performance.now();
+        this.scheduleNextTick();
+      });
+      scheduleStep(3550, () => {
+        this.callbacks.onCountdown?.(null);
+      });
+    } else {
+      // Pure AI spectator match: brief 450ms pause without 3-second countdown
+      this.input.setInputMode('off');
+      this.callbacks.onCountdown?.(null);
+      this.running = true;
+      this.nextTickDeadline = performance.now() + 450;
+      this.scheduleNextTick();
+    }
+  }
+
+  private clearCountdownTimers() {
+    for (const h of this.countdownTimers) {
+      window.clearTimeout(h);
+    }
+    this.countdownTimers = [];
   }
 
   private dispatchBots(obsMap: Record<number, string>) {
@@ -291,7 +333,9 @@ export class MatchController {
     this.stopped = true;
     this.running = false;
     this.stepping = false;
-    this.input.setEnabled(false);
+    this.clearCountdownTimers();
+    this.callbacks.onCountdown?.(null);
+    this.input.setInputMode('off');
     if (this.timerHandle !== null) {
       window.clearTimeout(this.timerHandle);
       this.timerHandle = null;

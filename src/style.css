@@ -1700,3 +1700,175 @@ kbd {
   color: #fff;
   background: rgba(61, 126, 255, 0.3);
 }
+
+/* ---------- Human Match Pre-Start 3s Countdown ---------- */
+.countdown-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cd-stage {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+
+.cd-ring {
+  position: absolute;
+  width: 176px;
+  height: 176px;
+  border-radius: 50%;
+  border: 4px solid var(--cd-accent, #6bb8ff);
+  box-shadow: 0 0 36px var(--cd-glow, rgba(107, 184, 255, 0.5));
+  opacity: 0;
+  animation: cdRingPulse 0.92s cubic-bezier(0.16, 0.85, 0.3, 1) forwards;
+}
+
+.cd-ring-go {
+  width: 210px;
+  height: 210px;
+  border-width: 5px;
+  border-color: #6ef2a8;
+  box-shadow: 0 0 48px rgba(110, 242, 168, 0.65);
+  animation: cdRingGo 0.54s cubic-bezier(0.16, 0.85, 0.3, 1) forwards;
+}
+
+.cd-value {
+  position: relative;
+  font-size: 132px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: -2px;
+  font-variant-numeric: tabular-nums;
+  color: var(--cd-accent, #ffffff);
+  -webkit-text-stroke: 3px rgba(8, 12, 24, 0.85);
+  text-shadow:
+    0 10px 28px rgba(0, 0, 0, 0.65),
+    0 0 32px var(--cd-glow, rgba(107, 184, 255, 0.6));
+  animation: cdPop 0.95s cubic-bezier(0.18, 0.9, 0.25, 1) forwards;
+}
+
+.cd-n3 {
+  --cd-accent: #7ec4ff;
+  --cd-glow: rgba(107, 184, 255, 0.65);
+}
+
+.cd-n2 {
+  --cd-accent: #ffd166;
+  --cd-glow: rgba(255, 209, 102, 0.65);
+}
+
+.cd-n1 {
+  --cd-accent: #ff8559;
+  --cd-glow: rgba(255, 133, 89, 0.72);
+}
+
+.cd-go .cd-value {
+  font-size: 108px;
+  letter-spacing: 3px;
+  --cd-accent: #7ef7b2;
+  --cd-glow: rgba(110, 242, 168, 0.78);
+  animation: cdGoBurst 0.54s cubic-bezier(0.16, 0.9, 0.25, 1) forwards;
+}
+
+.cd-sub {
+  margin-top: 18px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 16px;
+  border-radius: 999px;
+  background: rgba(10, 15, 28, 0.78);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+  color: #edf3ff;
+  font-size: 13.5px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+}
+
+.cd-sub strong {
+  color: #8cc2ff;
+  font-weight: 900;
+}
+
+.cd-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.55);
+  flex-shrink: 0;
+}
+
+@keyframes cdPop {
+  0% {
+    opacity: 0;
+    transform: scale(1.65);
+  }
+  18% {
+    opacity: 1;
+    transform: scale(0.96);
+  }
+  30% {
+    opacity: 1;
+    transform: scale(1.03);
+  }
+  82% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  100% {
+    opacity: 0.25;
+    transform: scale(0.92);
+  }
+}
+
+@keyframes cdRingPulse {
+  0% {
+    opacity: 0.85;
+    transform: scale(0.65);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.75);
+  }
+}
+
+@keyframes cdGoBurst {
+  0% {
+    opacity: 0;
+    transform: scale(0.55);
+  }
+  26% {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+  70% {
+    opacity: 1;
+    transform: scale(1.0);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(1.22);
+  }
+}
+
+@keyframes cdRingGo {
+  0% {
+    opacity: 0.95;
+    transform: scale(0.55);
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.05);
+  }
+}

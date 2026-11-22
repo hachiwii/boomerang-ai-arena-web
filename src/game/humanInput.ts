@@ -10,9 +10,11 @@ import { ActType, DState, HumanAction, PState, TickSnapshot } from './types';
  * - Shift: dash (in WASD direction if moving, otherwise toward mouse)
  * Includes responsive input buffering so clicks between 20Hz ticks are never lost!
  */
+export type InputMode = 'off' | 'countdown' | 'active';
+
 export class HumanInputController {
   private keys = new Set<string>();
-  private enabled = false;
+  private inputMode: InputMode = 'off';
 
   // Screen mouse coordinates (client space)
   public mouseX = window.innerWidth * 0.5;
@@ -50,11 +52,27 @@ export class HumanInputController {
     this.recallHoldDelayMs = Math.min(240, Math.max(120, tickMs * 1.1));
   }
 
-  public setEnabled(v: boolean) {
-    this.enabled = v;
-    if (!v) {
+  public setInputMode(mode: InputMode) {
+    const prev = this.inputMode;
+    this.inputMode = mode;
+    if (mode === 'off') {
       this.reset();
+    } else if (mode === 'countdown') {
+      this.reset();
+    } else if (mode === 'active' && prev === 'countdown') {
+      // Keep pre-held WASD movement keys from countdown, while clearing any stale action state
+      this.leftDown = false;
+      this.leftThrowConsumed = false;
+      this.groundSinceMs = -1;
+      this.wasHoldingRecall = false;
+      this.queuedThrowAt = -1;
+      this.queuedMeleeAt = -1;
+      this.queuedDashAt = -1;
     }
+  }
+
+  public setEnabled(v: boolean) {
+    this.setInputMode(v ? 'active' : 'off');
   }
 
   public reset() {
@@ -74,14 +92,14 @@ export class HumanInputController {
 
   private bindEvents() {
     window.addEventListener('keydown', (e) => {
-      if (!this.enabled) return;
+      if (this.inputMode === 'off') return;
       const code = e.code;
       if (
         code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD' ||
         code === 'ArrowUp' || code === 'ArrowDown' || code === 'ArrowLeft' || code === 'ArrowRight'
       ) {
         this.keys.add(code);
-      } else if (code === 'ShiftLeft' || code === 'ShiftRight') {
+      } else if (this.inputMode === 'active' && (code === 'ShiftLeft' || code === 'ShiftRight')) {
         if (!e.repeat) {
           this.queuedDashAt = performance.now();
         }
@@ -105,7 +123,7 @@ export class HumanInputController {
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
-      if (!this.enabled) return;
+      if (this.inputMode !== 'active') return;
       this.mouseX = e.clientX;
       this.mouseY = e.clientY;
       this.hasMouse = true;
@@ -130,7 +148,7 @@ export class HumanInputController {
     });
 
     this.canvas.addEventListener('contextmenu', (e) => {
-      if (this.enabled) e.preventDefault();
+      if (this.inputMode !== 'off') e.preventDefault();
     });
   }
 
@@ -163,7 +181,7 @@ export class HumanInputController {
    * Sample human action at the exact 20Hz logic tick boundary.
    */
   public sampleAction(state: TickSnapshot | null, seat: number): HumanAction {
-    if (!this.enabled || !state || seat < 0 || seat >= state.n) {
+    if (this.inputMode !== 'active' || !state || seat < 0 || seat >= state.n) {
       return { mx: 0, my: 0, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
     const me = state.players[seat];

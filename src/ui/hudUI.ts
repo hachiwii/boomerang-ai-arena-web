@@ -1,4 +1,5 @@
 import { EloUpdateResult } from '../game/leaderboard';
+import { CountdownStage } from '../game/matchController';
 import { CauseType, DState, MatchConfig, PState, SlotConfig, TickSnapshot } from '../game/types';
 
 export interface HudCallbacks {
@@ -36,6 +37,7 @@ export class HudUI {
   public readonly nameplateLayer: HTMLDivElement;
   private readonly topBar: HTMLDivElement;
   private readonly bottomBar: HTMLDivElement;
+  private readonly countdownOverlay: HTMLDivElement;
   private readonly resultOverlay: HTMLDivElement;
   private readonly callbacks: HudCallbacks;
 
@@ -79,15 +81,51 @@ export class HudUI {
     this.bottomBar.className = 'hud-bottom';
     this.root.appendChild(this.bottomBar);
 
+    this.countdownOverlay = document.createElement('div');
+    this.countdownOverlay.className = 'countdown-overlay hidden';
+    this.root.appendChild(this.countdownOverlay);
+
     this.resultOverlay = document.createElement('div');
     this.resultOverlay.className = 'result-overlay hidden';
     this.root.appendChild(this.resultOverlay);
+  }
+
+  public setCountdown(stage: CountdownStage) {
+    if (stage === null) {
+      this.countdownOverlay.classList.add('hidden');
+      this.countdownOverlay.innerHTML = '';
+      return;
+    }
+
+    if (stage === 'GO') {
+      this.countdownOverlay.innerHTML = `
+        <div class="cd-stage cd-go">
+          <div class="cd-ring cd-ring-go"></div>
+          <div class="cd-value">GO!</div>
+        </div>
+      `;
+    } else {
+      const humanSlot = this.humanSeat >= 0 ? this.slots[this.humanSeat] : null;
+      const accent = humanSlot ? humanSlot.ringAccent || humanSlot.color : '#6bb8ff';
+      const subHtml = humanSlot
+        ? `<div class="cd-sub"><span class="cd-dot" style="background:${accent}"></span>你在 <strong>P${this.humanSeat + 1}</strong> 位置 · 准备开战</div>`
+        : '';
+      this.countdownOverlay.innerHTML = `
+        <div class="cd-stage cd-num cd-n${stage}">
+          <div class="cd-ring"></div>
+          <div class="cd-value">${stage}</div>
+          ${subHtml}
+        </div>
+      `;
+    }
+    this.countdownOverlay.classList.remove('hidden');
   }
 
   public showMatch(config: MatchConfig, humanSeat: number) {
     this.clearTimers();
     this.slots = config.slots;
     this.humanSeat = humanSeat;
+    this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
     this.root.classList.remove('hidden');
@@ -328,6 +366,7 @@ export class HudUI {
 
   public hide() {
     this.clearTimers();
+    this.setCountdown(null);
     this.root.classList.add('hidden');
     this.resultOverlay.classList.add('hidden');
   }

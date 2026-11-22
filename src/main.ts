@@ -170,6 +170,14 @@ async function bootstrap() {
     onStatus: (msg) => {
       if (mode === 'lobby') lobbyUI.setLoading(msg);
     },
+    onCountdown: (stage) => {
+      hudUI.setCountdown(stage);
+      if (stage === 3 || stage === 2 || stage === 1) {
+        sfx.playCountdownTick(stage);
+      } else if (stage === 'GO') {
+        sfx.playCountdownGo();
+      }
+    },
     onMapLoaded: async (mapData, initialState) => {
       if (!activeConfig) return;
       activeMapData = mapData;
