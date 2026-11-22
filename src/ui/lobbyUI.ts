@@ -158,6 +158,7 @@ export class LobbyUI {
 
   private activeTab: 'play' | 'leaderboard' = 'play';
   private selectedMapId: string;
+  private randomMap = false;
   private drafts: DraftSlot[];
   private randomizeOrder = true;
   private cliffGuard = true;
@@ -399,37 +400,6 @@ export class LobbyUI {
     this.render();
   }
 
-  private applyPreset(preset: 'duel' | 'human4' | 'spectate4' | 'mirror4') {
-    if (preset === 'duel') {
-      this.drafts = [
-        { kind: 'human', botId: 'sparring-mid' },
-        { kind: 'bot', botId: 'sparring-mid' },
-      ];
-    } else if (preset === 'human4') {
-      this.drafts = [
-        { kind: 'human', botId: 'gpt-6.2-astra' },
-        { kind: 'bot', botId: 'gpt-6.2-astra' },
-        { kind: 'bot', botId: 'claude-fable-5.2' },
-        { kind: 'bot', botId: 'claude-opus-5.5' },
-      ];
-    } else if (preset === 'spectate4') {
-      this.drafts = [
-        { kind: 'bot', botId: 'gpt-6.2-astra' },
-        { kind: 'bot', botId: 'claude-fable-5.2' },
-        { kind: 'bot', botId: 'claude-opus-5.5' },
-        { kind: 'bot', botId: 'gemini-4-carbon' },
-      ];
-    } else if (preset === 'mirror4') {
-      this.drafts = [
-        { kind: 'bot', botId: 'gpt-6.2-astra' },
-        { kind: 'bot', botId: 'gpt-6.2-astra' },
-        { kind: 'bot', botId: 'gpt-6.2-astra' },
-        { kind: 'bot', botId: 'gpt-6.2-astra' },
-      ];
-    }
-    this.render();
-  }
-
   private setPlayerCount(count: number) {
     const target = Math.max(2, Math.min(4, count));
     const defaults = ['gpt-6.2-astra', 'claude-fable-5.2', 'claude-opus-5.5', 'gemini-4-carbon'];
@@ -444,7 +414,9 @@ export class LobbyUI {
 
   private startMatch() {
     if (this.loadingMessage) return;
-    const mapMeta = this.getSelectedMap();
+    const mapMeta = this.randomMap
+      ? this.maps[Math.floor(Math.random() * this.maps.length)]
+      : this.getSelectedMap();
     const slots = resolveSlots(this.drafts, this.roster);
     if (this.randomizeOrder) {
       // Fisher-Yates shuffle spawn order on entry while keeping lobby order intact
@@ -491,16 +463,6 @@ export class LobbyUI {
                 <span class="tab-elo-pill" id="header-elo-pill">玩家 Elo ${humanEloTxt} · #${humanRk.rank}/${humanRk.total}</span>
               </button>
             </div>
-            ${
-              this.activeTab === 'play'
-                ? `<div class="lobby-presets">
-                    <button class="preset-btn" data-preset="duel">人机 1v1</button>
-                    <button class="preset-btn" data-preset="human4">真人 4人混战</button>
-                    <button class="preset-btn" data-preset="spectate4">AI 巅峰观战</button>
-                    <button class="preset-btn" data-preset="mirror4">4×Astra 镜像战</button>
-                  </div>`
-                : ''
-            }
           </div>
         </header>
 
@@ -510,14 +472,27 @@ export class LobbyUI {
             : `<div class="lobby-grid">
           <section class="lobby-section">
             <div class="section-head">
-              <h2>选择地图</h2>
-              <span class="section-hint">${selectedMap.title} · ${selectedMap.nx * 0.5}×${selectedMap.ny * 0.5}m</span>
+              <div class="section-title-group">
+                <h2>选择地图</h2>
+                <button
+                  type="button"
+                  class="rand-switch ${this.randomMap ? 'is-on' : ''}"
+                  id="btn-toggle-random-map"
+                  role="switch"
+                  aria-checked="${this.randomMap}"
+                  title="开启后每次开局随机抽取一张地图；选中任意地图自动关闭随机"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">随机地图</span>
+                </button>
+              </div>
+              <span class="section-hint">${this.randomMap ? `随机 · 共 ${this.maps.length} 张地图` : `${selectedMap.title} · ${selectedMap.nx * 0.5}×${selectedMap.ny * 0.5}m`}</span>
             </div>
-            <div class="map-grid" id="map-grid">
+            <div class="map-grid ${this.randomMap ? 'is-random' : ''}" id="map-grid">
               ${this.maps
                 .map(
                   (m) => `
-                <button class="map-tile ${m.id === this.selectedMapId ? 'active' : ''}" data-map="${m.id}">
+                <button class="map-tile ${!this.randomMap && m.id === this.selectedMapId ? 'active' : ''}" data-map="${m.id}">
                   <canvas class="map-mini" width="120" height="76" data-map-canvas="${m.id}"></canvas>
                   <div class="map-tile-meta">
                     <span class="map-tile-title">${m.title}</span>
@@ -528,7 +503,11 @@ export class LobbyUI {
                 .join('')}
             </div>
             <div class="map-desc-box">
-              <strong>${selectedMap.title} (${selectedMap.id})</strong>：${selectedMap.desc}
+              ${
+                this.randomMap
+                  ? `<strong>🎲 随机地图已开启</strong>：每次开局将从全部 ${this.maps.length} 张地图中随机抽取一张；点击上方任意地图可自动关闭随机并指定该图。`
+                  : `<strong>${selectedMap.title} (${selectedMap.id})</strong>：${selectedMap.desc}`
+              }
             </div>
 
             <div class="speed-box">
@@ -691,10 +670,16 @@ export class LobbyUI {
     }
 
     // Bind events
+    this.container.querySelector('#btn-toggle-random-map')?.addEventListener('click', () => {
+      this.randomMap = !this.randomMap;
+      this.render();
+    });
+
     this.container.querySelectorAll<HTMLButtonElement>('.map-tile').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.map!;
-        if (id === this.selectedMapId) return;
+        if (!this.randomMap && id === this.selectedMapId) return;
+        this.randomMap = false;
         this.selectedMapId = id;
         this.render();
         this.callbacks.onSelectMap(this.getSelectedMap());
@@ -746,12 +731,6 @@ export class LobbyUI {
     this.container.querySelectorAll<HTMLButtonElement>('.speed-tick').forEach((tb) => {
       tb.addEventListener('click', () => {
         syncSpeedUI(Number(tb.dataset.speed));
-      });
-    });
-
-    this.container.querySelectorAll<HTMLButtonElement>('.preset-btn').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        this.applyPreset(btn.dataset.preset as 'duel' | 'human4' | 'spectate4' | 'mirror4');
       });
     });
 
