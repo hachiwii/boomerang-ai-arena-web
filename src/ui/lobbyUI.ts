@@ -129,8 +129,27 @@ function drawMiniMap(canvas: HTMLCanvasElement, map: MapMeta) {
   }
 }
 
+function formatEloScore(v: number): string {
+  const r = Math.round(v * 10) / 10;
+  return r > 0 ? `+${r.toFixed(1)}` : r.toFixed(1);
+}
+
+function eloScoreClass(v: number): string {
+  if (v > 0.05) return 'elo-pos';
+  if (v < -0.05) return 'elo-neg';
+  return 'elo-zero';
+}
+
+function avatarForBotEntry(entry: RosterEntry): string {
+  if (entry.avatar) return entry.avatar;
+  if (entry.charKey === 'demo_red') return makeHoodieAvatarDataUrl('#E8483D', '#4A3328');
+  if (entry.charKey === 'sparring_mid') return makeHoodieAvatarDataUrl('#E89A2E', '#3D3028');
+  return makeHoodieAvatarDataUrl('#4AB87A', '#4D423A');
+}
+
 export class LobbyUI {
   private readonly container: HTMLDivElement;
+  private readonly dropdownMenu: HTMLDivElement;
   private readonly maps: MapMeta[];
   private readonly roster: RosterEntry[];
   private readonly leaderboard: LeaderboardStore;
@@ -140,6 +159,7 @@ export class LobbyUI {
   private activeTab: 'play' | 'leaderboard' = 'play';
   private selectedMapId: string;
   private drafts: DraftSlot[];
+  private openSlotIdx: number | null = null;
   private loadingMessage: string | null = null;
 
   constructor(
@@ -167,10 +187,34 @@ export class LobbyUI {
     this.container = document.createElement('div');
     this.container.className = 'lobby-overlay';
     root.appendChild(this.container);
+
+    // Portal custom dropdown mounted on body so it never clips inside overflow containers
+    this.dropdownMenu = document.createElement('div');
+    this.dropdownMenu.className = 'picker-menu hidden';
+    this.dropdownMenu.setAttribute('role', 'listbox');
+    document.body.appendChild(this.dropdownMenu);
+
+    window.addEventListener('mousedown', (e) => {
+      if (this.openSlotIdx === null) return;
+      const target = e.target as Node | null;
+      if (target && this.dropdownMenu.contains(target)) return;
+      if (target instanceof Element && target.closest('.picker-trigger')) return;
+      this.closeDropdown();
+    });
+    window.addEventListener('keydown', (e) => {
+      if (e.code === 'Escape' && this.openSlotIdx !== null) {
+        this.closeDropdown();
+      }
+    });
+    window.addEventListener('resize', () => {
+      if (this.openSlotIdx !== null) this.closeDropdown();
+    });
+
     this.render();
   }
 
   public show(tab: 'play' | 'leaderboard' = 'play') {
+    this.closeDropdown();
     this.loadingMessage = null;
     this.activeTab = tab;
     this.container.classList.remove('hidden');
@@ -178,8 +222,135 @@ export class LobbyUI {
   }
 
   public hide() {
+    this.closeDropdown();
     this.leaderboardPanel.hideTooltip();
     this.container.classList.add('hidden');
+  }
+
+  private closeDropdown() {
+    if (this.openSlotIdx === null && this.dropdownMenu.classList.contains('hidden')) return;
+    this.openSlotIdx = null;
+    this.dropdownMenu.classList.add('hidden');
+    this.container.querySelectorAll('.picker-trigger.open').forEach((el) => el.classList.remove('open'));
+  }
+
+  private openDropdown(slotIdx: number, triggerEl: HTMLElement) {
+    if (this.openSlotIdx === slotIdx) {
+      this.closeDropdown();
+      return;
+    }
+    this.closeDropdown();
+    this.openSlotIdx = slotIdx;
+    triggerEl.classList.add('open');
+
+    const currentDraft = this.drafts[slotIdx];
+    const humanSlotIdx = this.drafts.findIndex((d) => d.kind === 'human');
+    const humanTakenElsewhere = humanSlotIdx >= 0 && humanSlotIdx !== slotIdx;
+    const humanSelectedHere = currentDraft.kind === 'human';
+    const humanElo = this.leaderboard.getHumanRating();
+    const humanAvatar = makeHoodieAvatarDataUrl('#3B78F0', '#262A33');
+
+    const officialBots = this.roster.filter((r) => r.category === 'official');
+    const sparringBots = this.roster.filter((r) => r.category === 'sparring');
+
+    const renderBotItem = (b: RosterEntry) => {
+      const selected = currentDraft.kind === 'bot' && currentDraft.botId === b.id;
+      const rankChip = b.rank !== null ? `<span class="pm-rank">#${b.rank}</span>` : `<span class="pm-rank pm-rank-sp">陪练</span>`;
+      return `
+        <button type="button" class="pm-item ${selected ? 'is-selected' : ''}" data-pick-kind="bot" data-pick-id="${b.id}" role="option" aria-selected="${selected}">
+          <img class="pm-avatar" src="${avatarForBotEntry(b)}" alt="" style="border-color:${b.color}" />
+          <div class="pm-main">
+            <div class="pm-name-row">
+              ${rankChip}
+              <span class="pm-name">${b.name}</span>
+            </div>
+          </div>
+          <span class="pm-score ${eloScoreClass(b.rating)}">${formatEloScore(b.rating)}</span>
+          <span class="pm-check">${selected ? '✓' : ''}</span>
+        </button>`;
+    };
+
+    this.dropdownMenu.innerHTML = `
+      <div class="pm-section-label">真人玩家（全队限 1 名）</div>
+      <button
+        type="button"
+        class="pm-item pm-item-human ${humanSelectedHere ? 'is-selected' : ''} ${humanTakenElsewhere ? 'is-disabled' : ''}"
+        data-pick-kind="human"
+        data-pick-id="human"
+        role="option"
+        aria-selected="${humanSelectedHere}"
+        aria-disabled="${humanTakenElsewhere}"
+        ${humanTakenElsewhere ? 'disabled' : ''}
+      >
+        <img class="pm-avatar" src="${humanAvatar}" alt="" style="border-color:#3D7EFF" />
+        <div class="pm-main">
+          <div class="pm-name-row">
+            <span class="pm-rank pm-rank-human">真人</span>
+            <span class="pm-name">玩家 (YOU)</span>
+            ${humanTakenElsewhere ? `<span class="pm-taken-pill">已在 P${humanSlotIdx + 1}</span>` : ''}
+          </div>
+        </div>
+        <span class="pm-score ${eloScoreClass(humanElo)}">${formatEloScore(humanElo)}</span>
+        <span class="pm-check">${humanSelectedHere ? '✓' : ''}</span>
+      </button>
+
+      <div class="pm-section-label">正式海选 AI（13 位 · WASM）</div>
+      ${officialBots.map(renderBotItem).join('')}
+
+      <div class="pm-section-label">官方陪练（热身推荐）</div>
+      ${sparringBots.map(renderBotItem).join('')}
+    `;
+
+    // Position cleanly relative to trigger, flipping upward if closer to bottom of viewport
+    const rect = triggerEl.getBoundingClientRect();
+    const pad = 12;
+    const width = Math.max(rect.width, 320);
+    const left = Math.max(pad, Math.min(rect.left, window.innerWidth - width - pad));
+    const spaceBelow = window.innerHeight - rect.bottom - pad;
+    const spaceAbove = rect.top - pad;
+    const openUpward = spaceBelow < 340 && spaceAbove > spaceBelow;
+    const maxHeight = Math.max(180, Math.min(390, (openUpward ? spaceAbove : spaceBelow) - 8));
+
+    this.dropdownMenu.style.width = `${Math.round(width)}px`;
+    this.dropdownMenu.style.maxHeight = `${Math.round(maxHeight)}px`;
+    this.dropdownMenu.style.left = `${Math.round(left)}px`;
+    if (openUpward) {
+      this.dropdownMenu.style.top = 'auto';
+      this.dropdownMenu.style.bottom = `${Math.round(window.innerHeight - rect.top + 6)}px`;
+      this.dropdownMenu.classList.add('open-up');
+    } else {
+      this.dropdownMenu.style.bottom = 'auto';
+      this.dropdownMenu.style.top = `${Math.round(rect.bottom + 6)}px`;
+      this.dropdownMenu.classList.remove('open-up');
+    }
+
+    this.dropdownMenu.classList.remove('hidden');
+
+    // Scroll active item into view nicely
+    const activeItem = this.dropdownMenu.querySelector<HTMLElement>('.pm-item.is-selected');
+    if (activeItem) {
+      activeItem.scrollIntoView({ block: 'nearest' });
+    }
+
+    // Bind item clicks
+    this.dropdownMenu.querySelectorAll<HTMLButtonElement>('.pm-item').forEach((item) => {
+      item.addEventListener('click', () => {
+        if (item.disabled || item.classList.contains('is-disabled')) return;
+        const pickKind = item.dataset.pickKind as 'human' | 'bot';
+        const pickId = item.dataset.pickId!;
+
+        if (pickKind === 'human') {
+          // Guard: never allow duplicate human if another slot is already human
+          const existingHuman = this.drafts.findIndex((d) => d.kind === 'human');
+          if (existingHuman >= 0 && existingHuman !== slotIdx) return;
+          this.drafts[slotIdx] = { kind: 'human', botId: this.drafts[slotIdx].botId };
+        } else {
+          this.drafts[slotIdx] = { kind: 'bot', botId: pickId };
+        }
+        this.closeDropdown();
+        this.render();
+      });
+    });
   }
 
   private updateHeaderElo() {
@@ -278,33 +449,14 @@ export class LobbyUI {
   }
 
   private render() {
+    this.closeDropdown();
     const selectedMap = this.getSelectedMap();
     const resolved = resolveSlots(this.drafts, this.roster);
     const isHumanPlaying = this.hasHuman();
-    const officialBots = this.roster.filter((r) => r.category === 'official');
-    const sparringBots = this.roster.filter((r) => r.category === 'sparring');
-
-    const botOptionsHtml = (currentId: string) => `
-      <optgroup label="正式海选 AI（13位 · WASM 原版）">
-        ${officialBots
-          .map(
-            (b) =>
-              `<option value="${b.id}" ${b.id === currentId ? 'selected' : ''}>#${b.rank} ${b.name} (${b.rating >= 0 ? '+' : ''}${Math.round(b.rating)})</option>`,
-          )
-          .join('')}
-      </optgroup>
-      <optgroup label="官方陪练（热身推荐）">
-        ${sparringBots
-          .map(
-            (b) =>
-              `<option value="${b.id}" ${b.id === currentId ? 'selected' : ''}>${b.name} (${b.rating >= 0 ? '+' : ''}${Math.round(b.rating)})</option>`,
-          )
-          .join('')}
-      </optgroup>
-    `;
+    const rosterById = new Map(this.roster.map((r) => [r.id, r]));
 
     const humanElo = this.leaderboard.getHumanRating();
-    const humanEloTxt = humanElo > 0 ? `+${humanElo.toFixed(1)}` : humanElo.toFixed(1);
+    const humanEloTxt = formatEloScore(humanElo);
     const humanRk = this.leaderboard.getHumanRank();
 
     this.container.innerHTML = `
@@ -385,28 +537,39 @@ export class LobbyUI {
             <div class="slots-list">
               ${resolved
                 .map((slot, idx) => {
-                  const draft = this.drafts[idx];
+                  const isHuman = slot.kind === 'human';
+                  const botEntry = !isHuman && slot.botId ? rosterById.get(slot.botId) : undefined;
+                  const score = isHuman ? humanElo : (botEntry?.rating ?? 0);
+                  const roleChip = isHuman
+                    ? `<span class="pk-chip pk-chip-human">真人</span>`
+                    : botEntry?.rank !== null && botEntry?.rank !== undefined
+                      ? `<span class="pk-chip pk-chip-official">#${botEntry.rank} AI</span>`
+                      : `<span class="pk-chip pk-chip-sparring">陪练</span>`;
+                  const subText = isHuman
+                    ? '示范小人 (蓝帽衫) · 零延迟操控'
+                    : botEntry?.category === 'official'
+                      ? `${slot.baseName} · WASM (0.2s 延迟)`
+                      : `${slot.baseName} · 陪练 WASM`;
                   return `
-                  <div class="slot-row ${slot.kind === 'human' ? 'slot-human' : ''}">
+                  <div class="slot-row ${isHuman ? 'slot-human' : ''}">
                     <div class="slot-seat" style="background:${slot.ringAccent || slot.color}">P${idx + 1}</div>
-                    <img class="slot-avatar" src="${slot.avatar || ''}" alt="${slot.displayName}" />
-                    <div class="slot-info">
-                      <div class="slot-name-line">
-                        <span class="slot-name">${slot.displayName}</span>
-                        ${slot.copyNumber ? `<span class="dup-pill">副本 #${slot.copyNumber}</span>` : ''}
+                    <button type="button" class="picker-trigger" data-slot-picker="${idx}" aria-haspopup="listbox">
+                      <img class="pk-avatar" src="${slot.avatar || ''}" alt="${slot.displayName}" style="border-color:${slot.ringAccent || slot.color}" />
+                      <div class="pk-body">
+                        <div class="pk-title-line">
+                          <span class="pk-name">${slot.displayName}</span>
+                          ${slot.copyNumber ? `<span class="dup-pill">副本 #${slot.copyNumber}</span>` : ''}
+                          ${roleChip}
+                        </div>
+                        <div class="pk-sub">${subText}</div>
                       </div>
-                      <div class="slot-select-row">
-                        <select class="slot-kind-select" data-slot-kind="${idx}">
-                          <option value="human" ${draft.kind === 'human' ? 'selected' : ''}>真人操控 (玩家)</option>
-                          <option value="bot" ${draft.kind === 'bot' ? 'selected' : ''}>AI Bot (WASM)</option>
-                        </select>
-                        ${
-                          draft.kind === 'bot'
-                            ? `<select class="slot-bot-select" data-slot-bot="${idx}">${botOptionsHtml(draft.botId)}</select>`
-                            : `<span class="human-model-tag">模型：示范小人 (蓝帽衫)</span>`
-                        }
+                      <div class="pk-right">
+                        <span class="pk-score ${eloScoreClass(score)}">${formatEloScore(score)}</span>
+                        <svg class="pk-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                          <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                        </svg>
                       </div>
-                    </div>
+                    </button>
                   </div>`;
                 })
                 .join('')}
@@ -480,28 +643,16 @@ export class LobbyUI {
       });
     });
 
-    this.container.querySelectorAll<HTMLSelectElement>('.slot-kind-select').forEach((sel) => {
-      sel.addEventListener('change', () => {
-        const idx = Number(sel.dataset.slotKind);
-        const val = sel.value as 'human' | 'bot';
-        if (val === 'human') {
-          // Only one local human player at a time; convert any other human slot to a bot
-          this.drafts = this.drafts.map((d, i) =>
-            i === idx ? { kind: 'human', botId: d.botId } : d.kind === 'human' ? { kind: 'bot', botId: 'gpt-6.2-astra' } : d,
-          );
-        } else {
-          this.drafts[idx] = { kind: 'bot', botId: this.drafts[idx].botId || 'gpt-6.2-astra' };
-        }
-        this.render();
+    this.container.querySelectorAll<HTMLButtonElement>('.picker-trigger').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const idx = Number(btn.dataset.slotPicker);
+        this.openDropdown(idx, btn);
       });
     });
 
-    this.container.querySelectorAll<HTMLSelectElement>('.slot-bot-select').forEach((sel) => {
-      sel.addEventListener('change', () => {
-        const idx = Number(sel.dataset.slotBot);
-        this.drafts[idx] = { kind: 'bot', botId: sel.value };
-        this.render();
-      });
+    this.container.querySelector('.lobby-card')?.addEventListener('scroll', () => {
+      if (this.openSlotIdx !== null) this.closeDropdown();
     });
 
     this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {
