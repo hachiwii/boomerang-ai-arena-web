@@ -67,7 +67,9 @@ export interface RosterEntry {
   name: string;
   shortName: string;
   rank: number | null;
-  rating: number | null;
+  rating: number;
+  duelRating?: number | null;
+  ffaRating?: number | null;
   category: 'official' | 'sparring';
   color: string;
   avatar: string | null;
@@ -130,6 +132,9 @@ export interface PlayerSnapshot {
   cd: number;
   expose: number;
   kills: number;
+  kDart: number;
+  kSlash: number;
+  kFall: number;
   visMask: number;
   deadT: number;
   cause: number;

@@ -1,11 +1,12 @@
 import './style.css';
 import { SoundFX } from './audio/sfx';
 import { HumanInputController } from './game/humanInput';
+import { LeaderboardStore } from './game/leaderboard';
 import { MatchController } from './game/matchController';
 import { CellType, EngineMapData, MapMeta, MatchConfig, RosterEntry } from './game/types';
 import { GameRenderer } from './render/renderer';
 import { HudUI } from './ui/hudUI';
-import { LobbyUI } from './ui/lobbyUI';
+import { LobbyUI, makeHoodieAvatarDataUrl } from './ui/lobbyUI';
 
 function parseQuickPreviewMap(map: MapMeta): EngineMapData {
   const cells: number[] = [];
@@ -59,6 +60,7 @@ async function bootstrap() {
   const sfx = new SoundFX();
   const input = new HumanInputController(canvas);
   const renderer = new GameRenderer(canvas, sfx);
+  const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
 
   let mode: 'lobby' | 'playing' = 'lobby';
   let activeConfig: MatchConfig | null = null;
@@ -76,14 +78,14 @@ async function bootstrap() {
   let hudUI: HudUI;
   let controller: MatchController;
 
-  const returnToLobby = () => {
+  const returnToLobby = (tab: 'play' | 'leaderboard' = 'play') => {
     controller.stop();
     input.setEnabled(false);
     hudUI.hide();
     mode = 'lobby';
     activeConfig = null;
     activeMapData = null;
-    lobbyUI.show();
+    lobbyUI.show(tab);
     const m = lobbyUI.getSelectedMap();
     void renderer.loadPreviewMap(parseQuickPreviewMap(m), m.theme);
   };
@@ -184,10 +186,11 @@ async function bootstrap() {
     },
     onMatchOver: (finalState) => {
       hudUI.updateTick(finalState, activeMapData?.colStart, activeMapData?.colEvery);
+      const eloResult = activeConfig ? leaderboard.recordMatch(activeConfig, finalState) : null;
       // Wait 1.6s so players see the victory celebration & confetti, then show result card + auto return!
       window.setTimeout(() => {
         if (mode === 'playing') {
-          hudUI.showMatchResult(finalState);
+          hudUI.showMatchResult(finalState, eloResult);
         }
       }, 1600);
     },
@@ -199,7 +202,7 @@ async function bootstrap() {
     },
   });
 
-  lobbyUI = new LobbyUI(uiRoot, maps, roster, {
+  lobbyUI = new LobbyUI(uiRoot, maps, roster, leaderboard, {
     onSelectMap: (map) => {
       if (mode === 'lobby') {
         void renderer.loadPreviewMap(parseQuickPreviewMap(map), map.theme);

@@ -214,6 +214,9 @@ const char* engine_get_state_json() {
         o += ",\"cd\":" + std::to_string(P.cd);
         o += ",\"expose\":" + std::to_string(P.expose);
         o += ",\"kills\":" + std::to_string(P.kills);
+        o += ",\"kDart\":" + std::to_string(P.k_dart);
+        o += ",\"kSlash\":" + std::to_string(P.k_slash);
+        o += ",\"kFall\":" + std::to_string(P.k_fall);
         o += ",\"visMask\":" + std::to_string(g.vis_mask(k));
         o += ",\"deadT\":" + std::to_string(P.dead_t);
         o += ",\"cause\":" + std::to_string(P.cause);

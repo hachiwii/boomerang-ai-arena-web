@@ -1,7 +1,8 @@
+import { EloUpdateResult } from '../game/leaderboard';
 import { CauseType, DState, MatchConfig, PState, SlotConfig, TickSnapshot } from '../game/types';
 
 export interface HudCallbacks {
-  onReturnToLobby: () => void;
+  onReturnToLobby: (tab?: 'play' | 'leaderboard') => void;
   onToggleMute: () => boolean;
   onToggleUncap: () => boolean;
 }
@@ -88,6 +89,7 @@ export class HudUI {
     this.slots = config.slots;
     this.humanSeat = humanSeat;
     this.resultOverlay.classList.add('hidden');
+    this.nameplateLayer.classList.remove('hidden');
     this.root.classList.remove('hidden');
 
     this.topBar.innerHTML = `
@@ -241,7 +243,7 @@ export class HudUI {
     this.perfEl.textContent = `逻辑 ${logicHz.toFixed(0)}Hz · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz · AI ${botMaxMs.toFixed(1)}ms)`;
   }
 
-  public showMatchResult(finalState: TickSnapshot) {
+  public showMatchResult(finalState: TickSnapshot, eloResult: EloUpdateResult | null = null) {
     this.clearTimers();
     const winner = finalState.winner >= 0 ? this.slots[finalState.winner] : null;
     const rows = finalState.players
@@ -251,6 +253,15 @@ export class HudUI {
         p,
       }))
       .sort((a, b) => a.p.rank - b.p.rank || b.p.kills - a.p.kills);
+
+    const fmtScore = (v: number) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1));
+    const eloBannerHtml = eloResult
+      ? `<div class="result-elo-banner ${eloResult.delta > 0 ? 'elo-up' : eloResult.delta < 0 ? 'elo-down' : ''}">
+          <span class="re-label">玩家 Elo 更新</span>
+          <span class="re-nums">${fmtScore(eloResult.oldRating)} → <strong>${fmtScore(eloResult.newRating)}</strong></span>
+          <span class="re-delta">(${eloResult.delta >= 0 ? '+' : ''}${eloResult.delta.toFixed(1)})</span>
+        </div>`
+      : '';
 
     let remainSec = 4;
     this.resultOverlay.innerHTML = `
@@ -264,6 +275,7 @@ export class HudUI {
               </div>`
             : `<div class="result-wname">平局 (Draw)</div>`
         }
+        ${eloBannerHtml}
         <div class="result-table">
           ${rows
             .map(({ slot, p }) => {
@@ -279,15 +291,24 @@ export class HudUI {
             })
             .join('')}
         </div>
-        <button class="start-btn result-back-btn" id="btn-result-back">返回主界面 (${remainSec}s)</button>
+        <div class="result-btn-row">
+          <button class="result-lb-btn" id="btn-result-lb">🏆 查看排行榜</button>
+          <button class="start-btn result-back-btn" id="btn-result-back">返回主界面 (${remainSec}s)</button>
+        </div>
       </div>
     `;
+    this.nameplateLayer.classList.add('hidden');
     this.resultOverlay.classList.remove('hidden');
 
     const backBtn = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-back');
     backBtn?.addEventListener('click', () => {
       this.clearTimers();
-      this.callbacks.onReturnToLobby();
+      this.callbacks.onReturnToLobby('play');
+    });
+
+    this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-lb')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onReturnToLobby('leaderboard');
     });
 
     this.countdownInterval = window.setInterval(() => {
@@ -299,7 +320,7 @@ export class HudUI {
 
     this.autoReturnTimer = window.setTimeout(() => {
       this.clearTimers();
-      this.callbacks.onReturnToLobby();
+      this.callbacks.onReturnToLobby('play');
     }, 4000);
   }
 

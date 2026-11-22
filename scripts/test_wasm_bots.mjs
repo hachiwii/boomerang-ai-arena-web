@@ -99,4 +99,32 @@ for (const m of ['ruins', 'hourglass', 'oldtown', 'forest']) {
   console.log(`  [2P ${m.padEnd(11)}] opus vs sol => ticks=${r2.ticks} over=${r2.over} winner=${r2.winner} kills=[${r2.kills}] avg=${r2.avgBotMs}ms max=${r2.maxBotMs}ms`);
 }
 
+// 5. Verify 0.2s (4 ticks) delay applies ONLY to bots' observations, NOT to human live state,
+//    and verify detailed kill counters (kDart, kSlash, kFall) are exported cleanly!
+{
+  const mapText = fs.readFileSync(path.join(MAPS_DIR, 'twinlakes.txt'), 'utf8');
+  if (!engineInit(mapText, 2, 0)) throw new Error('delay test init failed');
+  const history = [];
+  for (let t = 0; t < 8; t++) {
+    const live = JSON.parse(engineGetState());
+    history.push(live.players[0].x);
+    if (t >= 4) {
+      // Bot at seat 1 observes human at seat 0 with exact 4-tick (0.2s) delay!
+      const obsLines = engineGetObs(1).trim().split('\n');
+      const obsHumanX = Number(obsLines[1].trim().split(/\s+/)[2]); // alive vis x ...
+      if (obsHumanX !== history[t - 4]) {
+        throw new Error(`Expected bot obs of human X at t=${t} to equal t=${t - 4} (${history[t - 4]}), got ${obsHumanX}`);
+      }
+      if (obsHumanX === live.players[0].x) {
+        throw new Error(`Expected live human X (${live.players[0].x}) to be ahead of delayed bot obs (${obsHumanX})`);
+      }
+    }
+    if (typeof live.players[0].kDart !== 'number' || typeof live.players[0].kSlash !== 'number' || typeof live.players[0].kFall !== 'number') {
+      throw new Error('Missing kDart/kSlash/kFall in engine_get_state_json');
+    }
+    engineStep('1000 0 0 0 0 0\n0 0 0 0 0 0');
+  }
+  console.log('  [DELAY CHECK   ] Verified: bot obs delayed exactly 4 ticks (0.2s); live human state has 0 delay!');
+}
+
 console.log('ALL WASM ENGINE & BOT TESTS PASSED!');

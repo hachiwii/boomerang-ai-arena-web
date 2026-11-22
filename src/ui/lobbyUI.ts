@@ -1,5 +1,7 @@
+import { LeaderboardStore } from '../game/leaderboard';
 import { MapMeta, MatchConfig, RosterEntry, SlotConfig } from '../game/types';
 import { getTheme } from '../render/themes';
+import { LeaderboardPanel } from './leaderboardUI';
 
 const DUP_RING_ACCENTS = ['#FF4D6D', '#2EC4B6', '#FFB703', '#8338EC'];
 
@@ -131,8 +133,11 @@ export class LobbyUI {
   private readonly container: HTMLDivElement;
   private readonly maps: MapMeta[];
   private readonly roster: RosterEntry[];
+  private readonly leaderboard: LeaderboardStore;
+  private readonly leaderboardPanel: LeaderboardPanel;
   private readonly callbacks: LobbyCallbacks;
 
+  private activeTab: 'play' | 'leaderboard' = 'play';
   private selectedMapId: string;
   private drafts: DraftSlot[];
   private loadingMessage: string | null = null;
@@ -141,12 +146,15 @@ export class LobbyUI {
     root: HTMLElement,
     maps: MapMeta[],
     roster: RosterEntry[],
+    leaderboard: LeaderboardStore,
     callbacks: LobbyCallbacks,
   ) {
     this.maps = maps;
     this.roster = roster;
+    this.leaderboard = leaderboard;
     this.callbacks = callbacks;
     this.selectedMapId = maps[0]?.id || 'twinlakes';
+    this.leaderboardPanel = new LeaderboardPanel(leaderboard, () => this.updateHeaderElo());
 
     // Default setup: Human + 3 diverse top AI bots (4-player melee!)
     this.drafts = [
@@ -162,14 +170,25 @@ export class LobbyUI {
     this.render();
   }
 
-  public show() {
+  public show(tab: 'play' | 'leaderboard' = 'play') {
     this.loadingMessage = null;
+    this.activeTab = tab;
     this.container.classList.remove('hidden');
     this.render();
   }
 
   public hide() {
+    this.leaderboardPanel.hideTooltip();
     this.container.classList.add('hidden');
+  }
+
+  private updateHeaderElo() {
+    const pill = this.container.querySelector<HTMLElement>('#header-elo-pill');
+    if (!pill) return;
+    const elo = this.leaderboard.getHumanRating();
+    const rk = this.leaderboard.getHumanRank();
+    const fmt = elo > 0 ? `+${elo.toFixed(1)}` : elo.toFixed(1);
+    pill.textContent = `玩家 Elo ${fmt} · #${rk.rank}/${rk.total}`;
   }
 
   public setLoading(msg: string | null) {
@@ -270,16 +289,23 @@ export class LobbyUI {
         ${officialBots
           .map(
             (b) =>
-              `<option value="${b.id}" ${b.id === currentId ? 'selected' : ''}>#${b.rank} ${b.name} (${b.rating! >= 0 ? '+' : ''}${b.rating})</option>`,
+              `<option value="${b.id}" ${b.id === currentId ? 'selected' : ''}>#${b.rank} ${b.name} (${b.rating >= 0 ? '+' : ''}${Math.round(b.rating)})</option>`,
           )
           .join('')}
       </optgroup>
       <optgroup label="官方陪练（热身推荐）">
         ${sparringBots
-          .map((b) => `<option value="${b.id}" ${b.id === currentId ? 'selected' : ''}>${b.name}</option>`)
+          .map(
+            (b) =>
+              `<option value="${b.id}" ${b.id === currentId ? 'selected' : ''}>${b.name} (${b.rating >= 0 ? '+' : ''}${Math.round(b.rating)})</option>`,
+          )
           .join('')}
       </optgroup>
     `;
+
+    const humanElo = this.leaderboard.getHumanRating();
+    const humanEloTxt = humanElo > 0 ? `+${humanElo.toFixed(1)}` : humanElo.toFixed(1);
+    const humanRk = this.leaderboard.getHumanRank();
 
     this.container.innerHTML = `
       <div class="lobby-card">
@@ -287,17 +313,33 @@ export class LobbyUI {
           <div class="lobby-title-group">
             <div class="lobby-badge">MEOW AI ARENA · WEB WASM</div>
             <h1>回旋镖大作战</h1>
-            <p class="lobby-sub">官方 C++ 引擎 & 16 个 AI Bot 全量编译为 WebAssembly · 20Hz 逻辑 / 240Hz+ 渲染</p>
+            <p class="lobby-sub">官方 C++ 引擎 & 16 个 AI Bot 全量 WASM · AI 0.2s 延迟 / 真人零延迟 · 20Hz 逻辑 / 240Hz+ 渲染</p>
           </div>
-          <div class="lobby-presets">
-            <button class="preset-btn" data-preset="duel">人机 1v1</button>
-            <button class="preset-btn" data-preset="human4">真人 4人混战</button>
-            <button class="preset-btn" data-preset="spectate4">AI 巅峰观战</button>
-            <button class="preset-btn" data-preset="mirror4">4×Astra 镜像战</button>
+          <div class="lobby-nav-right">
+            <div class="lobby-tabs">
+              <button class="lobby-tab ${this.activeTab === 'play' ? 'active' : ''}" id="tab-play">⚔️ 对局配置</button>
+              <button class="lobby-tab ${this.activeTab === 'leaderboard' ? 'active' : ''}" id="tab-leaderboard">
+                🏆 排行榜
+                <span class="tab-elo-pill" id="header-elo-pill">玩家 Elo ${humanEloTxt} · #${humanRk.rank}/${humanRk.total}</span>
+              </button>
+            </div>
+            ${
+              this.activeTab === 'play'
+                ? `<div class="lobby-presets">
+                    <button class="preset-btn" data-preset="duel">人机 1v1</button>
+                    <button class="preset-btn" data-preset="human4">真人 4人混战</button>
+                    <button class="preset-btn" data-preset="spectate4">AI 巅峰观战</button>
+                    <button class="preset-btn" data-preset="mirror4">4×Astra 镜像战</button>
+                  </div>`
+                : ''
+            }
           </div>
         </header>
 
-        <div class="lobby-grid">
+        ${
+          this.activeTab === 'leaderboard'
+            ? `<div id="leaderboard-mount"></div>`
+            : `<div class="lobby-grid">
           <section class="lobby-section">
             <div class="section-head">
               <h2>选择地图</h2>
@@ -381,9 +423,29 @@ export class LobbyUI {
               ${this.loadingMessage || (isHumanPlaying ? '开始对战' : '开始 AI 观战')}
             </button>
           </section>
-        </div>
+        </div>`
+        }
       </div>
     `;
+
+    // Bind tabs
+    this.container.querySelector('#tab-play')?.addEventListener('click', () => {
+      if (this.activeTab === 'play') return;
+      this.activeTab = 'play';
+      this.leaderboardPanel.hideTooltip();
+      this.render();
+    });
+    this.container.querySelector('#tab-leaderboard')?.addEventListener('click', () => {
+      if (this.activeTab === 'leaderboard') return;
+      this.activeTab = 'leaderboard';
+      this.render();
+    });
+
+    if (this.activeTab === 'leaderboard') {
+      const mount = this.container.querySelector<HTMLElement>('#leaderboard-mount');
+      if (mount) this.leaderboardPanel.renderInto(mount);
+      return;
+    }
 
     // Paint minimaps
     for (const m of this.maps) {

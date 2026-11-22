@@ -61,22 +61,22 @@ AVATAR_MAP = {
 }
 
 OFFICIAL_BOTS = [
-    {"id": "gpt-6.2-astra", "seat": "astra", "charKey": "astra", "name": "GPT-6.2 Astra", "shortName": "Astra", "rank": 1, "rating": 306, "category": "official"},
-    {"id": "claude-fable-5.2", "seat": "fable", "charKey": "fable", "name": "Claude Fable 5.2", "shortName": "Fable", "rank": 2, "rating": 132, "category": "official"},
-    {"id": "claude-opus-5.5", "seat": "opus", "charKey": "opus", "name": "Claude Opus 5.5", "shortName": "Opus", "rank": 3, "rating": 76, "category": "official"},
-    {"id": "gemini-4-carbon", "seat": "carbon", "charKey": "gemini", "name": "Gemini 4 Carbon", "shortName": "Carbon", "rank": 4, "rating": 51, "category": "official"},
-    {"id": "gpt-6.2-sol", "seat": "sol", "charKey": "sol", "name": "GPT-6.2 Sol", "shortName": "Sol", "rank": 5, "rating": 33, "category": "official"},
-    {"id": "gemini-4-hydrogen", "seat": "hydrogen", "charKey": "gemini_s", "name": "Gemini 4 Hydrogen", "shortName": "Hydrogen", "rank": 6, "rating": 30, "category": "official"},
-    {"id": "grok-4.7", "seat": "grok", "charKey": "grok", "name": "Grok 4.7", "shortName": "Grok", "rank": 7, "rating": -1, "category": "official"},
-    {"id": "glm-5.3", "seat": "glm", "charKey": "glm", "name": "GLM 5.3", "shortName": "GLM", "rank": 8, "rating": -9, "category": "official"},
-    {"id": "deepseek-v4.1-flash", "seat": "deepseek", "charKey": "deepseek", "name": "DeepSeek-V4.1-Flash", "shortName": "DeepSeek", "rank": 9, "rating": -30, "category": "official"},
-    {"id": "kimi-k3.1-pro", "seat": "kimi", "charKey": "kimi", "name": "Kimi K3.1 Pro", "shortName": "Kimi", "rank": 10, "rating": -84, "category": "official"},
-    {"id": "qwen4-max", "seat": "qwen", "charKey": "qwen", "name": "千问 Qwen4-Max", "shortName": "千问", "rank": 11, "rating": -87, "category": "official"},
-    {"id": "mimo-v2.6-pro", "seat": "mimo", "charKey": "mimo", "name": "MiMo V2.6 Pro", "shortName": "MiMo", "rank": 12, "rating": -167, "category": "official"},
-    {"id": "doubao-seed-evolving", "seat": "doubao", "charKey": "doubao", "name": "豆包 Seed-Evolving", "shortName": "豆包", "rank": 13, "rating": -251, "category": "official"},
-    {"id": "sparring-strong", "seat": "strong", "charKey": "demo_red", "name": "强陪练 Strong", "shortName": "强陪练", "rank": None, "rating": None, "category": "sparring"},
-    {"id": "sparring-mid", "seat": "mid", "charKey": "sparring_mid", "name": "中陪练 Mid", "shortName": "中陪练", "rank": None, "rating": None, "category": "sparring"},
-    {"id": "sparring-weak", "seat": "weak", "charKey": "sparring_weak", "name": "弱陪练 Weak", "shortName": "弱陪练", "rank": None, "rating": None, "category": "sparring"},
+    {"id": "gpt-6.2-astra", "seat": "astra", "charKey": "astra", "name": "GPT-6.2 Astra", "shortName": "Astra", "rank": 1, "rating": 306.12, "category": "official"},
+    {"id": "claude-fable-5.2", "seat": "fable", "charKey": "fable", "name": "Claude Fable 5.2", "shortName": "Fable", "rank": 2, "rating": 131.99, "category": "official"},
+    {"id": "claude-opus-5.5", "seat": "opus", "charKey": "opus", "name": "Claude Opus 5.5", "shortName": "Opus", "rank": 3, "rating": 76.30, "category": "official"},
+    {"id": "gemini-4-carbon", "seat": "carbon", "charKey": "gemini", "name": "Gemini 4 Carbon", "shortName": "Carbon", "rank": 4, "rating": 50.99, "category": "official"},
+    {"id": "gpt-6.2-sol", "seat": "sol", "charKey": "sol", "name": "GPT-6.2 Sol", "shortName": "Sol", "rank": 5, "rating": 33.08, "category": "official"},
+    {"id": "gemini-4-hydrogen", "seat": "hydrogen", "charKey": "gemini_s", "name": "Gemini 4 Hydrogen", "shortName": "Hydrogen", "rank": 6, "rating": 29.85, "category": "official"},
+    {"id": "grok-4.7", "seat": "grok", "charKey": "grok", "name": "Grok 4.7", "shortName": "Grok", "rank": 7, "rating": -0.92, "category": "official"},
+    {"id": "glm-5.3", "seat": "glm", "charKey": "glm", "name": "GLM 5.3", "shortName": "GLM", "rank": 8, "rating": -9.44, "category": "official"},
+    {"id": "deepseek-v4.1-flash", "seat": "deepseek", "charKey": "deepseek", "name": "DeepSeek-V4.1-Flash", "shortName": "DeepSeek", "rank": 9, "rating": -29.99, "category": "official"},
+    {"id": "kimi-k3.1-pro", "seat": "kimi", "charKey": "kimi", "name": "Kimi K3.1 Pro", "shortName": "Kimi", "rank": 10, "rating": -83.54, "category": "official"},
+    {"id": "qwen4-max", "seat": "qwen", "charKey": "qwen", "name": "千问 Qwen4-Max", "shortName": "千问", "rank": 11, "rating": -87.08, "category": "official"},
+    {"id": "mimo-v2.6-pro", "seat": "mimo", "charKey": "mimo", "name": "MiMo V2.6 Pro", "shortName": "MiMo", "rank": 12, "rating": -166.59, "category": "official"},
+    {"id": "doubao-seed-evolving", "seat": "doubao", "charKey": "doubao", "name": "豆包 Seed-Evolving", "shortName": "豆包", "rank": 13, "rating": -250.74, "category": "official"},
+    {"id": "sparring-strong", "seat": "strong", "charKey": "demo_red", "name": "强陪练 Strong", "shortName": "强陪练", "rank": None, "rating": 120.0, "category": "sparring"},
+    {"id": "sparring-mid", "seat": "mid", "charKey": "sparring_mid", "name": "中陪练 Mid", "shortName": "中陪练", "rank": None, "rating": -180.0, "category": "sparring"},
+    {"id": "sparring-weak", "seat": "weak", "charKey": "sparring_weak", "name": "弱陪练 Weak", "shortName": "弱陪练", "rank": None, "rating": -350.0, "category": "sparring"},
 ]
 
 
@@ -165,10 +165,22 @@ def export_characters():
     (OUT_CHARS / "sparring_weak.json").write_text(json.dumps(d_weak, ensure_ascii=False), encoding="utf-8")
     char_colors["sparring_weak"] = "#4CC480"
 
+    # Pull exact official Elo ratings (overall, duel, ffa) from 海选成绩.json
+    scores_path = BOOM / "results" / "海选成绩.json"
+    official_scores = json.loads(scores_path.read_text(encoding="utf-8"))["players"] if scores_path.exists() else {}
+
     # Build roster catalog for frontend
     roster = []
     for b in OFFICIAL_BOTS:
         entry = dict(b)
+        sc = official_scores.get(b["seat"])
+        if sc:
+            entry["rating"] = round(float(sc["rating"]), 2)
+            entry["duelRating"] = round(float(sc["duel_rating"]), 2)
+            entry["ffaRating"] = round(float(sc["ffa_rating"]), 2)
+        else:
+            entry["duelRating"] = None
+            entry["ffaRating"] = None
         entry["color"] = char_colors[b["charKey"]]
         entry["avatar"] = f"/assets/avatars/{b['charKey']}.png" if b["charKey"] in AVATAR_MAP else None
         roster.append(entry)
