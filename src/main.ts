@@ -65,6 +65,8 @@ async function bootstrap() {
   let mode: 'lobby' | 'playing' = 'lobby';
   let activeConfig: MatchConfig | null = null;
   let activeMapData: EngineMapData | null = null;
+  let matchOverTimer: number | null = null;
+  let restarting = false;
 
   // Default to 240Hz+ uncapped smooth render loop (toggleable to VSync in HUD anytime)
   let uncappedRender = true;
@@ -78,7 +80,16 @@ async function bootstrap() {
   let hudUI: HudUI;
   let controller: MatchController;
 
+  const clearMatchOverTimer = () => {
+    if (matchOverTimer !== null) {
+      window.clearTimeout(matchOverTimer);
+      matchOverTimer = null;
+    }
+  };
+
   const returnToLobby = (tab: 'play' | 'leaderboard' = 'play') => {
+    clearMatchOverTimer();
+    restarting = false;
     controller.stop();
     input.setEnabled(false);
     hudUI.hide();
@@ -88,6 +99,41 @@ async function bootstrap() {
     lobbyUI.show(tab);
     const m = lobbyUI.getSelectedMap();
     void renderer.loadPreviewMap(parseQuickPreviewMap(m), m.theme);
+  };
+
+  const canQuickRestart = (): boolean => {
+    if (mode !== 'playing' || !activeConfig || restarting) return false;
+    const hSeat = controller.getHumanSeat();
+    // Pure AI spectator match
+    if (hSeat < 0) return true;
+    // Human match: only allowed once human is eliminated (spectating)
+    const st = controller.getCurrentState();
+    if (!st) return false;
+    const me = st.players[hSeat];
+    return !!me && !me.alive;
+  };
+
+  const restartCurrentMatch = () => {
+    if (!activeConfig || restarting) return;
+    restarting = true;
+    clearMatchOverTimer();
+    hudUI.cancelResultOverlay(true);
+    const cfg: MatchConfig = {
+      ...activeConfig,
+      slots: activeConfig.slots.map((s) => ({ ...s })),
+      cliffGuard: input.isCliffGuard(),
+    };
+    activeConfig = cfg;
+    void controller
+      .start(cfg)
+      .catch((err) => {
+        console.error(err);
+        alert(`重开失败：${err instanceof Error ? err.message : String(err)}`);
+        returnToLobby();
+      })
+      .finally(() => {
+        restarting = false;
+      });
   };
 
   const startRenderLoop = () => {
@@ -154,6 +200,7 @@ async function bootstrap() {
 
   hudUI = new HudUI(uiRoot, {
     onReturnToLobby: returnToLobby,
+    onRestartMatch: restartCurrentMatch,
     onToggleMute: () => {
       sfx.muted = !sfx.muted;
       return sfx.muted;
@@ -190,6 +237,7 @@ async function bootstrap() {
       const cfg = activeConfig;
       const hSeat = controller.getHumanSeat();
       await renderer.setupMatch(mapData, cfg.mapMeta.theme, cfg.slots, initialState, hSeat, cfg.speed);
+      if (activeConfig !== cfg) return;
       mode = 'playing';
       lobbyUI.hide();
       hudUI.showMatch(cfg, hSeat);
@@ -203,7 +251,9 @@ async function bootstrap() {
       hudUI.updateTick(finalState, activeMapData?.colStart, activeMapData?.colEvery);
       const eloResult = activeConfig ? leaderboard.recordMatch(activeConfig, finalState) : null;
       // Wait 1.6s so players see the victory celebration & confetti, then show result card + auto return!
-      window.setTimeout(() => {
+      clearMatchOverTimer();
+      matchOverTimer = window.setTimeout(() => {
+        matchOverTimer = null;
         if (mode === 'playing') {
           hudUI.showMatchResult(finalState, eloResult);
         }
@@ -224,6 +274,8 @@ async function bootstrap() {
       }
     },
     onStartMatch: (config) => {
+      clearMatchOverTimer();
+      restarting = false;
       activeConfig = config;
       lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
       void controller.start(config).catch((err) => {
@@ -234,10 +286,23 @@ async function bootstrap() {
     },
   });
 
-  // ESC returns to main lobby anytime during a match
+  // Match keyboard shortcuts: ESC returns to lobby; R restarts with exact same config & spawn positions when spectating
   window.addEventListener('keydown', (e) => {
     if (e.code === 'Escape' && mode === 'playing') {
       returnToLobby();
+      return;
+    }
+    if (
+      e.code === 'KeyR' &&
+      !e.repeat &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) &&
+      canQuickRestart()
+    ) {
+      e.preventDefault();
+      restartCurrentMatch();
     }
   });
 

@@ -4,6 +4,7 @@ import { CauseType, DState, MatchConfig, PState, SlotConfig, TickSnapshot } from
 
 export interface HudCallbacks {
   onReturnToLobby: (tab?: 'play' | 'leaderboard') => void;
+  onRestartMatch: () => void;
   onToggleMute: () => boolean;
   onToggleUncap: () => boolean;
   onToggleCliffGuard: () => boolean;
@@ -60,6 +61,7 @@ export class HudUI {
     dart: HTMLElement;
     cdBar: HTMLElement;
   }[] = [];
+  private humanHintMove: HTMLElement | null = null;
   private humanHintLeft: HTMLElement | null = null;
   private humanHintRight: HTMLElement | null = null;
   private humanHintShift: HTMLElement | null = null;
@@ -207,16 +209,18 @@ export class HudUI {
 
     if (humanSeat >= 0) {
       this.bottomBar.innerHTML = `
-        <div class="action-pill"><kbd>WASD</kbd> 移动</div>
+        <div class="action-pill" id="hint-move"><kbd>WASD</kbd> 移动</div>
         <div class="action-pill" id="hint-left"><kbd>左键</kbd> 向鼠标扔镖</div>
         <div class="action-pill" id="hint-right"><kbd>右键</kbd> 挥砍 / 挡镖</div>
         <div class="action-pill" id="hint-shift"><kbd>Shift</kbd> 冲刺就绪</div>
       `;
+      this.humanHintMove = this.bottomBar.querySelector('#hint-move');
       this.humanHintLeft = this.bottomBar.querySelector('#hint-left');
       this.humanHintRight = this.bottomBar.querySelector('#hint-right');
       this.humanHintShift = this.bottomBar.querySelector('#hint-shift');
     } else {
-      this.bottomBar.innerHTML = `<div class="action-pill spectate-pill">AI 观战模式 · 实时 20Hz WASM 对决中</div>`;
+      this.bottomBar.innerHTML = `<div class="action-pill spectate-pill">AI 观战模式 · 按 <kbd>R</kbd> 立即原配置重开</div>`;
+      this.humanHintMove = null;
       this.humanHintLeft = null;
       this.humanHintRight = null;
       this.humanHintShift = null;
@@ -262,10 +266,16 @@ export class HudUI {
       const me = state.players[this.humanSeat];
       const md = state.darts[this.humanSeat];
       if (!me.alive) {
-        if (this.humanHintLeft) this.humanHintLeft.innerHTML = `已出局 · 正在观战剩余对手`;
+        if (this.humanHintMove) this.humanHintMove.style.display = 'none';
+        if (this.humanHintLeft) {
+          this.humanHintLeft.innerHTML = `已出局观战中 · 按 <kbd>R</kbd> 立即原配置重开`;
+          this.humanHintLeft.classList.add('spectate-pill');
+        }
         if (this.humanHintRight) this.humanHintRight.style.display = 'none';
         if (this.humanHintShift) this.humanHintShift.style.display = 'none';
       } else {
+        if (this.humanHintMove) this.humanHintMove.style.display = '';
+        if (this.humanHintLeft) this.humanHintLeft.classList.remove('spectate-pill');
         if (this.humanHintRight) this.humanHintRight.style.display = '';
         if (this.humanHintShift) this.humanHintShift.style.display = '';
         if (this.humanHintLeft) {
@@ -317,6 +327,8 @@ export class HudUI {
         </div>`
       : '';
 
+    const canRestart = this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive);
+
     let remainSec = 4;
     this.resultOverlay.innerHTML = `
       <div class="result-card">
@@ -346,7 +358,8 @@ export class HudUI {
             .join('')}
         </div>
         <div class="result-btn-row">
-          <button class="result-lb-btn" id="btn-result-lb">🏆 查看排行榜</button>
+          ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">↻ 重开 (R)</button>` : ''}
+          <button class="result-lb-btn" id="btn-result-lb">🏆 排行榜</button>
           <button class="start-btn result-back-btn" id="btn-result-back">返回主界面 (${remainSec}s)</button>
         </div>
       </div>
@@ -358,6 +371,11 @@ export class HudUI {
     backBtn?.addEventListener('click', () => {
       this.clearTimers();
       this.callbacks.onReturnToLobby('play');
+    });
+
+    this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-restart')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onRestartMatch();
     });
 
     this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-lb')?.addEventListener('click', () => {
@@ -376,6 +394,16 @@ export class HudUI {
       this.clearTimers();
       this.callbacks.onReturnToLobby('play');
     }, 4000);
+  }
+
+  public cancelResultOverlay(restarting = false) {
+    this.clearTimers();
+    this.setCountdown(null);
+    this.resultOverlay.classList.add('hidden');
+    this.nameplateLayer.classList.remove('hidden');
+    if (restarting) {
+      this.bottomBar.innerHTML = `<div class="action-pill spectate-pill">正在按原配置与站位重开...</div>`;
+    }
   }
 
   public hide() {
