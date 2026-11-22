@@ -1,0 +1,449 @@
+import { MapMeta, MatchConfig, RosterEntry, SlotConfig } from '../game/types';
+import { getTheme } from '../render/themes';
+
+const DUP_RING_ACCENTS = ['#FF4D6D', '#2EC4B6', '#FFB703', '#8338EC'];
+
+interface DraftSlot {
+  kind: 'human' | 'bot';
+  botId: string;
+}
+
+export interface LobbyCallbacks {
+  onSelectMap: (map: MapMeta) => void;
+  onStartMatch: (config: MatchConfig) => void;
+}
+
+/**
+ * Generates an inline SVG avatar for the built-in generic humanoid (Human & Sparring hoodies)
+ * so every contestant card has a crisp square icon.
+ */
+export function makeHoodieAvatarDataUrl(hoodColor: string, hairColor: string, label?: string): string {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+    <rect x="14" y="10" width="36" height="28" rx="4" fill="${hairColor}" stroke="#2E2238" stroke-width="3"/>
+    <rect x="20" y="20" width="24" height="16" fill="#FFDCC2"/>
+    <rect x="24" y="23" width="4" height="7" fill="#2B3550"/>
+    <rect x="36" y="23" width="4" height="7" fill="#2B3550"/>
+    <rect x="25" y="23" width="2" height="2" fill="#FFFFFF"/>
+    <rect x="37" y="23" width="2" height="2" fill="#FFFFFF"/>
+    <rect x="20" y="32" width="4" height="3" fill="#FF9FA8"/>
+    <rect x="40" y="32" width="4" height="3" fill="#FF9FA8"/>
+    <rect x="18" y="38" width="28" height="20" rx="3" fill="${hoodColor}" stroke="#2E2238" stroke-width="3"/>
+    <rect x="27" y="39" width="2" height="10" fill="#FFFFFF"/>
+    <rect x="35" y="39" width="2" height="10" fill="#FFFFFF"/>
+    ${label ? `<text x="32" y="55" font-size="9" font-weight="800" fill="#fff" text-anchor="middle" font-family="sans-serif">${label}</text>` : ''}
+  </svg>`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+}
+
+export function resolveSlots(drafts: DraftSlot[], roster: RosterEntry[]): SlotConfig[] {
+  const byId = new Map(roster.map((r) => [r.id, r]));
+  // Count occurrences of each botId to decide duplicate numbering
+  const counts = new Map<string, number>();
+  for (const d of drafts) {
+    if (d.kind === 'bot') {
+      counts.set(d.botId, (counts.get(d.botId) || 0) + 1);
+    }
+  }
+  const seen = new Map<string, number>();
+
+  return drafts.map((d, idx) => {
+    if (d.kind === 'human') {
+      return {
+        kind: 'human',
+        charKey: 'demo_blue',
+        baseName: '玩家',
+        displayName: '玩家 (YOU)',
+        color: '#3D7EFF',
+        ringAccent: '#3D7EFF',
+        avatar: makeHoodieAvatarDataUrl('#3B78F0', '#262A33'),
+      };
+    }
+    const entry = byId.get(d.botId) || roster[0];
+    const total = counts.get(entry.id) || 1;
+    const copyNum = (seen.get(entry.id) || 0) + 1;
+    seen.set(entry.id, copyNum);
+
+    const displayName = total > 1 ? `${entry.shortName} ${copyNum}` : entry.shortName;
+    const ringAccent = total > 1 ? DUP_RING_ACCENTS[(copyNum - 1) % DUP_RING_ACCENTS.length] : entry.color;
+
+    let avatar = entry.avatar;
+    if (!avatar) {
+      if (entry.charKey === 'demo_red') avatar = makeHoodieAvatarDataUrl('#E8483D', '#4A3328');
+      else if (entry.charKey === 'sparring_mid') avatar = makeHoodieAvatarDataUrl('#E89A2E', '#3D3028');
+      else avatar = makeHoodieAvatarDataUrl('#4AB87A', '#4D423A');
+    }
+
+    return {
+      kind: 'bot',
+      botId: entry.id,
+      charKey: entry.charKey,
+      baseName: entry.name,
+      displayName,
+      color: entry.color,
+      ringAccent: ringAccent || DUP_RING_ACCENTS[idx % DUP_RING_ACCENTS.length],
+      avatar,
+      copyNumber: total > 1 ? copyNum : undefined,
+    };
+  });
+}
+
+function drawMiniMap(canvas: HTMLCanvasElement, map: MapMeta) {
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  const T = getTheme(map.theme);
+  const w = canvas.width;
+  const h = canvas.height;
+  ctx.clearRect(0, 0, w, h);
+
+  // Sky backdrop
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, T.skyTop);
+  grad.addColorStop(1, T.skyBottom);
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+
+  const grid = map.previewGrid;
+  if (!grid || grid.length === 0) return;
+  const rows = grid.length;
+  const cols = grid[0].length;
+  const pad = 4;
+  const cellW = (w - pad * 2) / cols;
+  const cellH = (h - pad * 2) / rows;
+  const cs = Math.min(cellW, cellH);
+  const ox = (w - cols * cs) * 0.5;
+  const oy = (h - rows * cs) * 0.5;
+
+  for (let y = 0; y < rows; y++) {
+    const row = grid[y];
+    for (let x = 0; x < cols; x++) {
+      const ch = row[x];
+      if (ch === '~') continue;
+      if (ch === '.') ctx.fillStyle = T.groundA;
+      else if (ch === '"') ctx.fillStyle = T.grassMid;
+      else if (ch === '#') ctx.fillStyle = T.wallTop;
+      else continue;
+      ctx.fillRect(ox + x * cs, oy + y * cs, Math.ceil(cs), Math.ceil(cs));
+    }
+  }
+}
+
+export class LobbyUI {
+  private readonly container: HTMLDivElement;
+  private readonly maps: MapMeta[];
+  private readonly roster: RosterEntry[];
+  private readonly callbacks: LobbyCallbacks;
+
+  private selectedMapId: string;
+  private drafts: DraftSlot[];
+  private loadingMessage: string | null = null;
+
+  constructor(
+    root: HTMLElement,
+    maps: MapMeta[],
+    roster: RosterEntry[],
+    callbacks: LobbyCallbacks,
+  ) {
+    this.maps = maps;
+    this.roster = roster;
+    this.callbacks = callbacks;
+    this.selectedMapId = maps[0]?.id || 'twinlakes';
+
+    // Default setup: Human + 3 diverse top AI bots (4-player melee!)
+    this.drafts = [
+      { kind: 'human', botId: 'gpt-6.2-astra' },
+      { kind: 'bot', botId: 'gpt-6.2-astra' },
+      { kind: 'bot', botId: 'claude-fable-5.2' },
+      { kind: 'bot', botId: 'gemini-4-carbon' },
+    ];
+
+    this.container = document.createElement('div');
+    this.container.className = 'lobby-overlay';
+    root.appendChild(this.container);
+    this.render();
+  }
+
+  public show() {
+    this.loadingMessage = null;
+    this.container.classList.remove('hidden');
+    this.render();
+  }
+
+  public hide() {
+    this.container.classList.add('hidden');
+  }
+
+  public setLoading(msg: string | null) {
+    this.loadingMessage = msg;
+    const btn = this.container.querySelector<HTMLButtonElement>('#btn-start-match');
+    if (btn) {
+      btn.disabled = msg !== null;
+      btn.textContent = msg ? msg : (this.hasHuman() ? '开始对战' : '开始 AI 观战');
+    }
+  }
+
+  public getSelectedMap(): MapMeta {
+    return this.maps.find((m) => m.id === this.selectedMapId) || this.maps[0];
+  }
+
+  private hasHuman(): boolean {
+    return this.drafts.some((d) => d.kind === 'human');
+  }
+
+  private toggleHumanMode() {
+    if (this.hasHuman()) {
+      // Switch to pure AI spectator mode: replace human slot with Opus
+      this.drafts = this.drafts.map((d) =>
+        d.kind === 'human' ? { kind: 'bot', botId: 'claude-opus-5.5' } : d,
+      );
+    } else {
+      // Put human into slot 0
+      this.drafts[0] = { kind: 'human', botId: this.drafts[0].botId };
+    }
+    this.render();
+  }
+
+  private applyPreset(preset: 'duel' | 'human4' | 'spectate4' | 'mirror4') {
+    if (preset === 'duel') {
+      this.drafts = [
+        { kind: 'human', botId: 'sparring-mid' },
+        { kind: 'bot', botId: 'sparring-mid' },
+      ];
+    } else if (preset === 'human4') {
+      this.drafts = [
+        { kind: 'human', botId: 'gpt-6.2-astra' },
+        { kind: 'bot', botId: 'gpt-6.2-astra' },
+        { kind: 'bot', botId: 'claude-fable-5.2' },
+        { kind: 'bot', botId: 'claude-opus-5.5' },
+      ];
+    } else if (preset === 'spectate4') {
+      this.drafts = [
+        { kind: 'bot', botId: 'gpt-6.2-astra' },
+        { kind: 'bot', botId: 'claude-fable-5.2' },
+        { kind: 'bot', botId: 'claude-opus-5.5' },
+        { kind: 'bot', botId: 'gemini-4-carbon' },
+      ];
+    } else if (preset === 'mirror4') {
+      this.drafts = [
+        { kind: 'bot', botId: 'gpt-6.2-astra' },
+        { kind: 'bot', botId: 'gpt-6.2-astra' },
+        { kind: 'bot', botId: 'gpt-6.2-astra' },
+        { kind: 'bot', botId: 'gpt-6.2-astra' },
+      ];
+    }
+    this.render();
+  }
+
+  private setPlayerCount(count: number) {
+    const target = Math.max(2, Math.min(4, count));
+    const defaults = ['gpt-6.2-astra', 'claude-fable-5.2', 'claude-opus-5.5', 'gemini-4-carbon'];
+    while (this.drafts.length < target) {
+      this.drafts.push({ kind: 'bot', botId: defaults[this.drafts.length % defaults.length] });
+    }
+    while (this.drafts.length > target) {
+      this.drafts.pop();
+    }
+    this.render();
+  }
+
+  private startMatch() {
+    if (this.loadingMessage) return;
+    const mapMeta = this.getSelectedMap();
+    const slots = resolveSlots(this.drafts, this.roster);
+    const seed = Math.floor(Math.random() * 900000) + 1;
+    this.callbacks.onStartMatch({
+      mapId: mapMeta.id,
+      mapMeta,
+      slots,
+      seed,
+    });
+  }
+
+  private render() {
+    const selectedMap = this.getSelectedMap();
+    const resolved = resolveSlots(this.drafts, this.roster);
+    const isHumanPlaying = this.hasHuman();
+    const officialBots = this.roster.filter((r) => r.category === 'official');
+    const sparringBots = this.roster.filter((r) => r.category === 'sparring');
+
+    const botOptionsHtml = (currentId: string) => `
+      <optgroup label="正式海选 AI（13位 · WASM 原版）">
+        ${officialBots
+          .map(
+            (b) =>
+              `<option value="${b.id}" ${b.id === currentId ? 'selected' : ''}>#${b.rank} ${b.name} (${b.rating! >= 0 ? '+' : ''}${b.rating})</option>`,
+          )
+          .join('')}
+      </optgroup>
+      <optgroup label="官方陪练（热身推荐）">
+        ${sparringBots
+          .map((b) => `<option value="${b.id}" ${b.id === currentId ? 'selected' : ''}>${b.name}</option>`)
+          .join('')}
+      </optgroup>
+    `;
+
+    this.container.innerHTML = `
+      <div class="lobby-card">
+        <header class="lobby-header">
+          <div class="lobby-title-group">
+            <div class="lobby-badge">MEOW AI ARENA · WEB WASM</div>
+            <h1>回旋镖大作战</h1>
+            <p class="lobby-sub">官方 C++ 引擎 & 16 个 AI Bot 全量编译为 WebAssembly · 20Hz 逻辑 / 240Hz+ 渲染</p>
+          </div>
+          <div class="lobby-presets">
+            <button class="preset-btn" data-preset="duel">人机 1v1</button>
+            <button class="preset-btn" data-preset="human4">真人 4人混战</button>
+            <button class="preset-btn" data-preset="spectate4">AI 巅峰观战</button>
+            <button class="preset-btn" data-preset="mirror4">4×Astra 镜像战</button>
+          </div>
+        </header>
+
+        <div class="lobby-grid">
+          <section class="lobby-section">
+            <div class="section-head">
+              <h2>选择地图</h2>
+              <span class="section-hint">${selectedMap.title} · ${selectedMap.nx * 0.5}×${selectedMap.ny * 0.5}m</span>
+            </div>
+            <div class="map-grid" id="map-grid">
+              ${this.maps
+                .map(
+                  (m) => `
+                <button class="map-tile ${m.id === this.selectedMapId ? 'active' : ''}" data-map="${m.id}">
+                  <canvas class="map-mini" width="120" height="76" data-map-canvas="${m.id}"></canvas>
+                  <div class="map-tile-meta">
+                    <span class="map-tile-title">${m.title}</span>
+                    <span class="map-tile-tag">${m.category === 'standard' ? '标准' : '大图'}</span>
+                  </div>
+                </button>`,
+                )
+                .join('')}
+            </div>
+            <div class="map-desc-box">
+              <strong>${selectedMap.title} (${selectedMap.id})</strong>：${selectedMap.desc}
+            </div>
+          </section>
+
+          <section class="lobby-section">
+            <div class="section-head">
+              <h2>参赛选手 (${this.drafts.length} 人)</h2>
+              <div class="slot-controls">
+                <div class="seg-group">
+                  ${[2, 3, 4]
+                    .map(
+                      (n) =>
+                        `<button class="seg-btn ${this.drafts.length === n ? 'active' : ''}" data-count="${n}">${n}人</button>`,
+                    )
+                    .join('')}
+                </div>
+                <button class="mode-toggle ${isHumanPlaying ? 'human-on' : 'spec-on'}" id="btn-toggle-human">
+                  ${isHumanPlaying ? '真人参战中' : '观战模式 (纯AI)'}
+                </button>
+              </div>
+            </div>
+
+            <div class="slots-list">
+              ${resolved
+                .map((slot, idx) => {
+                  const draft = this.drafts[idx];
+                  return `
+                  <div class="slot-row ${slot.kind === 'human' ? 'slot-human' : ''}">
+                    <div class="slot-seat" style="background:${slot.ringAccent || slot.color}">P${idx + 1}</div>
+                    <img class="slot-avatar" src="${slot.avatar || ''}" alt="${slot.displayName}" />
+                    <div class="slot-info">
+                      <div class="slot-name-line">
+                        <span class="slot-name">${slot.displayName}</span>
+                        ${slot.copyNumber ? `<span class="dup-pill">副本 #${slot.copyNumber}</span>` : ''}
+                      </div>
+                      <div class="slot-select-row">
+                        <select class="slot-kind-select" data-slot-kind="${idx}">
+                          <option value="human" ${draft.kind === 'human' ? 'selected' : ''}>真人操控 (玩家)</option>
+                          <option value="bot" ${draft.kind === 'bot' ? 'selected' : ''}>AI Bot (WASM)</option>
+                        </select>
+                        ${
+                          draft.kind === 'bot'
+                            ? `<select class="slot-bot-select" data-slot-bot="${idx}">${botOptionsHtml(draft.botId)}</select>`
+                            : `<span class="human-model-tag">模型：示范小人 (蓝帽衫)</span>`
+                        }
+                      </div>
+                    </div>
+                  </div>`;
+                })
+                .join('')}
+            </div>
+
+            <div class="controls-legend">
+              <div><kbd>WASD</kbd> 移动</div>
+              <div><kbd>左键</kbd> 向鼠标扔镖 / <kbd>长按</kbd> 召回</div>
+              <div><kbd>右键</kbd> 挥砍 / 空手踢人</div>
+              <div><kbd>Shift</kbd> 冲刺越坑</div>
+            </div>
+
+            <button class="start-btn" id="btn-start-match" ${this.loadingMessage ? 'disabled' : ''}>
+              ${this.loadingMessage || (isHumanPlaying ? '开始对战' : '开始 AI 观战')}
+            </button>
+          </section>
+        </div>
+      </div>
+    `;
+
+    // Paint minimaps
+    for (const m of this.maps) {
+      const cvs = this.container.querySelector<HTMLCanvasElement>(`canvas[data-map-canvas="${m.id}"]`);
+      if (cvs) drawMiniMap(cvs, m);
+    }
+
+    // Bind events
+    this.container.querySelectorAll<HTMLButtonElement>('.map-tile').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.map!;
+        if (id === this.selectedMapId) return;
+        this.selectedMapId = id;
+        this.render();
+        this.callbacks.onSelectMap(this.getSelectedMap());
+      });
+    });
+
+    this.container.querySelectorAll<HTMLButtonElement>('.seg-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.setPlayerCount(Number(btn.dataset.count));
+      });
+    });
+
+    this.container.querySelector('#btn-toggle-human')?.addEventListener('click', () => {
+      this.toggleHumanMode();
+    });
+
+    this.container.querySelectorAll<HTMLButtonElement>('.preset-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.applyPreset(btn.dataset.preset as 'duel' | 'human4' | 'spectate4' | 'mirror4');
+      });
+    });
+
+    this.container.querySelectorAll<HTMLSelectElement>('.slot-kind-select').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const idx = Number(sel.dataset.slotKind);
+        const val = sel.value as 'human' | 'bot';
+        if (val === 'human') {
+          // Only one local human player at a time; convert any other human slot to a bot
+          this.drafts = this.drafts.map((d, i) =>
+            i === idx ? { kind: 'human', botId: d.botId } : d.kind === 'human' ? { kind: 'bot', botId: 'gpt-6.2-astra' } : d,
+          );
+        } else {
+          this.drafts[idx] = { kind: 'bot', botId: this.drafts[idx].botId || 'gpt-6.2-astra' };
+        }
+        this.render();
+      });
+    });
+
+    this.container.querySelectorAll<HTMLSelectElement>('.slot-bot-select').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const idx = Number(sel.dataset.slotBot);
+        this.drafts[idx] = { kind: 'bot', botId: sel.value };
+        this.render();
+      });
+    });
+
+    this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {
+      this.startMatch();
+    });
+  }
+}

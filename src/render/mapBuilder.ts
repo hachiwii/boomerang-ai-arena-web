@@ -1,0 +1,610 @@
+import * as THREE from 'three';
+import { CellType, EngineMapData } from '../game/types';
+import { getTheme, ThemeConfig } from './themes';
+
+interface TileInstanceRef {
+  idx: number;
+  cx: number;
+  cz: number;
+  baseY: number;
+  scaleX: number;
+  scaleY: number;
+  scaleZ: number;
+  rotY: number;
+  wave: number;
+  rndA: number;
+  rndB: number;
+  baseColor: THREE.Color;
+}
+
+function hash2(x: number, y: number): number {
+  const h = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+  return h - Math.floor(h);
+}
+
+/**
+ * Builds a stylized floating-island 3D arena matching the official 10 map themes,
+ * using InstancedMeshes so the entire island renders in < 10 draw calls (240Hz+ ready!)
+ * while supporting smooth per-wave collapse warning shake/glow and falling tiles!
+ */
+export class ArenaMap3D {
+  public readonly root = new THREE.Group();
+  public readonly mapData: EngineMapData;
+  public readonly theme: ThemeConfig;
+  public readonly widthM: number;
+  public readonly heightM: number;
+
+  private floorMesh!: THREE.InstancedMesh;
+  private cliffMesh!: THREE.InstancedMesh;
+  private wallMesh: THREE.InstancedMesh | null = null;
+  private wallTopMesh: THREE.InstancedMesh | null = null;
+  private grassMesh: THREE.InstancedMesh | null = null;
+  private cloudMesh!: THREE.InstancedMesh;
+  private ambientMesh: THREE.InstancedMesh | null = null;
+
+  private floorTiles: TileInstanceRef[] = [];
+  private cliffTiles: TileInstanceRef[] = [];
+  private wallTiles: TileInstanceRef[] = [];
+  private wallTopTiles: TileInstanceRef[] = [];
+  private grassTiles: TileInstanceRef[] = [];
+  private cloudData: { x: number; y: number; z: number; sx: number; sy: number; sz: number; speed: number }[] = [];
+  private ambientData: { x: number; y: number; z: number; vx: number; vy: number; vz: number; phase: number; s: number }[] = [];
+
+  private readonly _dummy = new THREE.Object3D();
+  private readonly _tmpCol = new THREE.Color();
+  private readonly _warnCol = new THREE.Color('#ff5a2b');
+
+  constructor(mapData: EngineMapData, themeName: string) {
+    this.mapData = mapData;
+    this.theme = getTheme(themeName);
+    const cellM = mapData.cell / 1000;
+    this.widthM = mapData.nx * cellM;
+    this.heightM = mapData.ny * cellM;
+
+    this.buildTerrain();
+    this.buildWalls();
+    this.buildGrass();
+    this.buildClouds();
+    this.buildAmbientParticles();
+  }
+
+  private buildTerrain() {
+    const { nx, ny, cells, waves, cell } = this.mapData;
+    const cs = cell / 1000;
+    const T = this.theme;
+
+    const colA = new THREE.Color(T.groundA);
+    const colB = new THREE.Color(T.groundB);
+    const colRim = new THREE.Color(T.groundRim);
+    const colCliffTop = new THREE.Color(T.cliffTop);
+    const colCliffMid = new THREE.Color(T.cliffMid);
+    const colCliffDeep = new THREE.Color(T.cliffDeep);
+
+    const solidCoords: { gx: number; gy: number; isEdge: boolean; isGrass: boolean; wave: number }[] = [];
+    for (let gy = 0; gy < ny; gy++) {
+      for (let gx = 0; gx < nx; gx++) {
+        const ct = cells[gy * nx + gx];
+        if (ct === CellType.PIT) continue;
+        // Edge detection for cliff rim highlights
+        let isEdge = false;
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const ax = gx + dx;
+          const ay = gy + dy;
+          if (ax < 0 || ay < 0 || ax >= nx || ay >= ny || cells[ay * nx + ax] === CellType.PIT) {
+            isEdge = true;
+            break;
+          }
+        }
+        solidCoords.push({ gx, gy, isEdge, isGrass: ct === CellType.GRASS, wave: waves[gy * nx + gx] });
+      }
+    }
+
+    const count = Math.max(1, solidCoords.length);
+
+    // Top surface slab (chunky cohesive island top!)
+    const floorGeo = new THREE.BoxGeometry(cs * 1.005, 0.28, cs * 1.005);
+    const floorMat = new THREE.MeshLambertMaterial({ color: '#ffffff' });
+    this.floorMesh = new THREE.InstancedMesh(floorGeo, floorMat, count);
+    this.floorMesh.receiveShadow = true;
+
+    // Cohesive solid floating-island rock cliff underside (overlaps cleanly with zero gaps!)
+    const cliffGeo = new THREE.CylinderGeometry(cs * 0.8, cs * 0.62, 1.75, 4);
+    cliffGeo.rotateY(Math.PI / 4);
+    const cliffMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
+    this.cliffMesh = new THREE.InstancedMesh(cliffGeo, cliffMat, count);
+
+    solidCoords.forEach((sc, idx) => {
+      const cx = (sc.gx + 0.5) * cs;
+      const cz = (sc.gy + 0.5) * cs;
+      const r1 = hash2(sc.gx, sc.gy);
+      const r2 = hash2(sc.gx + 31, sc.gy + 17);
+
+      // Subtle checkerboard / organic patch color variation
+      const patch = Math.sin(sc.gx * 0.45 + sc.gy * 0.35) * 0.5 + 0.5;
+      const c = colA.clone().lerp(colB, patch * 0.65 + r1 * 0.35);
+      if (sc.isEdge) c.lerp(colRim, 0.24);
+      if (sc.isGrass) c.multiplyScalar(0.86);
+
+      const yJitter = (r2 - 0.5) * 0.01;
+      this._dummy.position.set(cx, -0.14 + yJitter, cz);
+      this._dummy.rotation.set(0, 0, 0);
+      this._dummy.scale.set(1, 1, 1);
+      this._dummy.updateMatrix();
+      this.floorMesh.setMatrixAt(idx, this._dummy.matrix);
+      this.floorMesh.setColorAt(idx, c);
+      this.floorTiles.push({
+        idx,
+        cx,
+        cz,
+        baseY: -0.14 + yJitter,
+        scaleX: 1,
+        scaleY: 1,
+        scaleZ: 1,
+        rotY: 0,
+        wave: sc.wave,
+        rndA: r1,
+        rndB: r2,
+        baseColor: c,
+      });
+
+      // Cliff underside column (deeper toward center of island!)
+      const cliffScaleY = sc.isEdge ? 0.78 + r1 * 0.35 : 1.05 + r1 * 0.5;
+      const cliffCol = colCliffTop.clone().lerp(sc.isEdge ? colCliffMid : colCliffDeep, 0.28 + r2 * 0.45);
+      const cliffY = -0.24 - 0.94 * cliffScaleY;
+      this._dummy.position.set(cx, cliffY, cz);
+      this._dummy.rotation.set(0, 0, 0);
+      this._dummy.scale.set(1.06, cliffScaleY, 1.06);
+      this._dummy.updateMatrix();
+      this.cliffMesh.setMatrixAt(idx, this._dummy.matrix);
+      this.cliffMesh.setColorAt(idx, cliffCol);
+      this.cliffTiles.push({
+        idx,
+        cx,
+        cz,
+        baseY: cliffY,
+        scaleX: 1.06,
+        scaleY: cliffScaleY,
+        scaleZ: 1.06,
+        rotY: 0,
+        wave: sc.wave,
+        rndA: r1,
+        rndB: r2,
+        baseColor: cliffCol,
+      });
+    });
+
+    this.floorMesh.instanceMatrix.needsUpdate = true;
+    if (this.floorMesh.instanceColor) this.floorMesh.instanceColor.needsUpdate = true;
+    this.cliffMesh.instanceMatrix.needsUpdate = true;
+    if (this.cliffMesh.instanceColor) this.cliffMesh.instanceColor.needsUpdate = true;
+
+    this.root.add(this.floorMesh);
+    this.root.add(this.cliffMesh);
+  }
+
+  private buildWalls() {
+    const { nx, ny, cells, waves, cell } = this.mapData;
+    const cs = cell / 1000;
+    const T = this.theme;
+
+    const walls: { gx: number; gy: number; wave: number }[] = [];
+    for (let gy = 0; gy < ny; gy++) {
+      for (let gx = 0; gx < nx; gx++) {
+        if (cells[gy * nx + gx] === CellType.WALL) {
+          walls.push({ gx, gy, wave: waves[gy * nx + gx] });
+        }
+      }
+    }
+    if (walls.length === 0) return;
+
+    let bodyGeo: THREE.BufferGeometry;
+    let topGeo: THREE.BufferGeometry;
+    let baseH = 0.88;
+    let topOffset = 0.48;
+
+    switch (T.wallKind) {
+      case 'ice':
+        bodyGeo = new THREE.CylinderGeometry(cs * 0.22, cs * 0.56, 1.25, 5);
+        topGeo = new THREE.ConeGeometry(cs * 0.34, 0.45, 5);
+        baseH = 1.25;
+        topOffset = 0.72;
+        break;
+      case 'menhir':
+        bodyGeo = new THREE.BoxGeometry(cs * 0.88, 1.32, cs * 0.88);
+        topGeo = new THREE.BoxGeometry(cs * 0.68, 0.22, cs * 0.68);
+        baseH = 1.32;
+        topOffset = 0.72;
+        break;
+      case 'houses':
+        bodyGeo = new THREE.BoxGeometry(cs * 0.98, 0.96, cs * 0.98);
+        topGeo = new THREE.ConeGeometry(cs * 0.76, 0.62, 4);
+        topGeo.rotateY(Math.PI / 4);
+        baseH = 0.96;
+        topOffset = 0.76;
+        break;
+      case 'trees':
+        bodyGeo = new THREE.CylinderGeometry(cs * 0.24, cs * 0.34, 0.9, 6);
+        topGeo = new THREE.DodecahedronGeometry(cs * 0.74, 0);
+        baseH = 0.9;
+        topOffset = 0.68;
+        break;
+      case 'crates':
+        bodyGeo = new THREE.BoxGeometry(cs * 0.94, 0.84, cs * 0.94);
+        topGeo = new THREE.BoxGeometry(cs * 0.98, 0.14, cs * 0.98);
+        baseH = 0.84;
+        topOffset = 0.44;
+        break;
+      case 'hoodoo':
+        bodyGeo = new THREE.CylinderGeometry(cs * 0.44, cs * 0.56, 1.15, 6);
+        topGeo = new THREE.CylinderGeometry(cs * 0.54, cs * 0.42, 0.28, 6);
+        baseH = 1.15;
+        topOffset = 0.64;
+        break;
+      case 'masonry':
+        bodyGeo = new THREE.BoxGeometry(cs * 0.96, 1.0, cs * 0.96);
+        topGeo = new THREE.BoxGeometry(cs * 0.86, 0.18, cs * 0.86);
+        baseH = 1.0;
+        topOffset = 0.54;
+        break;
+      default: // boulder & garden
+        bodyGeo = new THREE.CylinderGeometry(cs * 0.44, cs * 0.58, 0.94, 6);
+        topGeo = new THREE.CylinderGeometry(cs * 0.4, cs * 0.5, 0.22, 6);
+        baseH = 0.94;
+        topOffset = 0.5;
+        break;
+    }
+
+    const bodyMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
+    const topMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
+    this.wallMesh = new THREE.InstancedMesh(bodyGeo, bodyMat, walls.length);
+    this.wallTopMesh = new THREE.InstancedMesh(topGeo, topMat, walls.length);
+    this.wallMesh.castShadow = true;
+    this.wallMesh.receiveShadow = true;
+    this.wallTopMesh.castShadow = true;
+
+    const cSide = new THREE.Color(T.wallSide);
+    const cTop = new THREE.Color(T.wallTop);
+    const cAcc = new THREE.Color(T.wallAccent);
+
+    walls.forEach((w, idx) => {
+      const cx = (w.gx + 0.5) * cs;
+      const cz = (w.gy + 0.5) * cs;
+      const r1 = hash2(w.gx * 3 + 7, w.gy * 5 + 11);
+      const r2 = hash2(w.gx * 7 + 19, w.gy * 2 + 3);
+      const hScale = T.wallKind === 'houses' || T.wallKind === 'crates' ? 0.95 + r1 * 0.12 : 0.84 + r1 * 0.34;
+      const rot = T.wallKind === 'houses' || T.wallKind === 'masonry' || T.wallKind === 'crates' ? 0 : r2 * Math.PI * 2;
+      const by = (baseH * hScale) * 0.5;
+
+      const bc = cSide.clone().lerp(cAcc, r2 * 0.28);
+      this._dummy.position.set(cx, by, cz);
+      this._dummy.rotation.set(0, rot, 0);
+      this._dummy.scale.set(1, hScale, 1);
+      this._dummy.updateMatrix();
+      this.wallMesh!.setMatrixAt(idx, this._dummy.matrix);
+      this.wallMesh!.setColorAt(idx, bc);
+      this.wallTiles.push({
+        idx,
+        cx,
+        cz,
+        baseY: by,
+        scaleX: 1,
+        scaleY: hScale,
+        scaleZ: 1,
+        rotY: rot,
+        wave: w.wave,
+        rndA: r1,
+        rndB: r2,
+        baseColor: bc,
+      });
+
+      const ty = baseH * hScale + (topOffset - baseH * 0.5);
+      const tc = cTop.clone().lerp(cAcc, r1 * 0.35);
+      const ts = T.wallKind === 'trees' ? 0.92 + r2 * 0.26 : 1.0;
+      this._dummy.position.set(cx, ty, cz);
+      this._dummy.rotation.set(0, rot, 0);
+      this._dummy.scale.set(ts, ts, ts);
+      this._dummy.updateMatrix();
+      this.wallTopMesh!.setMatrixAt(idx, this._dummy.matrix);
+      this.wallTopMesh!.setColorAt(idx, tc);
+      this.wallTopTiles.push({
+        idx,
+        cx,
+        cz,
+        baseY: ty,
+        scaleX: ts,
+        scaleY: ts,
+        scaleZ: ts,
+        rotY: rot,
+        wave: w.wave,
+        rndA: r1,
+        rndB: r2,
+        baseColor: tc,
+      });
+    });
+
+    this.wallMesh.instanceMatrix.needsUpdate = true;
+    if (this.wallMesh.instanceColor) this.wallMesh.instanceColor.needsUpdate = true;
+    this.wallTopMesh.instanceMatrix.needsUpdate = true;
+    if (this.wallTopMesh.instanceColor) this.wallTopMesh.instanceColor.needsUpdate = true;
+
+    this.root.add(this.wallMesh);
+    this.root.add(this.wallTopMesh);
+  }
+
+  private buildGrass() {
+    const { nx, ny, cells, waves, cell } = this.mapData;
+    const cs = cell / 1000;
+    const T = this.theme;
+
+    const grassCells: { gx: number; gy: number; wave: number }[] = [];
+    for (let gy = 0; gy < ny; gy++) {
+      for (let gx = 0; gx < nx; gx++) {
+        if (cells[gy * nx + gx] === CellType.GRASS) {
+          grassCells.push({ gx, gy, wave: waves[gy * nx + gx] });
+        }
+      }
+    }
+    if (grassCells.length === 0) return;
+
+    // 3 stylized tufts per grass cell (high visual lushness, 1 single draw call!)
+    const perCell = 3;
+    const total = grassCells.length * perCell;
+    const tuftGeo = new THREE.ConeGeometry(0.11, 0.56, 4);
+    tuftGeo.translate(0, 0.28, 0);
+    const tuftMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
+    this.grassMesh = new THREE.InstancedMesh(tuftGeo, tuftMat, total);
+
+    const cMid = new THREE.Color(T.grassMid);
+    const cTip = new THREE.Color(T.grassTip);
+    const cAcc = T.grassAccent ? new THREE.Color(T.grassAccent) : cTip;
+
+    let idx = 0;
+    for (const g of grassCells) {
+      const baseCx = (g.gx + 0.5) * cs;
+      const baseCz = (g.gy + 0.5) * cs;
+      for (let k = 0; k < perCell; k++) {
+        const r1 = hash2(g.gx * 11 + k * 7, g.gy * 13 + k * 3);
+        const r2 = hash2(g.gx * 5 + k * 19, g.gy * 17 + k * 23);
+        const ang = (k / perCell) * Math.PI * 2 + r1 * 1.4;
+        const rad = 0.08 + r2 * 0.14;
+        const cx = baseCx + Math.cos(ang) * rad;
+        const cz = baseCz + Math.sin(ang) * rad;
+        const sy = 0.78 + r1 * 0.42;
+        const sx = 0.85 + r2 * 0.3;
+        const col = r2 > 0.82 && T.grassAccent ? cAcc.clone() : cMid.clone().lerp(cTip, r1 * 0.7);
+
+        this._dummy.position.set(cx, 0, cz);
+        this._dummy.rotation.set(0, r1 * Math.PI * 2, 0);
+        this._dummy.scale.set(sx, sy, sx);
+        this._dummy.updateMatrix();
+        this.grassMesh.setMatrixAt(idx, this._dummy.matrix);
+        this.grassMesh.setColorAt(idx, col);
+        this.grassTiles.push({
+          idx,
+          cx,
+          cz,
+          baseY: 0,
+          scaleX: sx,
+          scaleY: sy,
+          scaleZ: sx,
+          rotY: r1 * Math.PI * 2,
+          wave: g.wave,
+          rndA: r1,
+          rndB: r2,
+          baseColor: col,
+        });
+        idx++;
+      }
+    }
+
+    this.grassMesh.instanceMatrix.needsUpdate = true;
+    if (this.grassMesh.instanceColor) this.grassMesh.instanceColor.needsUpdate = true;
+    this.root.add(this.grassMesh);
+  }
+
+  private buildClouds() {
+    const T = this.theme;
+    const count = 46;
+    const geo = new THREE.SphereGeometry(1.0, 12, 8);
+    const mat = new THREE.MeshLambertMaterial({
+      color: '#ffffff',
+      emissive: new THREE.Color(T.cloud),
+      emissiveIntensity: 0.48,
+      flatShading: false,
+    });
+    this.cloudMesh = new THREE.InstancedMesh(geo, mat, count);
+
+    const cMain = new THREE.Color(T.cloud);
+    const cShade = new THREE.Color(T.cloudShade);
+    const cx0 = this.widthM * 0.5;
+    const cz0 = this.heightM * 0.5;
+
+    for (let i = 0; i < count; i++) {
+      const r1 = hash2(i * 3.1, 1.7);
+      const r2 = hash2(i * 7.3, 4.9);
+      const r3 = hash2(i * 11.7, 9.1);
+      const x = cx0 + (r1 - 0.5) * (this.widthM + 36);
+      const z = cz0 + (r2 - 0.5) * (this.heightM + 28);
+      const y = -8.2 - r3 * 4.2;
+      const sx = 2.8 + r1 * 3.8;
+      const sy = 0.85 + r3 * 0.85;
+      const sz = 2.4 + r2 * 3.2;
+      const speed = 0.24 + r3 * 0.32;
+      this.cloudData.push({ x, y, z, sx, sy, sz, speed });
+
+      this._dummy.position.set(x, y, z);
+      this._dummy.rotation.set(0, r1 * Math.PI, 0);
+      this._dummy.scale.set(sx, sy, sz);
+      this._dummy.updateMatrix();
+      this.cloudMesh.setMatrixAt(i, this._dummy.matrix);
+      this.cloudMesh.setColorAt(i, cMain.clone().lerp(cShade, r3 * 0.35));
+    }
+
+    this.cloudMesh.instanceMatrix.needsUpdate = true;
+    if (this.cloudMesh.instanceColor) this.cloudMesh.instanceColor.needsUpdate = true;
+    this.root.add(this.cloudMesh);
+  }
+
+  private buildAmbientParticles() {
+    const cols = this.theme.ambientParticles;
+    if (!cols || cols.length === 0) return;
+    const count = 42;
+    const geo = new THREE.PlaneGeometry(0.14, 0.14);
+    const mat = new THREE.MeshBasicMaterial({
+      color: '#ffffff',
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.78,
+    });
+    this.ambientMesh = new THREE.InstancedMesh(geo, mat, count);
+    for (let i = 0; i < count; i++) {
+      const r1 = hash2(i, 12.3);
+      const r2 = hash2(i, 45.6);
+      const r3 = hash2(i, 78.9);
+      this.ambientData.push({
+        x: r1 * (this.widthM + 6) - 3,
+        y: 1.0 + r3 * 6.5,
+        z: r2 * (this.heightM + 6) - 3,
+        vx: 0.35 + r1 * 0.4,
+        vy: -0.55 - r3 * 0.45,
+        vz: 0.2 + r2 * 0.3,
+        phase: r1 * Math.PI * 2,
+        s: 0.7 + r2 * 0.7,
+      });
+      this.ambientMesh.setColorAt(i, new THREE.Color(cols[i % cols.length]));
+    }
+    if (this.ambientMesh.instanceColor) this.ambientMesh.instanceColor.needsUpdate = true;
+    this.root.add(this.ambientMesh);
+  }
+
+  /**
+   * Update collapsing tiles, grass sway, drifting clouds, and ambient petals/snow at 240Hz+.
+   */
+  public update(gt: number, elapsedSec: number) {
+    const { waveSteps, colWarn } = this.mapData;
+
+    const updateGroup = (
+      mesh: THREE.InstancedMesh | null,
+      tiles: TileInstanceRef[],
+      sway: boolean,
+      warnTint: boolean,
+    ) => {
+      if (!mesh || tiles.length === 0) return;
+      let dirtyMat = false;
+      let dirtyCol = false;
+
+      for (let i = 0; i < tiles.length; i++) {
+        const ti = tiles[i];
+        const w = ti.wave;
+        const fallStep = w >= 0 && w < waveSteps.length ? waveSteps[w] : -1;
+
+        if (fallStep >= 0 && gt >= fallStep) {
+          // Falling into the cloud sea!
+          const u = gt - fallStep;
+          if (u < 35) {
+            const drop = 0.045 * u * u + 0.06 * u;
+            this._dummy.position.set(ti.cx, ti.baseY - drop, ti.cz);
+            this._dummy.rotation.set(
+              (ti.rndA - 0.5) * u * 0.14,
+              ti.rotY + (ti.rndB - 0.5) * u * 0.1,
+              (ti.rndB - 0.5) * u * 0.14,
+            );
+            const sc = Math.max(0.01, 1 - u / 35);
+            this._dummy.scale.set(ti.scaleX * sc, ti.scaleY * sc, ti.scaleZ * sc);
+            this._dummy.updateMatrix();
+            mesh.setMatrixAt(ti.idx, this._dummy.matrix);
+            dirtyMat = true;
+          } else {
+            this._dummy.position.set(ti.cx, -100, ti.cz);
+            this._dummy.scale.set(0.0001, 0.0001, 0.0001);
+            this._dummy.updateMatrix();
+            mesh.setMatrixAt(ti.idx, this._dummy.matrix);
+            dirtyMat = true;
+          }
+          continue;
+        }
+
+        if (fallStep >= 0 && gt >= fallStep - colWarn) {
+          // Collapse warning: shake + urgent orange-red pulse!
+          const prog = (gt - (fallStep - colWarn)) / Math.max(1, colWarn);
+          const amp = (0.014 + 0.032 * prog) * prog;
+          const jx = Math.sin(elapsedSec * 46 + ti.rndA * 20) * amp;
+          const jz = Math.cos(elapsedSec * 52 + ti.rndB * 20) * amp;
+          this._dummy.position.set(ti.cx + jx, ti.baseY - 0.03 * prog, ti.cz + jz);
+          this._dummy.rotation.set(0, ti.rotY, 0);
+          this._dummy.scale.set(ti.scaleX, ti.scaleY, ti.scaleZ);
+          this._dummy.updateMatrix();
+          mesh.setMatrixAt(ti.idx, this._dummy.matrix);
+          dirtyMat = true;
+
+          if (warnTint) {
+            const pulse = 0.35 + 0.5 * (0.5 + 0.5 * Math.sin(elapsedSec * (10 + prog * 14)));
+            this._tmpCol.copy(ti.baseColor).lerp(this._warnCol, pulse * (0.35 + 0.55 * prog));
+            mesh.setColorAt(ti.idx, this._tmpCol);
+            dirtyCol = true;
+          }
+          continue;
+        }
+
+        if (sway) {
+          const bend = Math.sin(elapsedSec * 2.4 + ti.cx * 0.9 + ti.rndA * 6) * 0.14;
+          this._dummy.position.set(ti.cx, ti.baseY, ti.cz);
+          this._dummy.rotation.set(bend, ti.rotY, bend * 0.6);
+          this._dummy.scale.set(ti.scaleX, ti.scaleY, ti.scaleZ);
+          this._dummy.updateMatrix();
+          mesh.setMatrixAt(ti.idx, this._dummy.matrix);
+          dirtyMat = true;
+        }
+      }
+
+      if (dirtyMat) mesh.instanceMatrix.needsUpdate = true;
+      if (dirtyCol && mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    };
+
+    updateGroup(this.floorMesh, this.floorTiles, false, true);
+    updateGroup(this.cliffMesh, this.cliffTiles, false, false);
+    updateGroup(this.wallMesh, this.wallTiles, false, true);
+    updateGroup(this.wallTopMesh, this.wallTopTiles, false, false);
+    updateGroup(this.grassMesh, this.grassTiles, true, false);
+
+    // Gentle cloud drift
+    const wrapW = this.widthM + 36;
+    const minX = this.widthM * 0.5 - wrapW * 0.5;
+    for (let i = 0; i < this.cloudData.length; i++) {
+      const c = this.cloudData[i];
+      const x = minX + ((((c.x + elapsedSec * c.speed - minX) % wrapW) + wrapW) % wrapW);
+      this._dummy.position.set(x, c.y + Math.sin(elapsedSec * 0.5 + i) * 0.18, c.z);
+      this._dummy.rotation.set(0, i * 0.5, 0);
+      this._dummy.scale.set(c.sx, c.sy, c.sz);
+      this._dummy.updateMatrix();
+      this.cloudMesh.setMatrixAt(i, this._dummy.matrix);
+    }
+    this.cloudMesh.instanceMatrix.needsUpdate = true;
+
+    // Ambient falling petals / snow / leaves
+    if (this.ambientMesh) {
+      for (let i = 0; i < this.ambientData.length; i++) {
+        const p = this.ambientData[i];
+        const y = ((p.y + elapsedSec * p.vy) % 7.5 + 7.5) % 7.5 + 0.3;
+        const x = ((p.x + elapsedSec * p.vx + Math.sin(elapsedSec * 1.8 + p.phase) * 0.5) % (this.widthM + 6) + (this.widthM + 6)) % (this.widthM + 6) - 3;
+        const z = ((p.z + elapsedSec * p.vz) % (this.heightM + 6) + (this.heightM + 6)) % (this.heightM + 6) - 3;
+        this._dummy.position.set(x, y, z);
+        this._dummy.rotation.set(elapsedSec * 2 + p.phase, elapsedSec * 1.4, p.phase);
+        this._dummy.scale.setScalar(p.s);
+        this._dummy.updateMatrix();
+        this.ambientMesh.setMatrixAt(i, this._dummy.matrix);
+      }
+      this.ambientMesh.instanceMatrix.needsUpdate = true;
+    }
+  }
+
+  public dispose() {
+    this.root.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.dispose();
+        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
+        else obj.material.dispose();
+      }
+    });
+  }
+}
