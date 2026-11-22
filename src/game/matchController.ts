@@ -170,6 +170,8 @@ export class MatchController {
 
     // Configure human input timing & pre-dispatch tick 0 bot decisions immediately
     this.input.reset();
+    this.input.setMapData(mapData);
+    this.input.setCliffGuard(config.cliffGuard);
     this.input.setTickIntervalMs(this.tickIntervalMs);
     this.dispatchBots(initialObs);
 
@@ -336,6 +338,7 @@ export class MatchController {
     this.clearCountdownTimers();
     this.callbacks.onCountdown?.(null);
     this.input.setInputMode('off');
+    this.input.setMapData(null);
     if (this.timerHandle !== null) {
       window.clearTimeout(this.timerHandle);
       this.timerHandle = null;

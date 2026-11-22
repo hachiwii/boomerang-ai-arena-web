@@ -437,12 +437,56 @@ html, body, #app {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
   gap: 6px 12px;
-  margin-top: 12px;
+  margin-top: 10px;
   padding: 10px 12px;
   border-radius: 11px;
   background: rgba(255, 255, 255, 0.045);
   font-size: 12px;
   color: #cbd7f0;
+}
+
+.cliff-guard-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  padding: 8px 12px;
+  border-radius: 11px;
+  background: rgba(61, 126, 255, 0.09);
+  border: 1px solid rgba(102, 163, 255, 0.24);
+  transition: opacity 0.16s ease, border-color 0.16s ease;
+}
+
+.cliff-guard-bar.is-spectate {
+  opacity: 0.72;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.cg-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.cg-title {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #eef4ff;
+}
+
+.cg-desc {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cg-switch {
+  flex-shrink: 0;
 }
 
 kbd {

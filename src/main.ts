@@ -163,6 +163,12 @@ async function bootstrap() {
       startRenderLoop();
       return uncappedRender;
     },
+    onToggleCliffGuard: () => {
+      const next = !input.isCliffGuard();
+      input.setCliffGuard(next);
+      lobbyUI.setCliffGuard(next);
+      return next;
+    },
   });
   renderer.setNameplateLayer(hudUI.nameplateLayer);
 

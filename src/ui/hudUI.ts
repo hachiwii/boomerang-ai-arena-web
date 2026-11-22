@@ -6,6 +6,7 @@ export interface HudCallbacks {
   onReturnToLobby: (tab?: 'play' | 'leaderboard') => void;
   onToggleMute: () => boolean;
   onToggleUncap: () => boolean;
+  onToggleCliffGuard: () => boolean;
 }
 
 function causeLabel(cause: number, killerName?: string): string {
@@ -45,6 +46,7 @@ export class HudUI {
   private humanSeat = -1;
   private muted = false;
   private uncapped = true;
+  private cliffGuard = true;
   private autoReturnTimer: number | null = null;
   private countdownInterval: number | null = null;
 
@@ -125,6 +127,7 @@ export class HudUI {
     this.clearTimers();
     this.slots = config.slots;
     this.humanSeat = humanSeat;
+    this.cliffGuard = config.cliffGuard;
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
@@ -158,6 +161,11 @@ export class HudUI {
 
       <div class="hud-actions">
         <div class="hud-perf" id="hud-perf">20Hz · --Hz</div>
+        ${
+          humanSeat >= 0
+            ? `<button class="hud-btn ${this.cliffGuard ? 'active' : ''}" id="hud-cliff-guard" title="跌落防护：开启时人类不会走路坠崖，冲刺/塌陷/被踢不受影响">🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}</button>`
+            : ''
+        }
         <button class="hud-btn ${this.uncapped ? 'active' : ''}" id="hud-uncap" title="切换 VSync / 240Hz+ 解锁帧率">
           ${this.uncapped ? '240Hz+ 解锁' : '高刷 VSync'}
         </button>
@@ -183,6 +191,12 @@ export class HudUI {
     this.topBar.querySelector('#hud-mute')?.addEventListener('click', (e) => {
       this.muted = this.callbacks.onToggleMute();
       (e.currentTarget as HTMLButtonElement).textContent = this.muted ? '静音' : '音效开';
+    });
+    this.topBar.querySelector('#hud-cliff-guard')?.addEventListener('click', (e) => {
+      this.cliffGuard = this.callbacks.onToggleCliffGuard();
+      const btn = e.currentTarget as HTMLButtonElement;
+      btn.classList.toggle('active', this.cliffGuard);
+      btn.textContent = `🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}`;
     });
     this.topBar.querySelector('#hud-uncap')?.addEventListener('click', (e) => {
       this.uncapped = this.callbacks.onToggleUncap();

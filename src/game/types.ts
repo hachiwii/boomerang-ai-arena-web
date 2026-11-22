@@ -93,6 +93,7 @@ export interface MatchConfig {
   slots: SlotConfig[];
   seed: number;
   speed: number; // 0.1 .. 2.0 (scales 20Hz base logic tick rate to 2Hz .. 40Hz)
+  cliffGuard: boolean; // Prevent human from walking off cliffs (dash/collapse/kick unaffected)
 }
 
 export interface EngineMapData {

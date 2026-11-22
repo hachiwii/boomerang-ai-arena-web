@@ -160,6 +160,7 @@ export class LobbyUI {
   private selectedMapId: string;
   private drafts: DraftSlot[];
   private randomizeOrder = true;
+  private cliffGuard = true;
   private gameSpeed = 1.0;
   private openSlotIdx: number | null = null;
   private loadingMessage: string | null = null;
@@ -377,6 +378,10 @@ export class LobbyUI {
     return this.maps.find((m) => m.id === this.selectedMapId) || this.maps[0];
   }
 
+  public setCliffGuard(enabled: boolean) {
+    this.cliffGuard = enabled;
+  }
+
   private hasHuman(): boolean {
     return this.drafts.some((d) => d.kind === 'human');
   }
@@ -455,6 +460,7 @@ export class LobbyUI {
       slots,
       seed,
       speed: this.gameSpeed,
+      cliffGuard: this.cliffGuard,
     });
   }
 
@@ -625,6 +631,24 @@ export class LobbyUI {
                 .join('')}
             </div>
 
+            <div class="cliff-guard-bar ${isHumanPlaying ? '' : 'is-spectate'}">
+              <div class="cg-meta">
+                <span class="cg-title">🛡️ 跌落防护</span>
+                <span class="cg-desc">${isHumanPlaying ? '防走路坠崖 · 冲刺/塌陷/被踢不受影响' : '仅真人参战生效 · 防走路坠崖'}</span>
+              </div>
+              <button
+                type="button"
+                class="rand-switch cg-switch ${this.cliffGuard ? 'is-on' : ''}"
+                id="btn-toggle-cliff-guard"
+                role="switch"
+                aria-checked="${this.cliffGuard}"
+                title="开启时人类不会走路坠崖，冲刺、平台塌陷、被踢不受影响"
+              >
+                <span class="rand-track"><span class="rand-thumb"></span></span>
+                <span class="rand-label">${this.cliffGuard ? '已开启' : '已关闭'}</span>
+              </button>
+            </div>
+
             <div class="controls-legend">
               <div><kbd>WASD</kbd> 移动</div>
               <div><kbd>左键</kbd> 向鼠标扔镖 / <kbd>长按</kbd> 召回</div>
@@ -689,6 +713,11 @@ export class LobbyUI {
 
     this.container.querySelector('#btn-toggle-random')?.addEventListener('click', () => {
       this.randomizeOrder = !this.randomizeOrder;
+      this.render();
+    });
+
+    this.container.querySelector('#btn-toggle-cliff-guard')?.addEventListener('click', () => {
+      this.cliffGuard = !this.cliffGuard;
       this.render();
     });
 

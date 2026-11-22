@@ -1,4 +1,5 @@
-import { ActType, DState, HumanAction, PState, TickSnapshot } from './types';
+import { applyCliffGuard } from './cliffGuard';
+import { ActType, DState, EngineMapData, HumanAction, PState, TickSnapshot } from './types';
 
 /**
  * Human input controller:
@@ -39,11 +40,25 @@ export class HumanInputController {
 
   private bufferMs = 140;
   private recallHoldDelayMs = 160;
+  private mapData: EngineMapData | null = null;
+  private cliffGuard = true;
   private canvas: HTMLCanvasElement;
 
   constructor(canvas: HTMLCanvasElement) {
     this.canvas = canvas;
     this.bindEvents();
+  }
+
+  public setMapData(mapData: EngineMapData | null) {
+    this.mapData = mapData;
+  }
+
+  public setCliffGuard(enabled: boolean) {
+    this.cliffGuard = enabled;
+  }
+
+  public isCliffGuard(): boolean {
+    return this.cliffGuard;
   }
 
   public setTickIntervalMs(tickMs: number) {
@@ -181,6 +196,14 @@ export class HumanInputController {
    * Sample human action at the exact 20Hz logic tick boundary.
    */
   public sampleAction(state: TickSnapshot | null, seat: number): HumanAction {
+    const raw = this.sampleRawAction(state, seat);
+    if (this.cliffGuard && this.mapData && state && this.inputMode === 'active') {
+      return applyCliffGuard(this.mapData, state, seat, raw);
+    }
+    return raw;
+  }
+
+  private sampleRawAction(state: TickSnapshot | null, seat: number): HumanAction {
     if (this.inputMode !== 'active' || !state || seat < 0 || seat >= state.n) {
       return { mx: 0, my: 0, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
