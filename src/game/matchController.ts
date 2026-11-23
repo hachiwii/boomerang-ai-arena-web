@@ -133,6 +133,7 @@ export class MatchController {
       nPlayers: config.slots.length,
       seed: config.seed,
       botSeats: this.botSeats,
+      humanSeat: this.humanSeat,
     });
     if (this.stopped) return;
 

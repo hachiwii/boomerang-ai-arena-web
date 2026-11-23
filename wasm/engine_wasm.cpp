@@ -88,6 +88,13 @@ int engine_init(const char* map_text, int n_players, unsigned int seed) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void engine_set_human_seat(int seat) {
+    if (g_game) {
+        g_game->human_slash_seat = seat;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
 const char* engine_get_header(int seat) {
     if (!g_game || seat < 0 || seat >= g_game->n) {
         g_ret_buf.clear();

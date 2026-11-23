@@ -928,6 +928,8 @@ struct Player {
     i64 mvx = 0, mvy = 0;    // 这一步的移动意图
     i64 retired = 0;         // 程序已被结束（之后动作一律为 0）
     i64 unknown = 0;         // 只在选手的模拟里：位置未知（看不见），不参与模拟
+    i64 slash_win = 0;       // 人类挥砍多帧判定剩余步数（0 = 未激活；Bot 始终为 0）
+    i64 slash_win_hits = 0;  // 人类本次挥砍窗口内累计命中/格挡次数
     // 统计
     i64 n_throw = 0, n_slash = 0, n_kick = 0, n_dash = 0, n_recall = 0, n_catch = 0, n_pick = 0, n_drop = 0, n_block = 0, n_call_done = 0;
     i64 n_clash = 0, n_dash_melee = 0;
@@ -999,6 +1001,8 @@ struct Game {
     i64 t = 0;
     bool over = false;
     i64 winner = -2;         // 结束后：1v1 = 胜者座位，4v4 = 胜队，四人局 = 最后存活者；-1 = 平局 / 没人活；-2 = 未结束
+    int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的挥砍从按下起持续 human_slash_ticks 步判定（默认 4 步 = 原速 200ms）
+    i64 human_slash_ticks = 4;  // 原速 20Hz 下 200ms = 4 逻辑 tick（覆盖完整 2 步前摇 + 前 2 步后摇）
     bool record = false;
     std::vector<Event> events;
     std::shared_ptr<const Map> live;  // 当前步的地图（塌掉的是坑）；按塌了几波缓存
@@ -1214,6 +1218,8 @@ struct Game {
             if (d[k].st == D_RISE) { d[k].st = D_GROUND; d[k].left = 0; ev(EV_CANCEL, k); }
             P.st = S_FREE; P.timer = 0; P.ax = P.ay = 0;
         }
+        P.slash_win = 0;
+        P.slash_win_hits = 0;
         if (P.st != S_DASH && P.st != S_STUN) P.vx = P.vy = 0;
     }
 
@@ -1278,6 +1284,8 @@ struct Game {
             const bool slash = D.st == D_HAND;
             P.st = slash ? S_SLASH : S_KICK;
             P.timer = slash ? cf.slash_pre : cf.kick_pre;
+            P.slash_win = (slash && k == human_slash_seat) ? human_slash_ticks : 0;
+            P.slash_win_hits = 0;
             if (slash) ++P.n_slash; else ++P.n_kick;
             ev(slash ? EV_SLASH : EV_KICK, k, ux, uy);
         } else if (a.act == A_DASH) {
@@ -1444,19 +1452,66 @@ struct Game {
         bool blocked[MAXP] = {};
         int dret[MAXP] = {}, dcurve[MAXP] = {};  // 统计：被回程的镖打中 / 被拐过弯（累计转过 30 度以上）的回程镖打中
         // 两轮：先处理出镖、起跳、落地、召回完成等，再处理挥砍和踢的判定（这样同一步出手的镖也能被挡，和座位号无关）
-        bool fire[MAXP] = {}, fresh[MAXP] = {};
+        bool fire[MAXP] = {}, fresh[MAXP] = {}, human_slash_active[MAXP] = {};
         for (int pass = 0; pass < 2; ++pass)
         for (int k = 0; k < n; ++k) {
             Player& P = p[k];
             if (pass == 0) {
                 if (!P.alive || P.unknown || P.st == S_FREE) continue;
                 if (P.st == S_RECALL && d[k].st == D_RISE) d[k].left = P.timer - 1;
+                if (P.slash_win > 0 && (P.st == S_SLASH || P.st == S_SLASHED)) {
+                    human_slash_active[k] = true;
+                }
                 if (--P.timer > 0) continue;
                 if (P.st == S_SLASH || P.st == S_KICK) {
                     fire[k] = true;
                     continue;
                 }
-            } else if (!fire[k]) {
+            } else if (!fire[k] && !human_slash_active[k]) {
+                continue;
+            }
+            if (pass == 1 && human_slash_active[k]) {
+                const bool first_tick = (P.slash_win == human_slash_ticks);
+                int nh = 0;
+                for (int q = 0; q < n; ++q) {
+                    if (q == k || !p[q].alive || p[q].unknown) continue;
+                    const i64 dx = p[q].x - P.x, dy = p[q].y - P.y;
+                    const i64 dd = dx * dx + dy * dy;
+                    if (dd > cf.slash_reach * cf.slash_reach) continue;
+                    const i64 dl = isqrt(dd);
+                    if (dl > cf.body_r) {
+                        if ((dx * P.ax + dy * P.ay) * 1000 < cf.slash_cos * dl * UNIT) continue;
+                    }
+                    if (wall_between(m, P.x, P.y, p[q].x, p[q].y)) continue;
+                    ++nh;
+                    kill(q, K_SLASH, k, 0);
+                    ev(EV_CUT, k, q);
+                }
+                if (cf.block) {
+                    for (int j = 0; j < n; ++j) {
+                        if (j == k || blocked[j] || !dart_flying(d[j].st)) continue;
+                        const i64 dx = d[j].x - P.x, dy = d[j].y - P.y;
+                        const i64 dd = dx * dx + dy * dy;
+                        if (dd > cf.slash_reach * cf.slash_reach) continue;
+                        const i64 dl = isqrt(dd);
+                        if (dl > 0 && (dx * P.ax + dy * P.ay) * 1000 < cf.block_cos * dl * UNIT) continue;
+                        if (wall_between(m, P.x, P.y, d[j].x, d[j].y)) continue;
+                        blocked[j] = true;
+                        ++nh;
+                        ++P.n_block;
+                        ev(EV_BLOCK, k, j, d[j].x, d[j].y);
+                    }
+                }
+                P.slash_win_hits += nh;
+                --P.slash_win;
+                if (first_tick) {
+                    ev(EV_SWING, k, 1, nh);
+                }
+                if (fire[k] && P.st == S_SLASH) {
+                    i64 post = cf.slash_post;
+                    if (P.slash_win_hits == 0 && cf.slash_miss >= 0) post = cf.slash_miss;
+                    set_state(P, S_SLASHED, post);
+                }
                 continue;
             }
             switch (P.st) {
@@ -1727,6 +1782,8 @@ struct Game {
             Q.st = S_STUN;
             Q.dashing = 0;
             Q.dash_pit = 0;
+            Q.slash_win = 0;
+            Q.slash_win_hits = 0;
             Q.timer = cf.kick_stun;
             Q.vx = kick_vx[q];
             Q.vy = kick_vy[q];
@@ -1773,6 +1830,8 @@ struct Game {
             P.alive = 0;
             P.st = S_DEAD;
             P.timer = 0;
+            P.slash_win = 0;
+            P.slash_win_hits = 0;
             P.vx = P.vy = 0;
             P.ax = P.ay = 0;
             P.cd = 0;

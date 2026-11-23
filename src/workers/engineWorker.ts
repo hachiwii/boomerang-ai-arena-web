@@ -1,10 +1,11 @@
 /// <reference lib="webworker" />
 
 interface EngineWasmModule {
-  cwrap: (name: string, ret: string, args: string[]) => (...params: unknown[]) => unknown;
+  cwrap: (name: string, ret: string | null, args: string[]) => (...params: unknown[]) => unknown;
 }
 
 let engineInit: ((mapText: string, nPlayers: number, seed: number) => number) | null = null;
+let engineSetHumanSeat: ((seat: number) => void) | null = null;
 let engineLastErr: (() => string) | null = null;
 let engineGetHeader: ((seat: number) => string) | null = null;
 let engineGetObs: ((seat: number) => string) | null = null;
@@ -23,6 +24,7 @@ async function ensureLoaded(origin: string) {
     printErr: () => {},
   });
   engineInit = mod.cwrap('engine_init', 'number', ['string', 'number', 'number']) as (m: string, n: number, s: number) => number;
+  engineSetHumanSeat = mod.cwrap('engine_set_human_seat', null, ['number']) as (s: number) => void;
   engineLastErr = mod.cwrap('engine_last_error', 'string', []) as () => string;
   engineGetHeader = mod.cwrap('engine_get_header', 'string', ['number']) as (s: number) => string;
   engineGetObs = mod.cwrap('engine_get_obs', 'string', ['number']) as (s: number) => string;
@@ -35,13 +37,14 @@ self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      const { reqId, origin, mapText, nPlayers, seed, botSeats } = msg as {
+      const { reqId, origin, mapText, nPlayers, seed, botSeats, humanSeat } = msg as {
         reqId: number;
         origin: string;
         mapText: string;
         nPlayers: number;
         seed: number;
         botSeats: number[];
+        humanSeat?: number;
       };
       await ensureLoaded(origin);
       const ok = engineInit!(mapText, nPlayers, seed);
@@ -49,6 +52,7 @@ self.onmessage = async (ev: MessageEvent) => {
         self.postMessage({ type: 'error', reqId, error: engineLastErr!() });
         return;
       }
+      engineSetHumanSeat!(typeof humanSeat === 'number' ? humanSeat : -1);
       const mapData = JSON.parse(engineGetMapJson!());
       const state = JSON.parse(engineGetStateJson!());
       const headers: Record<number, string> = {};

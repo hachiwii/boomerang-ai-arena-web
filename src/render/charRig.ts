@@ -442,7 +442,7 @@ export class CharacterRig {
       posY += 0.04 * bump(r * 2);
     }
 
-    if (currP.st === PState.SLASH) {
+    if (currP.st === PState.SLASH && gt - this.lastSlashTick >= 5.0) {
       lean = -0.12;
       twist = 1.05;
       sy = 0.9;
