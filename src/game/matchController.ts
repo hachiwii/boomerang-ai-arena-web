@@ -285,17 +285,19 @@ export class MatchController {
 
       this.input.reset();
       this.input.setInputMode('off');
-      this.callbacks.onCountdown?.(null);
 
       if (allTicks.length <= 1) {
+        this.callbacks.onCountdown?.(null);
         this.running = false;
         this.callbacks.onMatchOver(allTicks[0], this.cinematicDirector);
         return;
       }
 
-      this.running = true;
-      this.nextTickDeadline = performance.now() + 450;
-      this.scheduleNextTick();
+      this.startPreMatchCountdown(() => {
+        this.running = true;
+        this.nextTickDeadline = performance.now();
+        this.scheduleNextTick();
+      });
       return;
     }
 
@@ -311,44 +313,43 @@ export class MatchController {
     this.input.setTickIntervalMs(this.tickIntervalMs);
     this.dispatchBots(initialObs);
 
-    if (this.humanSeat >= 0) {
-      // Human match: 3-second real-time pre-match countdown (3 -> 2 -> 1 -> GO!)
-      this.input.setInputMode('countdown');
-      this.clearCountdownTimers();
-      this.callbacks.onCountdown?.(3);
-
-      const scheduleStep = (delayMs: number, fn: () => void) => {
-        const h = window.setTimeout(() => {
-          if (this.stopped) return;
-          fn();
-        }, delayMs);
-        this.countdownTimers.push(h);
-      };
-
-      scheduleStep(1000, () => {
-        this.callbacks.onCountdown?.(2);
-      });
-      scheduleStep(2000, () => {
-        this.callbacks.onCountdown?.(1);
-      });
-      scheduleStep(3000, () => {
+    // 3-second real-time pre-match countdown (3 -> 2 -> 1 -> GO!) for both human & pure-AI matches
+    this.input.setInputMode(this.humanSeat >= 0 ? 'countdown' : 'off');
+    this.startPreMatchCountdown(() => {
+      if (this.humanSeat >= 0) {
         this.input.setInputMode('active');
-        this.callbacks.onCountdown?.('GO');
-        this.running = true;
-        this.nextTickDeadline = performance.now();
-        this.scheduleNextTick();
-      });
-      scheduleStep(3550, () => {
-        this.callbacks.onCountdown?.(null);
-      });
-    } else {
-      // Pure AI spectator match: brief 450ms pause without 3-second countdown
-      this.input.setInputMode('off');
-      this.callbacks.onCountdown?.(null);
+      }
       this.running = true;
-      this.nextTickDeadline = performance.now() + 450;
+      this.nextTickDeadline = performance.now();
       this.scheduleNextTick();
-    }
+    });
+  }
+
+  private startPreMatchCountdown(onGo: () => void) {
+    this.clearCountdownTimers();
+    this.callbacks.onCountdown?.(3);
+
+    const scheduleStep = (delayMs: number, fn: () => void) => {
+      const h = window.setTimeout(() => {
+        if (this.stopped) return;
+        fn();
+      }, delayMs);
+      this.countdownTimers.push(h);
+    };
+
+    scheduleStep(1000, () => {
+      this.callbacks.onCountdown?.(2);
+    });
+    scheduleStep(2000, () => {
+      this.callbacks.onCountdown?.(1);
+    });
+    scheduleStep(3000, () => {
+      this.callbacks.onCountdown?.('GO');
+      onGo();
+    });
+    scheduleStep(3550, () => {
+      this.callbacks.onCountdown?.(null);
+    });
   }
 
   private clearCountdownTimers() {

@@ -4,7 +4,7 @@ import { CricketStore } from './game/cricketStore';
 import { HumanInputController } from './game/humanInput';
 import { CinematicDirector } from './game/killCamDirector';
 import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
-import { MatchController } from './game/matchController';
+import { CountdownStage, MatchController } from './game/matchController';
 import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
@@ -213,6 +213,7 @@ async function bootstrap() {
           cfg.speed,
           getCinematicOptions(settings.get()),
           simComplete,
+          { countdown: true },
         );
         if (simComplete && activeConfig === cfg) {
           persistCompleteBundle();
@@ -563,6 +564,16 @@ async function bootstrap() {
   });
   renderer.setNameplateLayer(hudUI.nameplateLayer);
 
+  const handleCountdown = (stage: CountdownStage) => {
+    hudUI.setCountdown(stage);
+    renderer.setCountdownStage(stage);
+    if (stage === 3 || stage === 2 || stage === 1) {
+      sfx.playCountdownTick(stage);
+    } else if (stage === 'GO') {
+      sfx.playCountdownGo();
+    }
+  };
+
   replayController = new ReplayController(renderer, {
     onLoaded: (bundle, state) => {
       hudUI.showReplay(bundle, state, { liveAiSpectator: replayIsLiveAi });
@@ -582,6 +593,7 @@ async function bootstrap() {
     onTimelineExtended: (bundle, state) => {
       hudUI.updateReplayTimeline(bundle, state);
     },
+    onCountdown: handleCountdown,
   });
 
   historyModal = new HistoryModal(matchHistory, settings, {
@@ -616,15 +628,7 @@ async function bootstrap() {
     onStatus: (msg) => {
       if (mode === 'lobby') lobbyUI.setLoading(msg);
     },
-    onCountdown: (stage) => {
-      hudUI.setCountdown(stage);
-      renderer.setCountdownStage(stage);
-      if (stage === 3 || stage === 2 || stage === 1) {
-        sfx.playCountdownTick(stage);
-      } else if (stage === 'GO') {
-        sfx.playCountdownGo();
-      }
-    },
+    onCountdown: handleCountdown,
     onMapLoaded: async (mapData, initialState, director) => {
       if (!activeConfig) return;
       activeMapData = mapData;
