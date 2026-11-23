@@ -118,6 +118,13 @@ async function bootstrap() {
     onTestSound: () => {
       sfx.playCatch();
     },
+    onResetConfig: () => {
+      lobbyUI.resetLobbyConfig();
+    },
+    onResetRanked: () => {
+      leaderboard.resetRankedAll();
+      lobbyUI.refreshFromStores();
+    },
   });
 
   const clearMatchOverTimer = () => {

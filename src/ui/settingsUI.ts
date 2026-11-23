@@ -21,17 +21,28 @@ interface CaptureTarget {
   slotIndex: 0 | 1;
 }
 
+type SettingsConfirmKind = 'config' | 'ranked';
+
 export class SettingsModal {
   private readonly store: SettingsStore;
   private readonly backdrop: HTMLDivElement;
   private readonly card: HTMLDivElement;
   private readonly body: HTMLDivElement;
+  private readonly confirmBackdrop: HTMLDivElement;
+  private readonly confirmTitleEl: HTMLElement;
+  private readonly confirmDescEl: HTMLElement;
+  private readonly confirmOkBtn: HTMLButtonElement;
   private openState = false;
   private capturing: CaptureTarget | null = null;
+  private confirmKind: SettingsConfirmKind | null = null;
   private noticeText: string | null = null;
   private noticeTimer: number | null = null;
+  private dangerNoticeText: string | null = null;
+  private dangerNoticeTimer: number | null = null;
   private onOpenChange?: (open: boolean) => void;
   private onTestSound?: () => void;
+  private onResetConfig?: () => void;
+  private onResetRanked?: () => void;
   private suppressClickUntil = 0;
 
   private readonly handleCaptureKeyDown: (e: KeyboardEvent) => void;
@@ -43,11 +54,15 @@ export class SettingsModal {
     callbacks: {
       onOpenChange?: (open: boolean) => void;
       onTestSound?: () => void;
+      onResetConfig?: () => void;
+      onResetRanked?: () => void;
     } = {},
   ) {
     this.store = store;
     this.onOpenChange = callbacks.onOpenChange;
     this.onTestSound = callbacks.onTestSound;
+    this.onResetConfig = callbacks.onResetConfig;
+    this.onResetRanked = callbacks.onResetRanked;
 
     this.backdrop = document.createElement('div');
     this.backdrop.className = 'settings-backdrop hidden';
@@ -68,9 +83,40 @@ export class SettingsModal {
     this.backdrop.appendChild(this.card);
     document.body.appendChild(this.backdrop);
 
+    // Secondary confirmation modal portal (mounted above Settings backdrop)
+    this.confirmBackdrop = document.createElement('div');
+    this.confirmBackdrop.className = 'settings-confirm-backdrop hidden';
+    this.confirmBackdrop.innerHTML = `
+      <div class="settings-confirm-card" role="alertdialog" aria-modal="true" aria-labelledby="settings-confirm-title">
+        <div class="sc-icon" aria-hidden="true">⚠️</div>
+        <h3 class="sc-title" id="settings-confirm-title"></h3>
+        <p class="sc-desc" id="settings-confirm-desc"></p>
+        <div class="sc-actions">
+          <button type="button" class="sc-cancel-btn" id="settings-confirm-cancel">取消</button>
+          <button type="button" class="settings-danger-btn sc-ok-btn" id="settings-confirm-ok">确认</button>
+        </div>
+      </div>
+    `;
+    this.confirmTitleEl = this.confirmBackdrop.querySelector<HTMLElement>('#settings-confirm-title')!;
+    this.confirmDescEl = this.confirmBackdrop.querySelector<HTMLElement>('#settings-confirm-desc')!;
+    this.confirmOkBtn = this.confirmBackdrop.querySelector<HTMLButtonElement>('#settings-confirm-ok')!;
+    document.body.appendChild(this.confirmBackdrop);
+
+    this.confirmBackdrop.addEventListener('click', (e) => {
+      if (e.target === this.confirmBackdrop) {
+        this.closeConfirmDialog();
+      }
+    });
+    this.confirmBackdrop.querySelector('#settings-confirm-cancel')?.addEventListener('click', () => {
+      this.closeConfirmDialog();
+    });
+    this.confirmOkBtn.addEventListener('click', () => {
+      this.executeConfirmedReset();
+    });
+
     // Backdrop click & header close button bound ONCE on persistent shell (never flickers!)
     this.backdrop.addEventListener('click', (e) => {
-      if (e.target === this.backdrop && !this.capturing) {
+      if (e.target === this.backdrop && !this.capturing && !this.confirmKind) {
         this.close();
       }
     });
@@ -80,6 +126,14 @@ export class SettingsModal {
 
     this.handleCaptureKeyDown = (e: KeyboardEvent) => {
       if (!this.openState) return;
+      if (this.confirmKind) {
+        if (e.code === 'Escape') {
+          e.preventDefault();
+          e.stopPropagation();
+          this.closeConfirmDialog();
+        }
+        return;
+      }
       if (this.capturing) {
         e.preventDefault();
         e.stopPropagation();
@@ -136,6 +190,8 @@ export class SettingsModal {
     this.openState = true;
     this.capturing = null;
     this.noticeText = null;
+    this.dangerNoticeText = null;
+    this.closeConfirmDialog();
     this.render();
     this.backdrop.classList.remove('hidden');
     this.body.scrollTop = 0;
@@ -146,8 +202,68 @@ export class SettingsModal {
     if (!this.openState) return;
     this.openState = false;
     this.capturing = null;
+    this.closeConfirmDialog();
     this.backdrop.classList.add('hidden');
     this.onOpenChange?.(false);
+  }
+
+  private openConfirmDialog(kind: SettingsConfirmKind) {
+    this.confirmKind = kind;
+    if (kind === 'config') {
+      this.confirmTitleEl.textContent = '确认重置配置？';
+      this.confirmDescEl.textContent =
+        '将把设置页与主界面中的所有选项恢复为默认值（含音效、画质、辅助功能、键位、导出设置、排位与斗蛐蛐图池、斗蛐蛐分组与自定义阵容），不会清除排位分数、历史最高分及对局历史。';
+      this.confirmOkBtn.textContent = '确认重置配置';
+    } else {
+      this.confirmTitleEl.textContent = '确认重置排位分数？';
+      this.confirmDescEl.textContent =
+        '将重置 SOLO 与四人混战的当前 ELO 分数（恢复至 500）、清空所有排位统计数据，并清空历史最高 ELO 与最高名次。此操作不可撤销。';
+      this.confirmOkBtn.textContent = '确认重置排位分数';
+    }
+    this.confirmBackdrop.classList.remove('hidden');
+  }
+
+  private closeConfirmDialog() {
+    this.confirmKind = null;
+    this.confirmBackdrop.classList.add('hidden');
+  }
+
+  private showDangerNotice(msg: string) {
+    this.dangerNoticeText = msg;
+    if (this.dangerNoticeTimer !== null) window.clearTimeout(this.dangerNoticeTimer);
+    this.dangerNoticeTimer = window.setTimeout(() => {
+      this.dangerNoticeText = null;
+      this.dangerNoticeTimer = null;
+      this.syncDangerNoticeInPlace();
+    }, 3600);
+    this.syncDangerNoticeInPlace();
+  }
+
+  private syncDangerNoticeInPlace() {
+    const el = this.body.querySelector<HTMLElement>('#settings-danger-notice');
+    if (!el) return;
+    if (this.dangerNoticeText) {
+      el.textContent = this.dangerNoticeText;
+      el.classList.remove('hidden');
+    } else {
+      el.textContent = '';
+      el.classList.add('hidden');
+    }
+  }
+
+  private executeConfirmedReset() {
+    const kind = this.confirmKind;
+    this.closeConfirmDialog();
+    if (kind === 'config') {
+      this.capturing = null;
+      this.store.resetAll();
+      this.onResetConfig?.();
+      this.render();
+      this.showDangerNotice('✅ 已重置主界面与设置页的全部配置');
+    } else if (kind === 'ranked') {
+      this.onResetRanked?.();
+      this.showDangerNotice('✅ 已重置排位 ELO 分数、统计数据与历史最高记录');
+    }
   }
 
   private showNotice(msg: string) {
@@ -523,6 +639,29 @@ export class SettingsModal {
               ).join('')}
             </div>
           </section>
+
+          <!-- Danger / Reset Section -->
+          <section class="settings-section settings-danger-section">
+            <div class="settings-sec-title">⚠️ 重置选项与数据</div>
+            <div class="settings-danger-notice ${this.dangerNoticeText ? '' : 'hidden'}" id="settings-danger-notice">${this.dangerNoticeText || ''}</div>
+            <div class="settings-toggle-stack">
+              <div class="settings-toggle-row settings-danger-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">重置配置</div>
+                  <div class="settings-toggle-desc">恢复主界面与设置页中的全部选项（含图池、斗蛐蛐分组、自定义阵容与键位）</div>
+                </div>
+                <button type="button" class="settings-danger-btn" id="settings-reset-config-btn">重置配置</button>
+              </div>
+
+              <div class="settings-toggle-row settings-danger-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">重置排位分数</div>
+                  <div class="settings-toggle-desc">重置 ELO 分数与排位统计数据，并清空历史最高分数与名次</div>
+                </div>
+                <button type="button" class="settings-danger-btn" id="settings-reset-ranked-btn">重置排位分数</button>
+              </div>
+            </div>
+          </section>
     `;
     this.body.scrollTop = prevScrollTop;
 
@@ -642,6 +781,14 @@ export class SettingsModal {
       this.store.resetKeybindings();
       this.showNotice('已恢复默认键位');
       this.render();
+    });
+
+    // Bottom danger reset buttons (each opens secondary confirmation dialog)
+    this.body.querySelector('#settings-reset-config-btn')?.addEventListener('click', () => {
+      this.openConfirmDialog('config');
+    });
+    this.body.querySelector('#settings-reset-ranked-btn')?.addEventListener('click', () => {
+      this.openConfirmDialog('ranked');
     });
   }
 }

@@ -407,6 +407,51 @@ export class LobbyUI {
   }
 
   /**
+   * Refresh Lobby / Leaderboard UI in place after external store mutations (e.g. Settings -> 重置排位分数).
+   */
+  public refreshFromStores() {
+    this.syncMapPoolModal();
+    if (!this.container.classList.contains('hidden')) {
+      this.render();
+    }
+  }
+
+  /**
+   * Reset all Lobby configuration options (Ranked map pools, recent map history, Cricket format/map pool/bot tiers,
+   * and Custom map/speed/lineup/random switches) back to factory defaults without touching ELO, stats, or match history.
+   */
+  public resetLobbyConfig() {
+    this.rankedMode = 'solo';
+    this.rankedMapPools = {
+      solo: new Set(this.maps.map((m) => m.id)),
+      ffa: new Set(this.maps.map((m) => m.id)),
+    };
+    this.saveMapPools();
+    this.recentMapIds = [];
+    this.saveRecentMaps();
+
+    this.cricket.resetConfigOnly();
+
+    this.selectedMapId = this.maps[0]?.id || 'twinlakes';
+    this.randomMap = false;
+    this.drafts = [
+      { kind: 'human', botId: 'gpt-6.2-astra' },
+      { kind: 'bot', botId: 'gpt-6.2-astra' },
+      { kind: 'bot', botId: 'claude-fable-5.2' },
+      { kind: 'bot', botId: 'gemini-4-carbon' },
+    ];
+    this.randomizeOrder = true;
+    this.gameSpeed = 1.0;
+
+    this.closeDropdown();
+    this.syncMapPoolModal();
+    if (!this.container.classList.contains('hidden')) {
+      this.render();
+      this.callbacks.onSelectMap(this.getSelectedMap());
+    }
+  }
+
+  /**
    * Build a fresh Ranked match config using the player's LATEST Elo score,
    * nearest 4 (SOLO) / 6 (FFA) ranked opponents, and the mode's saved map pool
    * (with recent-3-map exclusion when pool > 3).
@@ -921,6 +966,7 @@ export class LobbyUI {
     const mode = this.rankedMode;
     const elo = this.leaderboard.getHumanRating(mode);
     const rk = this.leaderboard.getHumanRank(mode);
+    const peak = this.leaderboard.getHumanPeak(mode);
     const poolCount = this.getRankedPoolMaps(mode).length;
     const modeLabel = mode === 'solo' ? 'SOLO' : '四人混战';
 
@@ -948,11 +994,13 @@ export class LobbyUI {
             <div class="rh-metric">
               <div class="rh-metric-label">当前 ELO</div>
               <div class="rh-elo-num" id="ranked-elo-val">${elo}</div>
+              <div class="rh-rank-sub" id="ranked-rank-val">当前名次 <strong>#${rk.rank}</strong><span> / ${rk.total}</span></div>
             </div>
             <div class="rh-divider"></div>
             <div class="rh-metric">
-              <div class="rh-metric-label">当前名次</div>
-              <div class="rh-rank-num" id="ranked-rank-val">#${rk.rank}<span> / ${rk.total}</span></div>
+              <div class="rh-metric-label">历史最高 ELO</div>
+              <div class="rh-elo-num rh-peak-num" id="ranked-peak-elo-val">${peak.rating}</div>
+              <div class="rh-rank-sub" id="ranked-peak-rank-val">最高名次 <strong>#${peak.rank}</strong><span> / ${peak.total}</span></div>
             </div>
           </div>
         </button>
@@ -1570,7 +1618,12 @@ export class LobbyUI {
           if (eloEl) eloEl.textContent = String(this.leaderboard.getHumanRating(next));
           const rk = this.leaderboard.getHumanRank(next);
           const rkEl = this.container.querySelector<HTMLElement>('#ranked-rank-val');
-          if (rkEl) rkEl.innerHTML = `#${rk.rank}<span> / ${rk.total}</span>`;
+          if (rkEl) rkEl.innerHTML = `当前名次 <strong>#${rk.rank}</strong><span> / ${rk.total}</span>`;
+          const peak = this.leaderboard.getHumanPeak(next);
+          const peakEloEl = this.container.querySelector<HTMLElement>('#ranked-peak-elo-val');
+          if (peakEloEl) peakEloEl.textContent = String(peak.rating);
+          const peakRkEl = this.container.querySelector<HTMLElement>('#ranked-peak-rank-val');
+          if (peakRkEl) peakRkEl.innerHTML = `最高名次 <strong>#${peak.rank}</strong><span> / ${peak.total}</span>`;
           this.syncLobbyMapPoolCount();
         });
       });

@@ -314,4 +314,14 @@ export class CricketStore {
     this.state.stats = {};
     this.save();
   }
+
+  /** Resets Cricket configuration (format, map pool, bot tiers) to defaults while preserving recorded bot stats. */
+  public resetConfigOnly() {
+    const def = this.defaultState();
+    this.state = {
+      ...def,
+      stats: this.state.stats,
+    };
+    this.save();
+  }
 }

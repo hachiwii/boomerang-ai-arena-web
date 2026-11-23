@@ -124,6 +124,7 @@ export class LeaderboardPanel {
       `<th class="lb-sortable ${this.sortBy === field ? 'active' : ''}" data-sort="${field}">${label}${this.sortBy === field ? ' ↓' : ''}</th>`;
 
     const wrLabel = this.mode === 'solo' ? 'SOLO 胜率' : '混战胜率';
+    const peak = this.store.getHumanPeak(this.mode);
 
     container.innerHTML = `
       <div class="lb-wrap">
@@ -134,13 +135,19 @@ export class LeaderboardPanel {
               <button type="button" class="lb-mode-btn ${this.mode === 'solo' ? 'active' : ''}" data-lb-mode="solo">⚔️ SOLO 榜</button>
               <button type="button" class="lb-mode-btn ${this.mode === 'ffa' ? 'active' : ''}" data-lb-mode="ffa">👑 四人混战榜</button>
             </div>
+            <div class="lb-peak-pill" id="lb-peak-pill" title="当前模式历史最高 ELO 与对应名次">
+              <span class="lb-peak-label">🏅 历史最高 ELO</span>
+              <strong class="lb-peak-elo">${peak.rating}</strong>
+              <span class="lb-peak-sep">·</span>
+              <span class="lb-peak-rank">#${peak.rank}<span> / ${peak.total}</span></span>
+            </div>
           </div>
           <div class="lb-toolbar-btns">
             ${
               this.confirmReset
-                ? `<button class="lb-reset-btn confirm" id="lb-reset-confirm">确认重置全部数据？</button>
+                ? `<button class="lb-reset-btn confirm" id="lb-reset-confirm">确认重置统计数据？</button>
                    <button class="lb-tool-btn" id="lb-reset-cancel">取消</button>`
-                : `<button class="lb-reset-btn" id="lb-reset-btn">重置所有数据（保留 Bot 分数）</button>`
+                : `<button class="lb-reset-btn" id="lb-reset-btn">重置统计数据（保留分数）</button>`
             }
           </div>
         </div>
@@ -242,8 +249,8 @@ export class LeaderboardPanel {
     container.querySelector('#lb-reset-confirm')?.addEventListener('click', () => {
       this.confirmReset = false;
       if (this.confirmTimer !== null) window.clearTimeout(this.confirmTimer);
-      this.store.resetAllStats();
-      this.toastText = '已重置所有战绩并将 SOLO / 混战玩家分数恢复至 500（Bot 分数已保留）';
+      this.store.resetStatsOnly();
+      this.toastText = '已清空所有胜率与 KD 统计数据（当前及历史最高 ELO 分数已保留）';
       if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
       this.toastTimer = window.setTimeout(() => {
         this.toastText = null;

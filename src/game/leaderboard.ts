@@ -54,6 +54,8 @@ interface StoredLeaderboardV2 {
   version: 2;
   humanSoloRating: number;
   humanFfaRating: number;
+  humanSoloPeakRating?: number;
+  humanFfaPeakRating?: number;
   soloStats: Record<string, ModeStats>;
   ffaStats: Record<string, ModeStats>;
 }
@@ -129,6 +131,10 @@ export class LeaderboardStore {
     solo: INITIAL_HUMAN_ELO,
     ffa: INITIAL_HUMAN_ELO,
   };
+  private humanPeakRatings: Record<RankedMode, number> = {
+    solo: INITIAL_HUMAN_ELO,
+    ffa: INITIAL_HUMAN_ELO,
+  };
   private statsByMode: Record<RankedMode, Record<string, ModeStats>> = {
     solo: {},
     ffa: {},
@@ -152,6 +158,18 @@ export class LeaderboardStore {
       if (typeof parsed.humanFfaRating === 'number') {
         this.humanRatings.ffa = clampHumanElo(parsed.humanFfaRating);
       }
+      this.humanPeakRatings.solo = Math.max(
+        this.humanRatings.solo,
+        typeof parsed.humanSoloPeakRating === 'number'
+          ? clampHumanElo(parsed.humanSoloPeakRating)
+          : this.humanRatings.solo,
+      );
+      this.humanPeakRatings.ffa = Math.max(
+        this.humanRatings.ffa,
+        typeof parsed.humanFfaPeakRating === 'number'
+          ? clampHumanElo(parsed.humanFfaPeakRating)
+          : this.humanRatings.ffa,
+      );
       if (parsed.soloStats && typeof parsed.soloStats === 'object') {
         for (const [k, v] of Object.entries(parsed.soloStats)) {
           this.statsByMode.solo[k] = normalizeStats(v);
@@ -164,6 +182,7 @@ export class LeaderboardStore {
       }
     } catch {
       this.humanRatings = { solo: INITIAL_HUMAN_ELO, ffa: INITIAL_HUMAN_ELO };
+      this.humanPeakRatings = { solo: INITIAL_HUMAN_ELO, ffa: INITIAL_HUMAN_ELO };
       this.statsByMode = { solo: {}, ffa: {} };
     }
   }
@@ -173,6 +192,8 @@ export class LeaderboardStore {
       version: 2,
       humanSoloRating: this.humanRatings.solo,
       humanFfaRating: this.humanRatings.ffa,
+      humanSoloPeakRating: this.humanPeakRatings.solo,
+      humanFfaPeakRating: this.humanPeakRatings.ffa,
       soloStats: this.statsByMode.solo,
       ffaStats: this.statsByMode.ffa,
     };
@@ -185,6 +206,21 @@ export class LeaderboardStore {
 
   public getHumanRating(mode: RankedMode): number {
     return this.humanRatings[mode];
+  }
+
+  public getRankForRating(mode: RankedMode, rating: number): { rank: number; total: number } {
+    let above = 0;
+    for (const b of this.officialBots) {
+      const botRating = (mode === 'solo' ? b.duelRating : b.ffaRating) ?? b.rating ?? 1000;
+      if (botRating > rating) above++;
+    }
+    return { rank: above + 1, total: this.officialBots.length + 1 };
+  }
+
+  public getHumanPeak(mode: RankedMode): { rating: number; rank: number; total: number } {
+    const rating = Math.max(this.humanPeakRatings[mode], this.humanRatings[mode]);
+    const rk = this.getRankForRating(mode, rating);
+    return { rating, rank: rk.rank, total: rk.total };
   }
 
   public getBotFixedRating(botId: string, mode: RankedMode): number | null {
@@ -256,6 +292,9 @@ export class LeaderboardStore {
     const newRating = clampHumanElo(oldRating + adjustedDelta);
     const delta = newRating - oldRating;
     this.humanRatings[mode] = newRating;
+    if (newRating > this.humanPeakRatings[mode]) {
+      this.humanPeakRatings[mode] = newRating;
+    }
 
     const afterLadder = this.snapshotLadder(mode);
     const newHumanIdx = afterLadder.findIndex((r) => r.isHuman);
@@ -367,10 +406,20 @@ export class LeaderboardStore {
   }
 
   /**
-   * Reset ALL local stats & both SOLO/FFA human Elo ratings (back to 500). Bot scores remain fixed.
+   * Clear ALL ranked win-rate/KD statistics while preserving current ELO ratings AND historical peak ELO/rank.
    */
-  public resetAllStats() {
+  public resetStatsOnly() {
+    this.statsByMode = { solo: {}, ffa: {} };
+    this.save();
+  }
+
+  /**
+   * Full ranked reset (triggered ONLY from Settings -> 重置排位分数):
+   * resets both SOLO/FFA human ELO ratings back to 500, clears historical peak ELO/rank, and clears all stats.
+   */
+  public resetRankedAll() {
     this.humanRatings = { solo: INITIAL_HUMAN_ELO, ffa: INITIAL_HUMAN_ELO };
+    this.humanPeakRatings = { solo: INITIAL_HUMAN_ELO, ffa: INITIAL_HUMAN_ELO };
     this.statsByMode = { solo: {}, ffa: {} };
     this.save();
   }

@@ -2219,23 +2219,36 @@ kbd {
   color: transparent;
 }
 
-.rh-rank-num {
-  font-size: 40px;
-  font-weight: 900;
-  line-height: 1.05;
+.rh-elo-num.rh-peak-num {
+  background: linear-gradient(180deg, #fff6d6 10%, #ffd260 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+.rh-rank-sub {
+  margin-top: 6px;
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-dim);
   font-variant-numeric: tabular-nums;
+}
+
+.rh-rank-sub strong {
+  font-size: 14px;
+  font-weight: 900;
   color: #ffd670;
 }
 
-.rh-rank-num span {
-  font-size: 18px;
-  font-weight: 700;
-  color: var(--text-dim);
+.rh-rank-sub span {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(180, 198, 228, 0.68);
 }
 
 .rh-divider {
   width: 1px;
-  height: 54px;
+  height: 68px;
   background: rgba(255, 255, 255, 0.12);
 }
 
@@ -2336,6 +2349,46 @@ kbd {
 .lb-mode-btn.active {
   background: linear-gradient(135deg, #3d7eff 0%, #5a63ff 100%);
   color: #fff;
+}
+
+.lb-peak-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 10px;
+  background: rgba(255, 206, 86, 0.1);
+  border: 1px solid rgba(255, 206, 86, 0.28);
+  font-size: 12px;
+  font-weight: 700;
+  color: #e6d7b0;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.lb-peak-label {
+  color: rgba(255, 224, 150, 0.88);
+}
+
+.lb-peak-elo {
+  font-size: 13.5px;
+  font-weight: 900;
+  color: #ffe394;
+}
+
+.lb-peak-sep {
+  color: rgba(255, 224, 150, 0.42);
+}
+
+.lb-peak-rank {
+  font-weight: 900;
+  color: #ffd466;
+}
+
+.lb-peak-rank span {
+  font-weight: 600;
+  font-size: 11px;
+  color: rgba(215, 225, 245, 0.64);
 }
 
 .lb-elo.elo-human {
@@ -3265,6 +3318,124 @@ kbd {
   color: #c2ddff;
   font-size: 12px;
   font-weight: 700;
+}
+
+/* ---------- Settings Danger Zone & Confirm Dialog ---------- */
+.settings-danger-section {
+  padding-top: 12px;
+  border-top: 1px solid rgba(255, 110, 110, 0.2);
+}
+
+.settings-danger-row {
+  border-color: rgba(255, 105, 105, 0.22);
+  background: rgba(255, 82, 82, 0.05);
+}
+
+.settings-danger-btn {
+  flex-shrink: 0;
+  padding: 7px 14px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 110, 110, 0.5);
+  background: linear-gradient(135deg, rgba(224, 58, 68, 0.9) 0%, rgba(186, 36, 52, 0.94) 100%);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.12s ease, filter 0.14s ease, box-shadow 0.14s ease;
+}
+
+.settings-danger-btn:hover {
+  filter: brightness(1.1);
+  box-shadow: 0 6px 16px rgba(224, 58, 68, 0.36);
+  transform: translateY(-1px);
+}
+
+.settings-danger-btn:active {
+  transform: translateY(0);
+}
+
+.settings-danger-notice {
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: rgba(76, 196, 128, 0.16);
+  border: 1px solid rgba(114, 234, 166, 0.35);
+  color: #aef5cc;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(5, 8, 18, 0.78);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+
+.settings-confirm-card {
+  width: min(420px, 92vw);
+  padding: 22px 24px 20px;
+  border-radius: 16px;
+  background: rgba(15, 21, 38, 0.99);
+  border: 1px solid rgba(255, 112, 112, 0.42);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.76);
+  text-align: center;
+  animation: fadeIn 0.14s ease;
+}
+
+.sc-icon {
+  font-size: 28px;
+  line-height: 1;
+  margin-bottom: 10px;
+}
+
+.sc-title {
+  font-size: 17px;
+  font-weight: 900;
+  color: #fff;
+  margin-bottom: 8px;
+}
+
+.sc-desc {
+  font-size: 13px;
+  line-height: 1.55;
+  color: #c2d1ec;
+  margin-bottom: 18px;
+  text-align: left;
+}
+
+.sc-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.sc-cancel-btn {
+  padding: 8px 16px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e4eeff;
+  font-size: 12.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.14s ease;
+}
+
+.sc-cancel-btn:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+.sc-ok-btn {
+  padding: 8px 16px;
+  font-size: 12.5px;
 }
 
 .kb-table {
