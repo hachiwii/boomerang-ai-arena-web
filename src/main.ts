@@ -374,6 +374,7 @@ async function bootstrap() {
     },
     onCountdown: (stage) => {
       hudUI.setCountdown(stage);
+      renderer.setCountdownStage(stage);
       if (stage === 3 || stage === 2 || stage === 1) {
         sfx.playCountdownTick(stage);
       } else if (stage === 'GO') {

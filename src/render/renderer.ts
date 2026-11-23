@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SoundFX } from '../audio/sfx';
 import { HumanInputController } from '../game/humanInput';
+import { CountdownStage } from '../game/matchController';
 import {
   CauseType,
   CellType,
@@ -37,6 +38,10 @@ export class GameRenderer {
   private arena: ArenaMap3D | null = null;
   private rigs: CharacterRig[] = [];
   private fx: FXSystem | null = null;
+  private countdownArrow: THREE.Group | null = null;
+  private countdownStage: CountdownStage = null;
+  private countdownPulseMs = 0;
+  private countdownGoMs = 0;
   private slots: SlotConfig[] = [];
   private humanSeat = -1;
 
@@ -257,6 +262,13 @@ export class GameRenderer {
       slots.map((s) => s.ringAccent || s.color),
     );
 
+    // Pre-match countdown red 3D indicator arrow above the human player
+    if (humanSeat >= 0) {
+      this.countdownArrow = this.buildCountdownArrow();
+      this.countdownArrow.visible = false;
+      this.scene.add(this.countdownArrow);
+    }
+
     // Build floating nameplates
     this.rebuildNameplates();
 
@@ -272,6 +284,107 @@ export class GameRenderer {
     this.camTargetX = cx;
     this.camTargetZ = cz;
     this.recomputeCameraFit();
+  }
+
+  public setCountdownStage(stage: CountdownStage) {
+    this.countdownStage = stage;
+    const now = performance.now();
+    if (stage === 3 || stage === 2 || stage === 1) {
+      this.countdownPulseMs = now;
+      this.countdownGoMs = 0;
+    } else if (stage === 'GO') {
+      this.countdownGoMs = now;
+    } else {
+      this.countdownGoMs = 0;
+      if (this.countdownArrow) this.countdownArrow.visible = false;
+    }
+  }
+
+  /**
+   * Builds a bold beveled 3D downward-pointing red arrow with a crisp dark cartoon outline.
+   * Tilted slightly toward the 58-degree overhead camera so the iconic downward arrow silhouette
+   * and 3D volumetric thickness read unmistakably from the player's viewpoint.
+   */
+  private buildCountdownArrow(): THREE.Group {
+    const outer = new THREE.Group();
+    const tiltPivot = new THREE.Group();
+    // Tilt front face toward the 58-deg overhead camera while keeping 3D side/top depth clearly visible
+    tiltPivot.rotation.x = -0.62;
+    outer.add(tiltPivot);
+
+    const makeArrowShape = (pad: number): THREE.Shape => {
+      const tipY = -pad * 1.35;
+      const wingX = 0.56 + pad * 1.35;
+      const wingY = 0.58 - pad * 0.55;
+      const shaftX = 0.23 + pad;
+      const topY = 1.28 + pad;
+
+      const s = new THREE.Shape();
+      s.moveTo(0, tipY);
+      s.lineTo(wingX, wingY);
+      s.lineTo(shaftX, wingY);
+      s.lineTo(shaftX, topY);
+      s.lineTo(-shaftX, topY);
+      s.lineTo(-shaftX, wingY);
+      s.lineTo(-wingX, wingY);
+      s.closePath();
+      return s;
+    };
+
+    const redMat = new THREE.MeshLambertMaterial({
+      color: '#ff2828',
+      emissive: '#c40f0f',
+      emissiveIntensity: 0.45,
+      flatShading: true,
+    });
+    const outlineMat = new THREE.MeshBasicMaterial({
+      color: '#260b12',
+      side: THREE.BackSide,
+    });
+
+    const depth = 0.24;
+    const mainGeo = new THREE.ExtrudeGeometry(makeArrowShape(0), {
+      depth,
+      bevelEnabled: true,
+      bevelThickness: 0.045,
+      bevelSize: 0.038,
+      bevelSegments: 1,
+    });
+    mainGeo.translate(0, 0, -depth * 0.5);
+    const mainMesh = new THREE.Mesh(mainGeo, redMat);
+    tiltPivot.add(mainMesh);
+
+    const outDepth = depth + 0.14;
+    const outGeo = new THREE.ExtrudeGeometry(makeArrowShape(0.068), {
+      depth: outDepth,
+      bevelEnabled: true,
+      bevelThickness: 0.03,
+      bevelSize: 0.025,
+      bevelSegments: 1,
+    });
+    outGeo.translate(0, 0, -outDepth * 0.5);
+    const outMesh = new THREE.Mesh(outGeo, outlineMat);
+    tiltPivot.add(outMesh);
+
+    return outer;
+  }
+
+  private disposeCountdownArrow() {
+    if (!this.countdownArrow) return;
+    this.scene.remove(this.countdownArrow);
+    const mats = new Set<THREE.Material>();
+    this.countdownArrow.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        obj.geometry.dispose();
+        if (Array.isArray(obj.material)) {
+          obj.material.forEach((m) => mats.add(m));
+        } else {
+          mats.add(obj.material);
+        }
+      }
+    });
+    mats.forEach((m) => m.dispose());
+    this.countdownArrow = null;
   }
 
   private rebuildNameplates() {
@@ -839,6 +952,46 @@ export class GameRenderer {
           input.hasMouse,
         );
       }
+
+      // Update pre-match countdown red 3D arrow above the human player
+      if (this.countdownArrow) {
+        const hp0 = this.humanSeat >= 0 ? this.prevState.players[this.humanSeat] : null;
+        const hp1 = this.humanSeat >= 0 ? this.currState.players[this.humanSeat] : null;
+        const stage = this.countdownStage;
+        const showDuringNums = stage === 3 || stage === 2 || stage === 1;
+        const showDuringGo = stage === 'GO' && this.countdownGoMs > 0 && tWork0 - this.countdownGoMs < 360;
+
+        if (hp0 && hp1 && hp1.alive === 1 && !this.currState.over && (showDuringNums || showDuringGo)) {
+          const hx = (hp0.x + (hp1.x - hp0.x) * alpha) / 1000;
+          const hz = (hp0.y + (hp1.y - hp0.y) * alpha) / 1000;
+
+          // Position tip just above the human's floating nameplate regardless of map zoom/viewport height
+          const vFovRad = (CAM_FOV * Math.PI) / 180;
+          const worldYPerPx =
+            (2 * this.camDist * Math.tan(vFovRad * 0.5)) /
+            Math.max(1, window.innerHeight * Math.cos(PITCH_RAD));
+          const baseTipY = 1.52 + 24 * worldYPerPx;
+
+          // Crisp downward-pointing arcade bounce + gentle 3D yaw rock to showcase volumetric depth
+          const bounce = Math.abs(Math.sin(this.elapsedSec * 5.6)) * 0.36;
+
+          let sc = 1.0;
+          if (showDuringGo) {
+            const u = Math.min(1, (tWork0 - this.countdownGoMs) / 360);
+            sc = Math.max(0.01, 1 - u * u);
+          } else if (this.countdownPulseMs > 0) {
+            const dtSec = Math.max(0, (tWork0 - this.countdownPulseMs) / 1000);
+            sc = 1 + 0.24 * Math.exp(-dtSec * 8.5);
+          }
+
+          this.countdownArrow.visible = true;
+          this.countdownArrow.position.set(hx, baseTipY + bounce, hz);
+          this.countdownArrow.rotation.y = Math.sin(this.elapsedSec * 3.4) * 0.42;
+          this.countdownArrow.scale.setScalar(sc);
+        } else {
+          this.countdownArrow.visible = false;
+        }
+      }
     }
 
     this.renderer.render(this.scene, this.camera);
@@ -894,6 +1047,10 @@ export class GameRenderer {
       this.fx.dispose();
       this.fx = null;
     }
+    this.disposeCountdownArrow();
+    this.countdownStage = null;
+    this.countdownPulseMs = 0;
+    this.countdownGoMs = 0;
     if (this.nameplateLayer) {
       this.nameplateLayer.innerHTML = '';
     }
