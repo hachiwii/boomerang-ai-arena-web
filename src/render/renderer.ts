@@ -332,70 +332,77 @@ export class GameRenderer {
   }
 
   /**
-   * Builds a bold beveled 3D downward-pointing red arrow with a crisp dark cartoon outline.
-   * Tilted slightly toward the 58-degree overhead camera so the iconic downward arrow silhouette
-   * and 3D volumetric thickness read unmistakably from the player's viewpoint.
+   * Builds a sleek faceted 3D V-notched red dart/chevron marker with a crisp dark cartoon outline.
+   * Front and back raised center ridges give sharp 3D multi-facet shading while keeping the exact
+   * iconic V-notched downward pointer silhouette from the 58-degree overhead camera.
    */
   private buildCountdownArrow(): THREE.Group {
     const outer = new THREE.Group();
     const tiltPivot = new THREE.Group();
-    // Tilt front face toward the 58-deg overhead camera while keeping 3D side/top depth clearly visible
-    tiltPivot.rotation.x = -0.62;
+    // Tilt toward the 58-deg overhead camera so the V-notched dart silhouette reads clearly
+    tiltPivot.rotation.x = -0.58;
     outer.add(tiltPivot);
 
-    const makeArrowShape = (pad: number): THREE.Shape => {
-      const tipY = -pad * 1.35;
-      const wingX = 0.56 + pad * 1.35;
-      const wingY = 0.58 - pad * 0.55;
-      const shaftX = 0.23 + pad;
-      const topY = 1.28 + pad;
+    const buildFacetedDartGeo = (
+      tipY: number,
+      wingX: number,
+      wingY: number,
+      notchY: number,
+      ridgeY: number,
+      ridgeZ: number,
+    ): THREE.BufferGeometry => {
+      const B: [number, number, number] = [0, tipY, 0];
+      const R: [number, number, number] = [wingX, wingY, 0];
+      const N: [number, number, number] = [0, notchY, 0];
+      const L: [number, number, number] = [-wingX, wingY, 0];
+      const CF: [number, number, number] = [0, ridgeY, ridgeZ];
+      const CB: [number, number, number] = [0, ridgeY, -ridgeZ];
 
-      const s = new THREE.Shape();
-      s.moveTo(0, tipY);
-      s.lineTo(wingX, wingY);
-      s.lineTo(shaftX, wingY);
-      s.lineTo(shaftX, topY);
-      s.lineTo(-shaftX, topY);
-      s.lineTo(-shaftX, wingY);
-      s.lineTo(-wingX, wingY);
-      s.closePath();
-      return s;
+      // Non-indexed triangles so flat-shaded normals are crisp per facet
+      const tris: [number, number, number][][] = [
+        // Front 4 facets (CCW from +Z)
+        [B, R, CF],
+        [R, N, CF],
+        [N, L, CF],
+        [L, B, CF],
+        // Back 4 facets (CCW from -Z)
+        [R, B, CB],
+        [N, R, CB],
+        [L, N, CB],
+        [B, L, CB],
+      ];
+
+      const positions = new Float32Array(tris.length * 9);
+      let ptr = 0;
+      for (const tri of tris) {
+        for (const v of tri) {
+          positions[ptr++] = v[0];
+          positions[ptr++] = v[1];
+          positions[ptr++] = v[2];
+        }
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+      geo.computeVertexNormals();
+      return geo;
     };
 
     const redMat = new THREE.MeshLambertMaterial({
-      color: '#ff2828',
-      emissive: '#c40f0f',
-      emissiveIntensity: 0.45,
+      color: '#ff2222',
+      emissive: '#c00a0a',
+      emissiveIntensity: 0.42,
       flatShading: true,
     });
     const outlineMat = new THREE.MeshBasicMaterial({
-      color: '#260b12',
+      color: '#220910',
       side: THREE.BackSide,
     });
 
-    const depth = 0.24;
-    const mainGeo = new THREE.ExtrudeGeometry(makeArrowShape(0), {
-      depth,
-      bevelEnabled: true,
-      bevelThickness: 0.045,
-      bevelSize: 0.038,
-      bevelSegments: 1,
-    });
-    mainGeo.translate(0, 0, -depth * 0.5);
-    const mainMesh = new THREE.Mesh(mainGeo, redMat);
-    tiltPivot.add(mainMesh);
+    const mainGeo = buildFacetedDartGeo(0, 0.52, 1.38, 0.94, 0.66, 0.24);
+    tiltPivot.add(new THREE.Mesh(mainGeo, redMat));
 
-    const outDepth = depth + 0.14;
-    const outGeo = new THREE.ExtrudeGeometry(makeArrowShape(0.068), {
-      depth: outDepth,
-      bevelEnabled: true,
-      bevelThickness: 0.03,
-      bevelSize: 0.025,
-      bevelSegments: 1,
-    });
-    outGeo.translate(0, 0, -outDepth * 0.5);
-    const outMesh = new THREE.Mesh(outGeo, outlineMat);
-    tiltPivot.add(outMesh);
+    const outGeo = buildFacetedDartGeo(-0.11, 0.61, 1.51, 1.0, 0.66, 0.32);
+    tiltPivot.add(new THREE.Mesh(outGeo, outlineMat));
 
     return outer;
   }
