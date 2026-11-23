@@ -8,7 +8,7 @@ import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { ReplayController } from './game/replayController';
-import { FpsCapOption, isBoundToAction, SettingsStore } from './game/settings';
+import { FpsCapOption, getCinematicOptions, isBoundToAction, SettingsStore } from './game/settings';
 import { CellType, EngineMapData, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
 import { GameRenderer } from './render/renderer';
 import { HistoryModal } from './ui/historyUI';
@@ -171,7 +171,7 @@ async function bootstrap() {
     lobbyUI.hide();
     mode = 'replay';
     try {
-      await replayController.start(bundle, 1.0, settings.get().killCam);
+      await replayController.start(bundle, 1.0, getCinematicOptions(settings.get()));
     } catch (err) {
       console.error('Failed to start replay:', err);
       alert(`回放加载失败：${err instanceof Error ? err.message : String(err)}`);
@@ -243,7 +243,7 @@ async function bootstrap() {
 
     activeConfig = cfg;
     void controller
-      .start(cfg, { killCam: settings.get().killCam })
+      .start(cfg, { cinematic: getCinematicOptions(settings.get()) })
       .catch((err) => {
         console.error(err);
         alert(`重开失败：${err instanceof Error ? err.message : String(err)}`);
@@ -328,10 +328,11 @@ async function bootstrap() {
       activeFpsCap = s.fpsCap;
       startRenderLoop();
     }
+    const cinematic = getCinematicOptions(s);
     if (mode === 'replay') {
-      replayController.setKillCamEnabled(s.killCam);
+      replayController.setCinematicOptions(cinematic);
     } else if (mode === 'playing') {
-      const updatedDir = controller.setKillCamEnabled(s.killCam);
+      const updatedDir = controller.setCinematicOptions(cinematic);
       if (updatedDir) {
         renderer.setCinematicDirector(updatedDir);
         renderer.setPlaybackSpeed(activeConfig?.speed ?? 1.0);
@@ -339,7 +340,7 @@ async function bootstrap() {
         const curSt = controller.getCurrentState();
         if (curSt?.over && activeMapData) {
           renderer.setCinematicDirector(
-            CinematicDirector.createWinnerCloseupOnly(curSt, activeMapData, s.killCam),
+            CinematicDirector.createWinnerCloseupOnly(curSt, activeMapData, s.winnerCam),
           );
         }
       }
@@ -382,7 +383,7 @@ async function bootstrap() {
         speed: s.exportSpeed,
         soundEnabled: s.soundEnabled,
         volumePct: s.volume,
-        killCam: s.killCam,
+        cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
         onProgress,
@@ -395,7 +396,7 @@ async function bootstrap() {
       const result = await exportReplayClipToGif(bundle, {
         endTickIndex,
         maxDurationSec: 10.0,
-        killCam: s.killCam,
+        cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
         onProgress,
@@ -438,7 +439,7 @@ async function bootstrap() {
         speed: s.exportSpeed,
         soundEnabled: s.soundEnabled,
         volumePct: s.volume,
-        killCam: s.killCam,
+        cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
         onProgress,
@@ -504,9 +505,9 @@ async function bootstrap() {
         }
       }
       persistCurrentMatchHistory(eloResult, false);
-      // Live human matches don't slow-mo mid-match, but still glide smoothly to the winner front close-up!
+      // Live human matches (and live AI matches with only winnerCam) glide smoothly to the winner front close-up!
       let activeDirector = director ?? null;
-      if (!activeDirector && activeMapData && settings.get().killCam) {
+      if (!activeDirector && activeMapData && settings.get().winnerCam) {
         activeDirector = CinematicDirector.createWinnerCloseupOnly(finalState, activeMapData, true);
         if (activeDirector) {
           renderer.setCinematicDirector(activeDirector);
@@ -554,7 +555,7 @@ async function bootstrap() {
       historyModal.close();
       activeConfig = config;
       lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
-      void controller.start(config, { killCam: settings.get().killCam }).catch((err) => {
+      void controller.start(config, { cinematic: getCinematicOptions(settings.get()) }).catch((err) => {
         console.error(err);
         lobbyUI.setLoading(null);
         alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);

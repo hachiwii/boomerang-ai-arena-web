@@ -2980,6 +2980,12 @@ kbd {
   flex-wrap: wrap;
 }
 
+.settings-toggle-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .settings-toggle-row {
   display: flex;
   align-items: center;

@@ -17,16 +17,32 @@ export type ActionBindKey =
 export type KeySlotPair = [string | null, string | null];
 export type KeyBindings = Record<ActionBindKey, KeySlotPair>;
 
+export interface CinematicOptions {
+  killCam: boolean; // Non-final kills (0.5x slow-mo + eye-level camera)
+  finisherCam: boolean; // Final kill (0.25x slow-mo + eye-level camera)
+  winnerCam: boolean; // Winner front close-up + periodic confetti shower
+}
+
 export interface GameSettings {
   soundEnabled: boolean;
   volume: number; // 0..100
   fpsCap: FpsCapOption;
   dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
-  killCam: boolean; // Slow-motion eye-level kill-cam & winner front close-up (replay / AI match / MP4 / GIF)
+  killCam: boolean; // Non-final kill slow-mo & eye-level camera (0.5x)
+  finisherCam: boolean; // Final kill slow-mo & eye-level camera (0.25x)
+  winnerCam: boolean; // Winner front close-up & periodic confetti shower
   exportResolution: ExportResolutionOption;
   exportBitrateMbps: ExportBitrateOption;
   exportSpeed: ExportSpeedOption;
   keybindings: KeyBindings;
+}
+
+export function getCinematicOptions(s: GameSettings): CinematicOptions {
+  return {
+    killCam: s.killCam,
+    finisherCam: s.finisherCam,
+    winnerCam: s.winnerCam,
+  };
 }
 
 export interface ActionMeta {
@@ -109,6 +125,8 @@ export function defaultSettings(): GameSettings {
     fpsCap: 'vsync',
     dashInputBuffer: true,
     killCam: true,
+    finisherCam: true,
+    winnerCam: true,
     exportResolution: '1080p',
     exportBitrateMbps: 4,
     exportSpeed: 1.0,
@@ -231,6 +249,18 @@ export class SettingsStore {
         typeof parsed.dashInputBuffer === 'boolean' ? parsed.dashInputBuffer : def.dashInputBuffer;
       const killCam =
         typeof parsed.killCam === 'boolean' ? parsed.killCam : def.killCam;
+      const finisherCam =
+        typeof parsed.finisherCam === 'boolean'
+          ? parsed.finisherCam
+          : typeof parsed.killCam === 'boolean'
+            ? parsed.killCam
+            : def.finisherCam;
+      const winnerCam =
+        typeof parsed.winnerCam === 'boolean'
+          ? parsed.winnerCam
+          : typeof parsed.killCam === 'boolean'
+            ? parsed.killCam
+            : def.winnerCam;
       const exportResolution: ExportResolutionOption =
         parsed.exportResolution !== undefined && VALID_EXPORT_RES.has(parsed.exportResolution)
           ? parsed.exportResolution
@@ -261,6 +291,8 @@ export class SettingsStore {
         fpsCap,
         dashInputBuffer,
         killCam,
+        finisherCam,
+        winnerCam,
         exportResolution,
         exportBitrateMbps,
         exportSpeed,
@@ -323,6 +355,18 @@ export class SettingsStore {
   public setKillCam(enabled: boolean) {
     if (this.settings.killCam === enabled) return;
     this.settings.killCam = enabled;
+    this.emit();
+  }
+
+  public setFinisherCam(enabled: boolean) {
+    if (this.settings.finisherCam === enabled) return;
+    this.settings.finisherCam = enabled;
+    this.emit();
+  }
+
+  public setWinnerCam(enabled: boolean) {
+    if (this.settings.winnerCam === enabled) return;
+    this.settings.winnerCam = enabled;
     this.emit();
   }
 

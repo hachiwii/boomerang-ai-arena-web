@@ -5,6 +5,7 @@ import { VoxelModelData } from '../render/voxelBuilder';
 import { CinematicDirector } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
 import { drawBroadcastOverlay, loadImage, triggerMp4Download } from './mp4Exporter';
+import { CinematicOptions } from './settings';
 import { LOGIC_DT_MS, TickSnapshot } from './types';
 
 export interface GifClipExportOptions {
@@ -12,8 +13,8 @@ export interface GifClipExportOptions {
   endTickIndex: number;
   /** Maximum clip duration in seconds (default 10s). */
   maxDurationSec?: number;
-  /** Whether slow-motion kill-cam & winner front close-up is enabled. */
-  killCam?: boolean;
+  /** Granular cinematic camera toggles (killCam, finisherCam, winnerCam). */
+  cinematic?: boolean | Partial<CinematicOptions>;
   sharedCharModelCache?: Map<string, VoxelModelData>;
   signal?: AbortSignal;
   onProgress?: (progress01: number, phaseText: string) => void;
@@ -80,7 +81,7 @@ export async function exportReplayClipToGif(
 
   const maxDurationSec = Math.max(1, options.maxDurationSec ?? DEFAULT_MAX_CLIP_SEC);
   const tickSec = LOGIC_DT_MS / 1000; // 0.05s per logic tick (20Hz)
-  const director = new CinematicDirector(ticks, bundle.replay.mapData, Boolean(options.killCam));
+  const director = new CinematicDirector(ticks, bundle.replay.mapData, options.cinematic ?? false);
 
   const endPlaySimSec = endTickIndex * tickSec;
   const endPlayRealSec = director.simToReal(endPlaySimSec);

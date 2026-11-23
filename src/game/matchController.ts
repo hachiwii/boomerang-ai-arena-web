@@ -1,5 +1,6 @@
 import { HumanInputController } from './humanInput';
-import { CinematicDirector } from './killCamDirector';
+import { CinematicDirector, normalizeCinematicOptions } from './killCamDirector';
+import { CinematicOptions } from './settings';
 import {
   EngineMapData,
   LOGIC_DT_MS,
@@ -90,9 +91,13 @@ export class MatchController {
     return this.cinematicDirector;
   }
 
-  public setKillCamEnabled(enabled: boolean): CinematicDirector | null {
+  public setCinematicOptions(opts: boolean | Partial<CinematicOptions>): CinematicDirector | null {
     if (!this.precomputedTicks || !this.mapDataCache) return null;
-    this.cinematicDirector = new CinematicDirector(this.precomputedTicks, this.mapDataCache, enabled);
+    this.cinematicDirector = new CinematicDirector(
+      this.precomputedTicks,
+      this.mapDataCache,
+      normalizeCinematicOptions(opts),
+    );
     return this.cinematicDirector;
   }
 
@@ -133,7 +138,7 @@ export class MatchController {
     });
   }
 
-  public async start(config: MatchConfig, opts?: { killCam?: boolean }): Promise<void> {
+  public async start(config: MatchConfig, opts?: { cinematic?: Partial<CinematicOptions> }): Promise<void> {
     this.stop();
     this.stopped = false;
     this.config = config;
@@ -205,7 +210,10 @@ export class MatchController {
     if (this.stopped) return;
 
     this.mapDataCache = mapData;
-    const useAcceleratedKillCam = this.humanSeat < 0 && Boolean(opts?.killCam);
+    const cinematicCfg = normalizeCinematicOptions(opts?.cinematic);
+    // Pure AI match needs accelerated pre-simulation only when pre-kill slow-mo (killCam or finisherCam) is enabled;
+    // if only winnerCam is enabled, it runs live and glides to winner close-up on match end!
+    const useAcceleratedKillCam = this.humanSeat < 0 && (cinematicCfg.killCam || cinematicCfg.finisherCam);
 
     if (useAcceleratedKillCam) {
       // Pure AI spectator match with kill-cam enabled: accelerate full WASM simulation first
@@ -262,7 +270,7 @@ export class MatchController {
       this.precomputedIndex = 0;
       this.currentState = allTicks[0];
       this.recordedTicks = allTicks;
-      this.cinematicDirector = new CinematicDirector(allTicks, mapData, true);
+      this.cinematicDirector = new CinematicDirector(allTicks, mapData, cinematicCfg);
 
       await this.callbacks.onMapLoaded(mapData, allTicks[0], this.cinematicDirector);
       if (this.stopped) return;

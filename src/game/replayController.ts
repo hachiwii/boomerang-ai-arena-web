@@ -1,6 +1,7 @@
 import { GameRenderer } from '../render/renderer';
-import { CinematicDirector } from './killCamDirector';
+import { CinematicDirector, normalizeCinematicOptions } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
+import { CinematicOptions } from './settings';
 import { LOGIC_DT_MS, TickSnapshot } from './types';
 
 export interface ReplayPlaybackState {
@@ -28,7 +29,7 @@ export class ReplayController {
 
   private bundle: MatchReplayBundle | null = null;
   private director: CinematicDirector | null = null;
-  private killCamEnabled = true;
+  private cinematicOpts: CinematicOptions = { killCam: true, finisherCam: true, winnerCam: true };
   private tickIndex = 0;
   private speed = 1.0;
   private paused = false;
@@ -72,10 +73,14 @@ export class ReplayController {
     return LOGIC_DT_MS / (this.speed * scale);
   }
 
-  public setKillCamEnabled(enabled: boolean) {
-    this.killCamEnabled = enabled;
+  public setCinematicOptions(opts: boolean | Partial<CinematicOptions>) {
+    this.cinematicOpts = normalizeCinematicOptions(opts);
     if (!this.active || !this.bundle) return;
-    this.director = new CinematicDirector(this.bundle.replay.ticks, this.bundle.replay.mapData, enabled);
+    this.director = new CinematicDirector(
+      this.bundle.replay.ticks,
+      this.bundle.replay.mapData,
+      this.cinematicOpts,
+    );
     this.renderer.setCinematicDirector(this.director);
     this.renderer.setPlaybackSpeed(this.speed);
     if (!this.paused && !this.finished) {
@@ -85,7 +90,11 @@ export class ReplayController {
     }
   }
 
-  public async start(bundle: MatchReplayBundle, initialSpeed = 1.0, killCamEnabled?: boolean): Promise<void> {
+  public async start(
+    bundle: MatchReplayBundle,
+    initialSpeed = 1.0,
+    cinematicOpts?: boolean | Partial<CinematicOptions>,
+  ): Promise<void> {
     this.stop();
     const mySeq = ++this.sessionSeq;
     const ticks = bundle.replay.ticks;
@@ -93,8 +102,8 @@ export class ReplayController {
       throw new Error('回放数据为空');
     }
 
-    if (killCamEnabled !== undefined) {
-      this.killCamEnabled = killCamEnabled;
+    if (cinematicOpts !== undefined) {
+      this.cinematicOpts = normalizeCinematicOptions(cinematicOpts);
     }
     this.bundle = bundle;
     this.speed = Math.max(0.25, Math.min(2.0, initialSpeed || 1.0));
@@ -114,7 +123,7 @@ export class ReplayController {
     );
     if (this.sessionSeq !== mySeq || !this.active) return;
 
-    this.director = new CinematicDirector(ticks, bundle.replay.mapData, this.killCamEnabled);
+    this.director = new CinematicDirector(ticks, bundle.replay.mapData, this.cinematicOpts);
     this.renderer.setCinematicDirector(this.director);
     this.renderer.setPlaybackSpeed(this.speed);
 

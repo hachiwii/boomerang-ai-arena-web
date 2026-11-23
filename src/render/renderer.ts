@@ -105,6 +105,8 @@ export class GameRenderer {
   private previewAngle = 0;
   private cinematicDirector: CinematicDirector | null = null;
   private overElapsedSimSec = 0;
+  private nextWinnerRibbonSec = -1;
+  private winnerRibbonWave = 0;
 
   // Raycasting scratch (zero allocation per frame)
   private readonly _raycaster = new THREE.Raycaster();
@@ -345,6 +347,8 @@ export class GameRenderer {
     this.pausedAlpha = 1.0;
     this.shakeAmp = 0;
     this.overElapsedSimSec = 0;
+    this.nextWinnerRibbonSec = -1;
+    this.winnerRibbonWave = 0;
     this.cinematicDirector = null;
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;
@@ -504,6 +508,8 @@ export class GameRenderer {
     }
     if (!next.over) {
       this.overElapsedSimSec = 0;
+      this.nextWinnerRibbonSec = -1;
+      this.winnerRibbonWave = 0;
     }
     this.tickReceivedAtMs = performance.now();
     this.pausedAlpha = 1.0;
@@ -611,6 +617,8 @@ export class GameRenderer {
     this.prevState = ticks[Math.max(0, idx - 1)];
     this.currState = ticks[idx];
     this.overElapsedSimSec = 0;
+    this.nextWinnerRibbonSec = -1;
+    this.winnerRibbonWave = 0;
     this.tickReceivedAtMs = performance.now();
     this.pausedAlpha = 1.0;
   }
@@ -849,6 +857,37 @@ export class GameRenderer {
       return Math.max(0, Math.min(1, (t - (maxFallStep - colWarn)) / colWarn));
     }
     return -1;
+  }
+
+  private maybeEmitWinnerConfetti(
+    curr: TickSnapshot,
+    cinePose: CinematicCameraPose | null,
+    nowSec: number,
+  ) {
+    if (!this.fx || !curr.over || curr.winner < 0 || !cinePose || cinePose.winnerBlend < 0.2) {
+      return;
+    }
+    const wp = curr.players[curr.winner];
+    if (!wp || !wp.alive) return;
+    const slot = this.slots[curr.winner];
+    const col = slot?.ringAccent || slot?.color || '#ffe04d';
+
+    if (this.nextWinnerRibbonSec < 0 || nowSec < this.nextWinnerRibbonSec - 1.5) {
+      this.nextWinnerRibbonSec = nowSec;
+    }
+    // Periodic 360-degree confetti ribbon shower every 0.72s while winner close-up is active!
+    let guard = 0;
+    while (nowSec >= this.nextWinnerRibbonSec && guard < 4) {
+      this.fx.spawnWinnerConfettiBurst(
+        wp.x / 1000,
+        wp.y / 1000,
+        col,
+        this.nextWinnerRibbonSec,
+        this.winnerRibbonWave++,
+      );
+      this.nextWinnerRibbonSec += 0.72;
+      guard++;
+    }
   }
 
   private applyCameraWithOptionalCinematic(
@@ -1102,6 +1141,11 @@ export class GameRenderer {
         }
       }
 
+      // Periodic festive confetti ribbons around winner during winner close-up
+      if (!this.playbackPaused) {
+        this.maybeEmitWinnerConfetti(this.currState, cinePose, this.elapsedSec);
+      }
+
       // Update pooled FX + human aim reticle
       if (this.fx) {
         this.fx.update(
@@ -1304,6 +1348,8 @@ export class GameRenderer {
       }
     }
 
+    this.maybeEmitWinnerConfetti(curr, cinePose, elapsedSec);
+
     if (this.fx) {
       this.fx.update(elapsedSec, prev, curr, alpha, -1, 0, 0, false);
     }
@@ -1351,6 +1397,8 @@ export class GameRenderer {
     this.playbackPaused = false;
     this.pausedAlpha = 1.0;
     this.overElapsedSimSec = 0;
+    this.nextWinnerRibbonSec = -1;
+    this.winnerRibbonWave = 0;
     this.cinematicDirector = null;
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;

@@ -5,6 +5,7 @@ import { VoxelModelData } from '../render/voxelBuilder';
 import { CinematicDirector } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
 import {
+  CinematicOptions,
   ExportBitrateOption,
   ExportResolutionOption,
   ExportSpeedOption,
@@ -18,7 +19,7 @@ export interface Mp4ExportOptions {
   speed: ExportSpeedOption;
   soundEnabled: boolean;
   volumePct: number;
-  killCam?: boolean;
+  cinematic?: boolean | Partial<CinematicOptions>;
   sharedCharModelCache?: Map<string, VoxelModelData>;
   signal?: AbortSignal;
   onProgress?: (progress01: number, phaseText: string) => void;
@@ -474,7 +475,7 @@ export async function exportReplayToMp4(
   const audioConfig = wantAudio ? await pickSupportedAudioConfig() : null;
   const hasAudio = audioConfig !== null;
 
-  const director = new CinematicDirector(ticks, bundle.replay.mapData, Boolean(options.killCam));
+  const director = new CinematicDirector(ticks, bundle.replay.mapData, options.cinematic ?? false);
   const tickSec = LOGIC_DT_MS / 1000;
   const matchEndSimSec = Math.max(0, ticks.length - 1) * tickSec;
   const playDurationSec = director.simToReal(matchEndSimSec) / speed;

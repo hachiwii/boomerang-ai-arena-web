@@ -1,9 +1,25 @@
+import { CinematicOptions } from './settings';
 import { CauseType, CellType, DState, EngineMapData, LOGIC_DT_MS, TickSnapshot } from './types';
 
+export function normalizeCinematicOptions(
+  opt: boolean | Partial<CinematicOptions> | undefined,
+): CinematicOptions {
+  if (typeof opt === 'boolean') {
+    return { killCam: opt, finisherCam: opt, winnerCam: opt };
+  }
+  return {
+    killCam: opt?.killCam ?? false,
+    finisherCam: opt?.finisherCam ?? false,
+    winnerCam: opt?.winnerCam ?? false,
+  };
+}
+
 const TICK_SEC = LOGIC_DT_MS / 1000; // 0.05s
-const PRE_KILL_SIM_SEC = 0.50; // Slow down the 0.5s before every kill to 0.25x
-const POST_KILL_SIM_SEC = 0.16; // Brief slow-mo impact beat (0.64s real) so slice/slash/fall reads clearly
-const KILL_TIME_SCALE = 0.25;
+const PRE_KILL_SIM_SEC = 0.50; // Slow down the 0.5s before every kill
+const POST_KILL_SIM_SEC_FINAL = 0.16; // Final kill impact beat at 0.25x (0.64s real)
+const POST_KILL_SIM_SEC_NON_FINAL = 0.22; // Non-final kill impact beat at 0.5x (0.44s real)
+const FINAL_KILL_TIME_SCALE = 0.25;
+const NON_FINAL_KILL_TIME_SCALE = 0.5;
 const MERGE_GAP_SIM_SEC = 0.45;
 const CAM_ENTER_REAL_SEC = 0.58; // Smooth ease from overview to eye-level kill shot
 const CAM_EXIT_REAL_SEC = 0.68; // Smooth ease back to overview for non-final kills
@@ -38,6 +54,8 @@ interface KillSegment {
   slowStartSim: number;
   slowEndSim: number;
   exitEndSim: number;
+  /** Playback speed scale for this kill segment (0.5x for non-final kills, 0.25x for the last kill) */
+  timeScale: number;
   cause: CauseType;
   victimSeat: number;
   killerSeat: number;
@@ -102,6 +120,7 @@ function lerp(a: number, b: number, t: number): number {
 export class CinematicDirector {
   private readonly ticks: TickSnapshot[];
   private readonly mapData: EngineMapData;
+  private readonly options: CinematicOptions;
   private readonly enabled: boolean;
   private readonly widthM: number;
   private readonly heightM: number;
@@ -113,37 +132,43 @@ export class CinematicDirector {
   private readonly timeIntervals: TimeInterval[] = [];
 
   /**
-   * Creates a lightweight post-match director for live human matches:
-   * keeps gameplay 100% real-time, then smoothly glides into the front-facing
-   * winner close-up right after the winning blow lands.
+   * Creates a lightweight post-match director for live matches (human matches, or AI matches
+   * with only `winnerCam` enabled): keeps gameplay 100% real-time, then smoothly glides into
+   * the front-facing winner close-up right after the winning blow lands.
    */
   public static createWinnerCloseupOnly(
     finalState: TickSnapshot,
     mapData: EngineMapData,
-    enabled: boolean,
+    winnerCamEnabled: boolean,
   ): CinematicDirector | null {
-    if (!enabled || !finalState.over || finalState.winner < 0) return null;
-    const dir = new CinematicDirector([finalState], mapData, false, finalState);
+    if (!winnerCamEnabled || !finalState.over || finalState.winner < 0) return null;
+    const dir = new CinematicDirector(
+      [finalState],
+      mapData,
+      { killCam: false, finisherCam: false, winnerCam: true },
+      finalState,
+    );
     return dir.hasWinnerCloseup() ? dir : null;
   }
 
   constructor(
     ticks: TickSnapshot[],
     mapData: EngineMapData,
-    enabled: boolean,
+    optionsOrEnabled: boolean | Partial<CinematicOptions>,
     winnerOnlyFinalState?: TickSnapshot,
   ) {
     this.ticks = ticks;
     this.mapData = mapData;
+    this.options = normalizeCinematicOptions(optionsOrEnabled);
     this.cellM = mapData.cell / 1000;
     this.widthM = mapData.nx * this.cellM;
     this.heightM = mapData.ny * this.cellM;
 
     if (winnerOnlyFinalState) {
-      this.enabled = true;
+      this.enabled = this.options.winnerCam;
       this.matchEndSimSec = winnerOnlyFinalState.t * TICK_SEC;
       this.kills = [];
-      this.winnerShot = this.planWinnerShot(winnerOnlyFinalState, 0.22);
+      this.winnerShot = this.options.winnerCam ? this.planWinnerShot(winnerOnlyFinalState, 0.22) : null;
       this.timeIntervals.push({
         simStart: 0,
         simEnd: 1e9,
@@ -154,7 +179,8 @@ export class CinematicDirector {
       return;
     }
 
-    this.enabled = enabled && ticks.length >= 2;
+    const anyEnabled = this.options.killCam || this.options.finisherCam || this.options.winnerCam;
+    this.enabled = anyEnabled && ticks.length >= 2;
     this.matchEndSimSec = Math.max(0, ticks.length - 1) * TICK_SEC;
 
     if (!this.enabled) {
@@ -169,7 +195,7 @@ export class CinematicDirector {
     }
 
     this.kills = this.detectKillSegments();
-    this.winnerShot = this.planWinnerShot();
+    this.winnerShot = this.options.winnerCam ? this.planWinnerShot(undefined, 0.22) : null;
     this.timeIntervals = this.buildTimeIntervals();
   }
 
@@ -190,7 +216,7 @@ export class CinematicDirector {
     if (!this.enabled) return fallbackSec;
     const decisive = this.kills.find((k) => k.isDecisive);
     if (decisive && this.winnerShot) {
-      const postSlowReal = Math.max(0, decisive.slowEndSim - this.matchEndSimSec) / KILL_TIME_SCALE;
+      const postSlowReal = Math.max(0, decisive.slowEndSim - this.matchEndSimSec) / decisive.timeScale;
       return postSlowReal + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
     }
     if (this.winnerShot) {
@@ -198,22 +224,23 @@ export class CinematicDirector {
       return preDelay + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
     }
     if (decisive) {
-      const postSlowReal = Math.max(0, decisive.slowEndSim - this.matchEndSimSec) / KILL_TIME_SCALE;
+      const postSlowReal = Math.max(0, decisive.slowEndSim - this.matchEndSimSec) / decisive.timeScale;
       return Math.max(fallbackSec, postSlowReal + 0.85);
     }
     return fallbackSec;
   }
 
-  /** Simulation speed scale (0.25 during kill slow-mo, 1.0 otherwise) at continuous `simSec`. */
+  /** Simulation speed scale (0.5x on non-final kills, 0.25x on the final kill, 1.0 otherwise) at `simSec`. */
   public getSpeedScaleAtSim(simSec: number): number {
     if (!this.enabled) return 1.0;
+    let scale = 1.0;
     for (let i = 0; i < this.kills.length; i++) {
       const k = this.kills[i];
-      if (simSec >= k.slowStartSim && simSec < k.slowEndSim) {
-        return KILL_TIME_SCALE;
+      if (simSec >= k.slowStartSim && simSec < k.slowEndSim && k.timeScale < scale) {
+        scale = k.timeScale;
       }
     }
-    return 1.0;
+    return scale;
   }
 
   /** Exact monotonic map from simulation time (s) to 1x cinematic real/video time (s). */
@@ -353,11 +380,9 @@ export class CinematicDirector {
   private computeKillWeight(seg: KillSegment, simSec: number): number {
     if (simSec < seg.slowStartSim) return 0;
 
-    // Enter transition occurs over the first CAM_ENTER_REAL_SEC of the 0.25x slow-mo window
-    const enterSimDur = Math.min(
-      Math.max(0.08, seg.killSimSec - seg.slowStartSim),
-      CAM_ENTER_REAL_SEC * KILL_TIME_SCALE,
-    );
+    // Smooth enter over first ~0.45-0.58s real time (capped to half of pre-kill window so lock-on stays crisp)
+    const preSimDur = Math.max(0.08, seg.killSimSec - seg.slowStartSim);
+    const enterSimDur = Math.min(preSimDur * 0.5, CAM_ENTER_REAL_SEC * seg.timeScale);
     if (simSec < seg.slowStartSim + enterSimDur) {
       return smootherstep((simSec - seg.slowStartSim) / enterSimDur);
     }
@@ -511,9 +536,19 @@ export class CinematicDirector {
     }
 
     const segments: KillSegment[] = [];
-    for (const grp of groups) {
+    for (let gIdx = 0; gIdx < groups.length; gIdx++) {
+      const grp = groups[gIdx];
       const first = grp[0];
       const last = grp[grp.length - 1];
+      const isLastKill = gIdx === groups.length - 1;
+
+      // Non-final kills controlled by `killCam`; final kill controlled by `finisherCam`
+      if (isLastKill && !this.options.finisherCam) continue;
+      if (!isLastKill && !this.options.killCam) continue;
+
+      const timeScale = isLastKill ? FINAL_KILL_TIME_SCALE : NON_FINAL_KILL_TIME_SCALE;
+      const postKillSim = isLastKill ? POST_KILL_SIM_SEC_FINAL : POST_KILL_SIM_SEC_NON_FINAL;
+
       // Prefer decisive kill or boomerang kill as the primary camera subject
       const primary =
         grp.find((g) => g.isMatchOver && g.winner >= 0) ||
@@ -521,9 +556,9 @@ export class CinematicDirector {
         last;
 
       const slowStartSim = Math.max(0, first.simSec - PRE_KILL_SIM_SEC);
-      const slowEndSim = last.simSec + POST_KILL_SIM_SEC;
+      const slowEndSim = last.simSec + postKillSim;
       const isDecisive = last.isMatchOver && last.winner >= 0;
-      const exitEndSim = isDecisive ? slowEndSim : slowEndSim + CAM_EXIT_REAL_SEC;
+      const exitEndSim = isDecisive && this.options.winnerCam ? slowEndSim : slowEndSim + CAM_EXIT_REAL_SEC;
 
       const seg = this.buildKillSegmentGeometry(
         primary.tickIdx,
@@ -531,6 +566,7 @@ export class CinematicDirector {
         slowStartSim,
         slowEndSim,
         exitEndSim,
+        timeScale,
         primary.cause,
         primary.victim,
         primary.killer,
@@ -548,6 +584,7 @@ export class CinematicDirector {
     slowStartSim: number,
     slowEndSim: number,
     exitEndSim: number,
+    timeScale: number,
     cause: CauseType,
     victimSeat: number,
     killerSeat: number,
@@ -602,6 +639,7 @@ export class CinematicDirector {
         slowStartSim,
         slowEndSim,
         exitEndSim,
+        timeScale,
         cause,
         victimSeat,
         killerSeat,
@@ -650,6 +688,7 @@ export class CinematicDirector {
         slowStartSim,
         slowEndSim,
         exitEndSim,
+        timeScale,
         cause,
         victimSeat,
         killerSeat,
@@ -693,6 +732,7 @@ export class CinematicDirector {
       slowStartSim,
       slowEndSim,
       exitEndSim,
+      timeScale,
       cause,
       victimSeat,
       killerSeat,
@@ -824,54 +864,45 @@ export class CinematicDirector {
   }
 
   private buildTimeIntervals(): TimeInterval[] {
-    // Merge any overlapping slow-mo windows in simSec
-    const slowRanges: [number, number][] = [];
+    // Partition timeline by all slow-mo start/end breakpoints so mixed 0.5x & 0.25x segments map exactly!
+    const points = new Set<number>([0]);
     for (const k of this.kills) {
-      const prev = slowRanges[slowRanges.length - 1];
-      if (prev && k.slowStartSim <= prev[1]) {
-        prev[1] = Math.max(prev[1], k.slowEndSim);
-      } else {
-        slowRanges.push([k.slowStartSim, k.slowEndSim]);
-      }
+      points.add(Math.max(0, k.slowStartSim));
+      points.add(Math.max(0, k.slowEndSim));
     }
+    const sorted = Array.from(points).sort((a, b) => a - b);
 
     const intervals: TimeInterval[] = [];
-    let simCursor = 0;
     let realCursor = 0;
 
-    for (const [s0, s1] of slowRanges) {
-      if (s0 > simCursor) {
-        const dur = s0 - simCursor;
+    for (let i = 0; i < sorted.length - 1; i++) {
+      const s0 = sorted[i];
+      const s1 = sorted[i + 1];
+      if (s1 - s0 <= 1e-6) continue;
+      const scale = this.getSpeedScaleAtSim((s0 + s1) * 0.5);
+      const realDur = (s1 - s0) / scale;
+      const prev = intervals[intervals.length - 1];
+      if (prev && Math.abs(prev.scale - scale) < 1e-6 && Math.abs(prev.simEnd - s0) < 1e-6) {
+        prev.simEnd = s1;
+        prev.realEnd += realDur;
+      } else {
         intervals.push({
-          simStart: simCursor,
-          simEnd: s0,
-          realStart: realCursor,
-          realEnd: realCursor + dur,
-          scale: 1.0,
-        });
-        realCursor += dur;
-        simCursor = s0;
-      }
-      if (s1 > simCursor) {
-        const simDur = s1 - simCursor;
-        const realDur = simDur / KILL_TIME_SCALE;
-        intervals.push({
-          simStart: simCursor,
+          simStart: s0,
           simEnd: s1,
           realStart: realCursor,
           realEnd: realCursor + realDur,
-          scale: KILL_TIME_SCALE,
+          scale,
         });
-        realCursor += realDur;
-        simCursor = s1;
       }
+      realCursor += realDur;
     }
 
+    const tailSim = sorted[sorted.length - 1] ?? 0;
     intervals.push({
-      simStart: simCursor,
+      simStart: tailSim,
       simEnd: 1e9,
       realStart: realCursor,
-      realEnd: realCursor + (1e9 - simCursor),
+      realEnd: realCursor + (1e9 - tailSim),
       scale: 1.0,
     });
 

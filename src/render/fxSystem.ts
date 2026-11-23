@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { DState, PState, TickSnapshot } from '../game/types';
 
 interface ActiveBurst {
-  kind: 'ring' | 'slash' | 'kick' | 'spark' | 'puff' | 'cube' | 'streak' | 'confetti';
+  kind: 'ring' | 'slash' | 'kick' | 'spark' | 'puff' | 'cube' | 'streak' | 'confetti' | 'ribbon';
   x: number;
   y: number;
   z: number;
@@ -17,6 +17,9 @@ interface ActiveBurst {
   lifeSec: number;
   spin: number;
   gravity: number;
+  drag?: number;
+  flutter?: number;
+  phase?: number;
 }
 
 class MeshPool {
@@ -201,6 +204,7 @@ export class FXSystem {
   private readonly sparks: MeshPool;
   private readonly puffs: MeshPool;
   private readonly cubes: MeshPool;
+  private readonly ribbons: MeshPool;
   private readonly streaks: MeshPool;
 
   private readonly dartTrails: TrailRibbon[] = [];
@@ -257,6 +261,14 @@ export class FXSystem {
       color: '#ffffff',
       transparent: true,
       opacity: 1.0,
+    }));
+
+    const ribbonGeo = new THREE.PlaneGeometry(0.18, 0.072);
+    this.ribbons = new MeshPool(scene, 180, ribbonGeo, new THREE.MeshBasicMaterial({
+      color: '#ffffff',
+      transparent: true,
+      opacity: 1.0,
+      side: THREE.DoubleSide,
     }));
 
     const streakGeo = new THREE.PlaneGeometry(2.0, 0.24);
@@ -605,6 +617,65 @@ export class FXSystem {
     }
   }
 
+  /**
+   * Periodic festive ribbon-confetti burst tailored for the Winner Front Close-Up camera:
+   * pops radially outward 360° around the celebrating winner and flutters slowly downward
+   * right inside the close-up frame (deterministic per wave for crisp MP4 & GIF parity).
+   */
+  public spawnWinnerConfettiBurst(
+    x: number,
+    z: number,
+    winnerColorHex: string,
+    nowSec: number,
+    waveIndex = 0,
+  ) {
+    const palette = [
+      new THREE.Color(winnerColorHex),
+      new THREE.Color('#ffe04d'),
+      new THREE.Color('#ff5c93'),
+      new THREE.Color('#4cd8ff'),
+      new THREE.Color('#6cf283'),
+      new THREE.Color('#ff8c38'),
+      new THREE.Color('#c38bff'),
+      new THREE.Color('#ffffff'),
+    ];
+    const hash = (k: number) => {
+      const s = Math.sin(k * 127.1 + waveIndex * 311.7) * 43758.5453;
+      return s - Math.floor(s);
+    };
+    const count = 32;
+    for (let i = 0; i < count; i++) {
+      const r1 = hash(i * 3 + 1);
+      const r2 = hash(i * 3 + 2);
+      const r3 = hash(i * 3 + 3);
+      const ang = (i / count) * Math.PI * 2 + (r1 - 0.5) * 0.28 + waveIndex * 0.45;
+      const startR = 0.22 + r2 * 0.2;
+      const horizSp = 1.65 + r1 * 1.75;
+      const vy = 1.25 + r2 * 0.95;
+      const sc = 0.85 + r3 * 0.45;
+      this.bursts.push({
+        kind: 'ribbon',
+        x: x + Math.cos(ang) * startR,
+        y: 0.88 + r3 * 0.34,
+        z: z + Math.sin(ang) * startR,
+        vx: Math.cos(ang) * horizSp,
+        vy,
+        vz: Math.sin(ang) * horizSp,
+        rotY: ang + r1 * Math.PI,
+        scale0: sc,
+        scale1: sc * 0.82,
+        color: palette[(i + waveIndex) % palette.length],
+        bornSec: nowSec,
+        lifeSec: 1.75 + r3 * 0.45,
+        spin: 6.5 + r2 * 7.5,
+        gravity: 2.15,
+        drag: 1.85,
+        flutter: 0.08 + r1 * 0.06,
+        phase: r3 * Math.PI * 2,
+      });
+    }
+  }
+
   private spawnSparks(
     x: number,
     y: number,
@@ -654,6 +725,7 @@ export class FXSystem {
     this.sparks.reset();
     this.puffs.reset();
     this.cubes.reset();
+    this.ribbons.reset();
     this.streaks.reset();
 
     // 2. Update dart & dash ribbons
@@ -730,11 +802,23 @@ export class FXSystem {
       }
       const u = age / b.lifeSec;
       const e = 1 - Math.pow(1 - u, 3);
-      const x = b.x + b.vx * age;
-      const y = Math.max(0.05, b.y + b.vy * age - 0.5 * b.gravity * age * age);
-      const z = b.z + b.vz * age;
+      let x: number;
+      let y: number;
+      let z: number;
+      if (b.kind === 'ribbon') {
+        const k = b.drag ?? 1.85;
+        const damped = (1 - Math.exp(-k * age)) / k;
+        const fl = (b.flutter ?? 0.1) * Math.sin(age * 6.5 + (b.phase ?? 0)) * Math.min(1, age * 2);
+        x = b.x + b.vx * damped + fl;
+        z = b.z + b.vz * damped + fl * 0.7;
+        y = Math.max(0.04, b.y + b.vy * age - 0.5 * b.gravity * age * age);
+      } else {
+        x = b.x + b.vx * age;
+        y = Math.max(0.05, b.y + b.vy * age - 0.5 * b.gravity * age * age);
+        z = b.z + b.vz * age;
+      }
       const sc = b.scale0 + (b.scale1 - b.scale0) * e;
-      const op = Math.max(0, 1 - u * u);
+      const op = b.kind === 'ribbon' ? Math.max(0, 1 - Math.pow(Math.max(0, (u - 0.65) / 0.35), 2)) : Math.max(0, 1 - u * u);
 
       let m: THREE.Mesh | null = null;
       if (b.kind === 'ring') m = this.rings.take();
@@ -742,6 +826,7 @@ export class FXSystem {
       else if (b.kind === 'spark') m = this.sparks.take();
       else if (b.kind === 'puff') m = this.puffs.take();
       else if (b.kind === 'cube' || b.kind === 'confetti') m = this.cubes.take();
+      else if (b.kind === 'ribbon') m = this.ribbons.take();
       else if (b.kind === 'streak') m = this.streaks.take();
 
       if (!m) continue;
@@ -758,6 +843,9 @@ export class FXSystem {
       } else if (b.kind === 'streak') {
         m.rotation.set(0, b.rotY, 0);
         m.scale.set(sc, 1, 1 - u * 0.5);
+      } else if (b.kind === 'ribbon') {
+        m.rotation.set(age * b.spin, b.rotY + age * b.spin * 0.65, Math.sin(age * 7.5 + (b.phase ?? 0)) * 0.9);
+        m.scale.setScalar(sc);
       } else {
         m.rotation.set(age * b.spin, b.rotY + age * b.spin * 0.6, age * b.spin * 0.4);
         m.scale.setScalar(sc);
@@ -819,6 +907,7 @@ export class FXSystem {
     this.sparks.reset();
     this.puffs.reset();
     this.cubes.reset();
+    this.ribbons.reset();
     this.streaks.reset();
     for (const r of this.dartTrails) r.clear();
     for (const r of this.dashTrails) r.clear();
@@ -830,6 +919,7 @@ export class FXSystem {
     this.sparks.dispose(this.scene);
     this.puffs.dispose(this.scene);
     this.cubes.dispose(this.scene);
+    this.ribbons.dispose(this.scene);
     this.streaks.dispose(this.scene);
     for (const r of this.dartTrails) r.dispose(this.scene);
     for (const r of this.dashTrails) r.dispose(this.scene);
