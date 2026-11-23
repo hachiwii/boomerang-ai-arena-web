@@ -481,7 +481,7 @@ export class ArenaMap3D {
   /**
    * Update collapsing tiles, grass sway, drifting clouds, and ambient petals/snow at 240Hz+.
    */
-  public update(gt: number, elapsedSec: number, opts?: { pauseClouds?: boolean }) {
+  public update(gt: number, elapsedSec: number, opts?: { pauseClouds?: boolean; hideAmbient?: boolean }) {
     const { waveSteps, colWarn } = this.mapData;
 
     const updateGroup = (
@@ -603,20 +603,25 @@ export class ArenaMap3D {
       this.cloudMesh.instanceMatrix.needsUpdate = true;
     }
 
-    // Ambient falling petals / snow / leaves
+    // Ambient falling petals / snow / leaves (optionally hidden for compact GIF capture)
     if (this.ambientMesh) {
-      for (let i = 0; i < this.ambientData.length; i++) {
-        const p = this.ambientData[i];
-        const y = ((p.y + elapsedSec * p.vy) % 7.5 + 7.5) % 7.5 + 0.3;
-        const x = ((p.x + elapsedSec * p.vx + Math.sin(elapsedSec * 1.8 + p.phase) * 0.5) % (this.widthM + 6) + (this.widthM + 6)) % (this.widthM + 6) - 3;
-        const z = ((p.z + elapsedSec * p.vz) % (this.heightM + 6) + (this.heightM + 6)) % (this.heightM + 6) - 3;
-        this._dummy.position.set(x, y, z);
-        this._dummy.rotation.set(elapsedSec * 2 + p.phase, elapsedSec * 1.4, p.phase);
-        this._dummy.scale.setScalar(p.s);
-        this._dummy.updateMatrix();
-        this.ambientMesh.setMatrixAt(i, this._dummy.matrix);
+      if (opts?.hideAmbient) {
+        this.ambientMesh.visible = false;
+      } else {
+        this.ambientMesh.visible = true;
+        for (let i = 0; i < this.ambientData.length; i++) {
+          const p = this.ambientData[i];
+          const y = ((p.y + elapsedSec * p.vy) % 7.5 + 7.5) % 7.5 + 0.3;
+          const x = ((p.x + elapsedSec * p.vx + Math.sin(elapsedSec * 1.8 + p.phase) * 0.5) % (this.widthM + 6) + (this.widthM + 6)) % (this.widthM + 6) - 3;
+          const z = ((p.z + elapsedSec * p.vz) % (this.heightM + 6) + (this.heightM + 6)) % (this.heightM + 6) - 3;
+          this._dummy.position.set(x, y, z);
+          this._dummy.rotation.set(elapsedSec * 2 + p.phase, elapsedSec * 1.4, p.phase);
+          this._dummy.scale.setScalar(p.s);
+          this._dummy.updateMatrix();
+          this.ambientMesh.setMatrixAt(i, this._dummy.matrix);
+        }
+        this.ambientMesh.instanceMatrix.needsUpdate = true;
       }
-      this.ambientMesh.instanceMatrix.needsUpdate = true;
     }
   }
 

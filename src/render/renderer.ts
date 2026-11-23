@@ -1151,7 +1151,7 @@ export class GameRenderer {
     gt: number,
     frameDt: number,
     elapsedSec: number,
-    opts?: { pauseClouds?: boolean; skipRender?: boolean },
+    opts?: { pauseClouds?: boolean; hideAmbient?: boolean; skipRender?: boolean },
   ): ProjectedNameplate[] {
     this.elapsedSec = elapsedSec;
     const out: ProjectedNameplate[] = [];

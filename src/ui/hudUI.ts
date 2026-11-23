@@ -441,7 +441,7 @@ export class HudUI {
             type="button"
             class="replay-ctrl-btn replay-gif-btn"
             id="replay-gif-btn"
-            title="截取当前时间点往前最长 10s 画面为 720p 15fps GIF（暂停背景飘云，保留其他动效）"
+            title="截取当前时间点往前最长 10s 画面为 720p 24fps GIF（暂停背景飘云并移除飘落物，保留其他动效）"
           >🎞 10s GIF</button>
         </div>
       </div>
@@ -598,7 +598,7 @@ export class HudUI {
     const endSec = endTickIndex / 20;
     const atEnd = endTickIndex >= bundle.replay.ticks.length - 1;
     const startSec = Math.max(0, endSec + (atEnd ? 0.85 : 0) - 10);
-    const rangeLabel = `${startSec.toFixed(1)}s–${endSec.toFixed(1)}s · 720p 15fps`;
+    const rangeLabel = `${startSec.toFixed(1)}s–${endSec.toFixed(1)}s · 720p 24fps`;
     const abortCtrl = new AbortController();
     this.replayExportAbort = abortCtrl;
 

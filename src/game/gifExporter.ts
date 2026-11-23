@@ -31,13 +31,13 @@ export interface GifClipExportResult {
 
 const GIF_WIDTH = 1280;
 const GIF_HEIGHT = 720;
-const GIF_FPS = 15;
+const GIF_FPS = 24;
 const DEFAULT_MAX_CLIP_SEC = 10.0;
 const END_OUTRO_SEC = 0.85;
 const WARMUP_TICKS = 30; // 1.5s pre-roll so trails/particles/shake are warm at clip start
 const TRANSPARENT_IDX = 255;
-// 70 + 70 + 60 = 200ms per 3 frames => exact 15.000 fps in GIF 10ms centisecond timing
-const FRAME_DELAYS_MS = [70, 70, 60] as const;
+// 5x40ms + 50ms = 250ms per 6 frames => exact 24.000 fps in GIF 10ms centisecond timing
+const FRAME_DELAYS_MS = [40, 40, 40, 40, 40, 50] as const;
 
 function buildGifFilename(bundle: MatchReplayBundle, startSec: number, endSec: number): string {
   const { summary } = bundle;
@@ -52,13 +52,13 @@ function buildGifFilename(bundle: MatchReplayBundle, startSec: number, endSec: n
         : 'custom';
   const sTag = `${startSec.toFixed(1)}s`;
   const eTag = `${endSec.toFixed(1)}s`;
-  return `boomerang_${modeTag}_${summary.mapId}_${stamp}_${sTag}-${eTag}_720p_15fps.gif`;
+  return `boomerang_${modeTag}_${summary.mapId}_${stamp}_${sTag}-${eTag}_720p_${GIF_FPS}fps.gif`;
 }
 
 /**
  * Exports up to the last `maxDurationSec` (default 10s) leading up to `endTickIndex`
- * as a 720p 15fps animated GIF with paused background clouds while keeping all
- * other effects (grass sway, ambient particles, collapse, camera shake, FX, HUD) intact.
+ * as a 720p 24fps animated GIF with paused background clouds and hidden ambient
+ * falling particles while keeping all other effects (grass sway, collapse, camera shake, FX, HUD) intact.
  */
 export async function exportReplayClipToGif(
   bundle: MatchReplayBundle,
@@ -159,6 +159,7 @@ export async function exportReplayClipToGif(
           const gt = prevSnap.t + alpha;
           offRenderer.renderOfflineFrame(prevSnap, currSnap, alpha, gt, stepDt, simSec, {
             pauseClouds: true,
+            hideAmbient: true,
             skipRender: true,
           });
         }
@@ -207,6 +208,7 @@ export async function exportReplayClipToGif(
 
       const nameplates = offRenderer.renderOfflineFrame(prevSnap, currSnap, alpha, gt, frameDt, simSec, {
         pauseClouds: true,
+        hideAmbient: true,
         skipRender,
       });
 
@@ -353,7 +355,7 @@ export async function exportReplayClipToGif(
     const diffFull = new Uint8Array(numPixels);
     const cropBuf = new Uint8Array(numPixels);
 
-    const gif = GIFEncoder({ initialCapacity: 4 * 1024 * 1024 });
+    const gif = GIFEncoder({ initialCapacity: 6 * 1024 * 1024 });
     const pass2Idx = { value: resetAndWarmup() };
     lastYieldMs = performance.now();
 
@@ -367,7 +369,7 @@ export async function exportReplayClipToGif(
       const img = compCtx.getImageData(0, 0, GIF_WIDTH, GIF_HEIGHT);
       const rgba = img.data;
       const curRgba32 = new Uint32Array(rgba.buffer, rgba.byteOffset, numPixels);
-      const delay = FRAME_DELAYS_MS[f % 3];
+      const delay = FRAME_DELAYS_MS[f % FRAME_DELAYS_MS.length];
 
       if (f === 0) {
         for (let i = 0; i < numPixels; i++) {
