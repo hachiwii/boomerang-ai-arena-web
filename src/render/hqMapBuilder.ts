@@ -33,6 +33,8 @@ import { getHqTheme, HqThemeSpec } from './hqThemes';
 export interface ArenaMapUpdateOpts {
   pauseClouds?: boolean;
   hideAmbient?: boolean;
+  pauseGrass?: boolean;
+  pauseWaterfall?: boolean;
   freezeCollapseAtTick?: number;
 }
 
@@ -65,6 +67,9 @@ export interface OccluderEntry {
   baseOpacities: number[];
   box: THREE.Box3;
   isGrass: boolean;
+  /** When true (outer background floating islands), hide meshes outright instead of semi-transparent fade! */
+  hideOnOcclude?: boolean;
+  hiddenByOcclude?: boolean;
   minOpacity: number;
   curOpacity: number;
   usingFade: boolean;
@@ -133,6 +138,25 @@ export function applyCloseupOcclusionStep(
 
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
+
+    // Background outer floating islands: completely hide while blocking close-up camera!
+    if (e.hideOnOcclude) {
+      let hit = false;
+      if (active && dist > 0.5) {
+        const tMax = dist - 0.45;
+        if (tMax > -0.3) {
+          hit = segmentIntersectsExpandedBox(camPos, _dirScratch, -0.35, tMax, e.box, 0.85);
+        }
+      }
+      if (hit !== Boolean(e.hiddenByOcclude)) {
+        e.hiddenByOcclude = hit;
+        for (let k = 0; k < e.meshes.length; k++) {
+          e.meshes[k].visible = !hit;
+        }
+      }
+      continue;
+    }
+
     if (!active && !e.usingFade && e.curOpacity >= 0.999) continue;
 
     let hit = false;
@@ -461,7 +485,7 @@ export class HqArenaMap3D implements IArenaMap {
     return this.getChunkForCell(Math.floor(mx / cs), Math.floor(my / cs));
   }
 
-  private registerOccluder(meshes: THREE.Mesh[], wave: number, isGrass = false) {
+  private registerOccluder(meshes: THREE.Mesh[], wave: number, isGrass = false, hideOnOcclude = false): OccluderEntry | null {
     const box = new THREE.Box3();
     const opaqueMaterials: THREE.Material[] = [];
     const baseOpacities: number[] = [];
@@ -476,19 +500,23 @@ export class HqArenaMap3D implements IArenaMap {
       opaqueMaterials.push(mat);
       baseOpacities.push(mat.opacity);
     }
-    if (box.isEmpty()) return;
-    this.occluders.push({
+    if (box.isEmpty()) return null;
+    const entry: OccluderEntry = {
       meshes,
       opaqueMaterials,
       fadeMaterials: null,
       baseOpacities,
       box,
       isGrass,
+      hideOnOcclude,
+      hiddenByOcclude: false,
       minOpacity: isGrass ? 0.34 : 0.24,
       curOpacity: 1.0,
       usingFade: false,
       wave,
-    });
+    };
+    this.occluders.push(entry);
+    return entry;
   }
 
   private buildTerrainWavesAndChunks(rng: SeededRng) {
@@ -1611,12 +1639,13 @@ export class HqArenaMap3D implements IArenaMap {
     const arenaCenterX = Wm * 0.5;
     const arenaCenterY = -Hm * 0.5;
 
-    // Merge all non-occludable distant islands into ONE single builder (3 draw calls instead of 28!)
-    const mergedFarMb = new HqMeshBuilder();
     let m06RimWorld: [number, number][] = [];
+    let m06Occluder: OccluderEntry | null = null;
 
     slots.forEach((sl, si) => {
-      const mb = sl.occludable ? new HqMeshBuilder() : mergedFarMb;
+      // Every outer floating island gets its own lightweight group & hideOnOcclude entry so ANY
+      // background island blocking a close-up lens (from any angle!) cleanly hides outright!
+      const mb = new HqMeshBuilder();
 
       // Faithful original multi-lobe SDF + Voronoi columnar cliff + sharp_deg=33° floating island!
       const built = buildOriginalDecorIsland(mb, sl.nm, sl.x, sl.y, sl.z, sl.rot, P);
@@ -1718,19 +1747,15 @@ export class HqArenaMap3D implements IArenaMap {
         }
       }
 
-      if (sl.occludable) {
-        const { meshes } = mb.buildMeshes({ castShadow: false, receiveShadow: true, sharedMats: this.sharedBucketMats });
-        const grp = new THREE.Group();
-        for (const m of meshes) grp.add(m);
-        this.root.add(grp);
-        this.registerOccluder(meshes, -1, false);
+      const { meshes } = mb.buildMeshes({ castShadow: false, receiveShadow: true, sharedMats: this.sharedBucketMats });
+      const grp = new THREE.Group();
+      for (const m of meshes) grp.add(m);
+      this.root.add(grp);
+      const occ = this.registerOccluder(meshes, -1, false, true);
+      if (si === 0 && sl.nm === 'm06') {
+        m06Occluder = occ;
       }
     });
-
-    if (mergedFarMb.hasAny()) {
-      const { meshes } = mergedFarMb.buildMeshes({ castShadow: false, receiveShadow: true, sharedMats: this.sharedBucketMats });
-      for (const m of meshes) this.root.add(m);
-    }
 
     // Animated cascading waterfall anchored cleanly to the exact organic east cliff edge of `m06`!
     if (D.waterfall) {
@@ -1795,6 +1820,15 @@ export class HqArenaMap3D implements IArenaMap {
 
       this.waterfallGroup = wf;
       this.root.add(wf);
+      // Hide the waterfall together with `m06` if `m06` blocks a close-up camera!
+      if (m06Occluder) {
+        const occ = m06Occluder as OccluderEntry;
+        wf.traverse((obj) => {
+          if (obj instanceof THREE.Mesh) {
+            occ.meshes.push(obj);
+          }
+        });
+      }
     }
   }
 
@@ -2047,19 +2081,26 @@ export class HqArenaMap3D implements IArenaMap {
       this.warnCliffMat.emissive.copy(this._black);
     }
 
-    // 2. Gentle tall-grass breeze sway
-    for (let i = 0; i < this.grassClusters.length; i++) {
-      const g = this.grassClusters[i];
-      const sw = Math.sin(elapsedSec * 2.3 + g.cx * 0.7 + g.phase) * 0.075;
-      g.group.rotation.set(sw, 0, sw * 0.65);
+    // 2. Gentle tall-grass breeze sway (frozen completely when `pauseGrass` is set for compact GIFs!)
+    if (opts?.pauseGrass) {
+      for (let i = 0; i < this.grassClusters.length; i++) {
+        this.grassClusters[i].group.rotation.set(0, 0, 0);
+      }
+    } else {
+      for (let i = 0; i < this.grassClusters.length; i++) {
+        const g = this.grassClusters[i];
+        const sw = Math.sin(elapsedSec * 2.3 + g.cx * 0.7 + g.phase) * 0.075;
+        g.group.rotation.set(sw, 0, sw * 0.65);
+      }
     }
 
-    // 3. Animated cascading waterfall
+    // 3. Animated cascading waterfall (frozen cleanly at resting pose when `pauseWaterfall` is set!)
     if (this.waterfallGroup) {
+      const wfSec = opts?.pauseWaterfall ? 0 : elapsedSec;
       for (let i = 0; i < this.waterfallStreaks.length; i++) {
         const sm = this.waterfallStreaks[i];
         const ud = sm.userData as { wfX: number; wfZ: number; topY: number; drop: number; phase: number };
-        const t = (((elapsedSec * 0.62 + ud.phase) % 1) + 1) % 1;
+        const t = (((wfSec * 0.62 + ud.phase) % 1) + 1) % 1;
         const y = ud.topY - t * ud.drop;
         const curveOut = Math.sin(Math.min(1, t * 2.2) * Math.PI * 0.5) * 0.55;
         sm.position.set(ud.wfX - 0.52 + curveOut + 0.04, y, ud.wfZ);
@@ -2067,7 +2108,7 @@ export class HqArenaMap3D implements IArenaMap {
       for (let i = 0; i < this.waterfallMist.length; i++) {
         const mm = this.waterfallMist[i];
         const ud = mm.userData as { baseY: number; phase: number; baseScale: number };
-        const p = Math.sin(elapsedSec * 3.1 + ud.phase);
+        const p = Math.sin(wfSec * 3.1 + ud.phase);
         mm.position.y = ud.baseY + p * 0.14;
         mm.scale.setScalar(ud.baseScale * (0.9 + 0.16 * p));
       }

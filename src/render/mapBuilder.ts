@@ -679,7 +679,7 @@ export class ArenaMap3D implements IArenaMap {
       updateGroup(wc.bodyMesh, wc.bodyTiles, false, true, true);
       updateGroup(wc.topMesh, wc.topTiles, false, false, true);
     }
-    updateGroup(this.grassMesh, this.grassTiles, true, false);
+    updateGroup(this.grassMesh, this.grassTiles, !opts?.pauseGrass, false);
 
     if (!shadowDirty && anyShadowWallDropping && Math.abs(gt - this.lastShadowBakeGt) >= 1.5) {
       shadowDirty = true;

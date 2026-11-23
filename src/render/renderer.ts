@@ -1503,6 +1503,8 @@ export class GameRenderer {
     opts?: {
       pauseClouds?: boolean;
       hideAmbient?: boolean;
+      pauseGrass?: boolean;
+      pauseWaterfall?: boolean;
       skipRender?: boolean;
       cameraPose?: CinematicCameraPose | null;
     },
@@ -1517,6 +1519,8 @@ export class GameRenderer {
       this.arena.update(gt, elapsedSec, {
         pauseClouds: opts?.pauseClouds,
         hideAmbient: opts?.hideAmbient,
+        pauseGrass: opts?.pauseGrass,
+        pauseWaterfall: opts?.pauseWaterfall,
         freezeCollapseAtTick: curr.over ? curr.t : undefined,
       })
     ) {
