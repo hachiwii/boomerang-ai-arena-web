@@ -112,13 +112,49 @@ export class CinematicDirector {
   private readonly winnerShot: WinnerShotPlan | null = null;
   private readonly timeIntervals: TimeInterval[] = [];
 
-  constructor(ticks: TickSnapshot[], mapData: EngineMapData, enabled: boolean) {
+  /**
+   * Creates a lightweight post-match director for live human matches:
+   * keeps gameplay 100% real-time, then smoothly glides into the front-facing
+   * winner close-up right after the winning blow lands.
+   */
+  public static createWinnerCloseupOnly(
+    finalState: TickSnapshot,
+    mapData: EngineMapData,
+    enabled: boolean,
+  ): CinematicDirector | null {
+    if (!enabled || !finalState.over || finalState.winner < 0) return null;
+    const dir = new CinematicDirector([finalState], mapData, false, finalState);
+    return dir.hasWinnerCloseup() ? dir : null;
+  }
+
+  constructor(
+    ticks: TickSnapshot[],
+    mapData: EngineMapData,
+    enabled: boolean,
+    winnerOnlyFinalState?: TickSnapshot,
+  ) {
     this.ticks = ticks;
     this.mapData = mapData;
-    this.enabled = enabled && ticks.length >= 2;
     this.cellM = mapData.cell / 1000;
     this.widthM = mapData.nx * this.cellM;
     this.heightM = mapData.ny * this.cellM;
+
+    if (winnerOnlyFinalState) {
+      this.enabled = true;
+      this.matchEndSimSec = winnerOnlyFinalState.t * TICK_SEC;
+      this.kills = [];
+      this.winnerShot = this.planWinnerShot(winnerOnlyFinalState, 0.22);
+      this.timeIntervals.push({
+        simStart: 0,
+        simEnd: 1e9,
+        realStart: 0,
+        realEnd: 1e9,
+        scale: 1.0,
+      });
+      return;
+    }
+
+    this.enabled = enabled && ticks.length >= 2;
     this.matchEndSimSec = Math.max(0, ticks.length - 1) * TICK_SEC;
 
     if (!this.enabled) {
@@ -158,7 +194,8 @@ export class CinematicDirector {
       return postSlowReal + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
     }
     if (this.winnerShot) {
-      return WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
+      const preDelay = Math.max(0, this.winnerShot.glideStartSim - this.matchEndSimSec);
+      return preDelay + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
     }
     if (decisive) {
       const postSlowReal = Math.max(0, decisive.slowEndSim - this.matchEndSimSec) / KILL_TIME_SCALE;
@@ -672,8 +709,8 @@ export class CinematicDirector {
     };
   }
 
-  private planWinnerShot(): WinnerShotPlan | null {
-    const finalSnap = this.ticks[this.ticks.length - 1];
+  private planWinnerShot(explicitFinal?: TickSnapshot, glideDelaySim = 0): WinnerShotPlan | null {
+    const finalSnap = explicitFinal ?? this.ticks[this.ticks.length - 1];
     if (!finalSnap || !finalSnap.over || finalSnap.winner < 0) return null;
 
     const seat = finalSnap.winner;
@@ -712,9 +749,9 @@ export class CinematicDirector {
     const bestOz = Math.cos(bestAz) * horizDist;
     const stillOccluded = this.measureWallOcclusion(wx, wz, wx + bestOx, wz + bestOz, finalTick) > 0;
 
-    // Glide starts right when the decisive kill's slow-mo finishes (or at matchEndSimSec if timeout win)
+    // Glide starts right when the decisive kill's slow-mo finishes (or after brief beat in live human matches)
     const decisive = this.kills.find((k) => k.isDecisive);
-    const glideStartSim = decisive ? decisive.slowEndSim : this.matchEndSimSec;
+    const glideStartSim = decisive ? decisive.slowEndSim : this.matchEndSimSec + glideDelaySim;
     const glideEndSim = glideStartSim + WINNER_GLIDE_REAL_SEC;
 
     return {

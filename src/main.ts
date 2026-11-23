@@ -1,6 +1,7 @@
 import './style.css';
 import { SoundFX } from './audio/sfx';
 import { HumanInputController } from './game/humanInput';
+import { CinematicDirector } from './game/killCamDirector';
 import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
 import { MatchController } from './game/matchController';
 import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
@@ -334,6 +335,13 @@ async function bootstrap() {
       if (updatedDir) {
         renderer.setCinematicDirector(updatedDir);
         renderer.setPlaybackSpeed(activeConfig?.speed ?? 1.0);
+      } else {
+        const curSt = controller.getCurrentState();
+        if (curSt?.over && activeMapData) {
+          renderer.setCinematicDirector(
+            CinematicDirector.createWinnerCloseupOnly(curSt, activeMapData, s.killCam),
+          );
+        }
       }
     }
   });
@@ -496,12 +504,21 @@ async function bootstrap() {
         }
       }
       persistCurrentMatchHistory(eloResult, false);
+      // Live human matches don't slow-mo mid-match, but still glide smoothly to the winner front close-up!
+      let activeDirector = director ?? null;
+      if (!activeDirector && activeMapData && settings.get().killCam) {
+        activeDirector = CinematicDirector.createWinnerCloseupOnly(finalState, activeMapData, true);
+        if (activeDirector) {
+          renderer.setCinematicDirector(activeDirector);
+        }
+      }
+
       // Wait for victory celebration (extended smoothly when cinematic winner close-up is active!)
       clearMatchOverTimer();
       const baseSpeed = Math.max(0.25, activeConfig?.speed ?? 1.0);
       const celebrateMs =
-        director && director.isEnabled()
-          ? Math.round((director.getRecommendedOutroRealSec(1.6) / baseSpeed) * 1000)
+        activeDirector && activeDirector.isEnabled()
+          ? Math.round((activeDirector.getRecommendedOutroRealSec(1.6) / baseSpeed) * 1000)
           : 1600;
       matchOverTimer = window.setTimeout(() => {
         matchOverTimer = null;

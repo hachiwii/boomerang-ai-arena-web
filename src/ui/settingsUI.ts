@@ -302,7 +302,7 @@ export class SettingsModal {
               <div class="settings-toggle-meta">
                 <div class="settings-toggle-title">击杀慢动作与平视特写镜头</div>
                 <div class="settings-toggle-desc">
-                  开启后，回放、纯 AI 观战对局以及导出的 MP4 / GIF 将在每次击杀前 0.5s 自动 0.25x 慢放并平滑切至平视镜头（飞镖击杀跟随飞镖，近战/坠崖锁定冲突视角），决出胜者后切至获胜者正面特写
+                  开启后，回放、纯 AI 观战对局及导出的 MP4 / GIF 将在击杀前 0.5s 自动 0.25x 慢放平视特写；所有模式（含真人实时对局）决出胜者后均平滑切至获胜者正面特写
                 </div>
               </div>
               <button
