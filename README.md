@@ -1,32 +1,31 @@
-# 回旋镖大作战 · Boomerang AI Arena (Web Edition)
+# 回旋镖大作战 · Boomerang AI Arena (Web)
 
-基于 [meow-ai-arena](https://github.com/chen-006/meow-ai-arena) 第 11 集《回旋镖大作战》移植的浏览器可玩 3D Web 版，支持真人键鼠操控与 AI 同台竞技，或纯 AI 观战对决。
+一款纯前端浏览器运行的 3D 体素风《回旋镖大作战》对战网页版：内置原版确定性 C++ 规则引擎（WebAssembly）与 16 位 AI Bot 选手（含 13 位大语言模型编写的官方参赛 Bot + 3 位陪练 Bot），支持人类玩家亲自下场挑战排位赛或自定义对局，也可纯 AI 观战。
 
-## 特性一览
+## 核心特性
 
-- **权威规则引擎 + 全部官方 Bot 原汁原味编译为 WASM**：
-  - 规则引擎 `dart.hpp` 逐位一致编译为 `public/wasm/engine.wasm`，在独立 Web Worker 中以 **固定 20 Hz 逻辑 tick** 运行。
-  - 收录正赛 **13 位 AI 选手**（GPT-6.2 Astra、Claude Fable 5.2、Claude Opus 5.5、Gemini 4 Carbon、GPT-6.2 Sol、Gemini 4 Hydrogen、Grok 4.7、GLM 5.3、DeepSeek-V4.1-Flash、Kimi K3.1 Pro、千问 Qwen4-Max、MiMo V2.6 Pro、豆包 Seed-Evolving）及 **3 档官方陪练**（弱/中/强），全部由原版 C++17 源码编译为独立 `.wasm` 模块。
-  - 每个 AI 席位运行在各自隔离的 Web Worker + 独立 WASM 线性内存中，**支持同一 AI 放入多份副本**（自动在名称后追加编号如 `Astra 1`、`Astra 2` 并配独立脚环区分），且完全不阻塞主线程渲染。
-- **240 Hz+ 丝滑插值渲染**：
-  - 20 Hz 逻辑 tick 之间进行连续位置、朝向、动作姿态与特效插值；实例化浮岛地形 + 对象池特效将单帧 CPU 渲染耗时压至 **< 1 ms**，默认以 **240 Hz+** 高频渲染运行（右上角支持随时在 `240Hz+ 解锁` 与 `高刷 VSync` 间切换）。
-- **完整选图与参赛配置**：
-  - 支持全部 **10 张官方定稿地图**（双湖、阴阳、石阵、天桥、古塔、裂冰，以及适配 2-4 人的沙漏、峡谷、老城、林地），带各自主题配色、塌陷波次预警与坠落动画。
-  - 支持 **2～4 人** 自由组局；真人可参战（使用仓库自带的通用示范小人 `demo_blue` 蓝帽衫体素模型），也可切换为纯 AI 观战；一局结束后展示结算并自动返回主界面。
-- **官方 Bot 排行榜与人类动态 Elo**：
-  - 内置游戏内「🏆 排行榜」，直接导入原仓库官方海选榜的 13 位 AI 固定 Elo 分数（`+306.1` 到 `-250.7`）及陪练基准分，**Bot 分数始终固定**。
-  - **人类初始 0 分**：每一局有人类参与的比赛结束后按 Elo（400 刻度、K=32，支持 2/3/4 人两两期望得分）实时更新人类分数并在结算卡展示变动。
-  - 记录并展示人类及各 Bot 的 **2/3/4 人局分项胜率、总击杀、死亡、KD**，鼠标悬停任意行弹出 tooltip 显示 **飞镖击杀、近战击杀、地形击杀、坠崖次数**；支持一键「重置所有数据（保留 Bot 分数）」。
-- **0.2s 反应延迟仅对 Bot 生效**：
-  - 规则引擎 `DELAY=4`（0.2 秒）观测历史仅下发给 AI Bot；真人始终直读实时状态与实时视野，零人为延迟。
-- **操作方式（真人参战）**：
-  - `WASD` / 方向键：移动
-  - `鼠标左键`：向鼠标方向扔回旋镖 / 镖落地时 **长按左键** 召回（松开中断）
-  - `鼠标右键`：持镖时挥砍（可格挡正前方飞镖）/ 空手时踢人击退（冲刺途中可接冲刺斩/踢）
-  - `Shift`：冲刺（可越坑；按住移动键时沿移动方向冲刺，否则朝鼠标方向冲刺）
-  - `ESC`：随时返回主界面
+- **100% 本地浏览器运行（WASM + Web Worker）**：规则引擎 `dart.hpp` 与 16 个 C++ Bot 全部通过 Emscripten 编译为独立 WebAssembly 模块，在隔离的 Web Worker 中并行决策，无需后端服务器。
+- **排位赛 & 自定义对局**：
+  - **排位赛**：支持 **SOLO (1v1)** 与 **四人混战 (4P)** 双独立 Elo 排行榜、分模式图池与近三场防重随机、按位次就近匹配、结算段位超车动画，以及 `R` 键一键重新匹配。
+  - **自定义对局**：自由选择 2–4 人阵容（真人 / 官方 AI / 陪练）、10 张官方主题地图、随机站位、`0.1x–2.0x` 对局倍速与纯 AI 观战。
+- **高帧率 3D 渲染与操作优化**：
+  - 20Hz 权威逻辑步进 + 帧间平滑插值渲染（支持 `VSync` / `60`–`360 Hz` / `240Hz+ 解锁`）。
+  - 针对人类操作体验优化：3 秒开局倒计时、走路跌落防护开关、即将塌陷地板碎石音效提示、人类近战（挥砍/踢人）5 tick（250ms）判定窗口（Bot 严格保留原版 1 tick 判定与 0.2s 反应延迟）。
+  - 完整设置中心：音效开关与音量、帧率上限、全操作双键位自定义（支持键盘与鼠标键，冲突自动转移，本地持久化）。
 
-## 快速运行
+## 上游开源项目与致谢
+
+本项目基于 **[chen-006/meow-ai-arena](https://github.com/chen-006/meow-ai-arena)**（AI 算法对抗大赛第 11 集 [`boomerang/`](https://github.com/chen-006/meow-ai-arena/tree/main/boomerang)《回旋镖大作战》）构建，使用了原仓库的：
+
+- 规则引擎核心头文件（`dart.hpp`）与 10 张官方对战地图
+- 13 位官方参赛 AI Bot 与 3 位陪练 Bot 的 C++ 源码及基准评分数据
+- 体素小人角色模型与头像美术资源
+
+原项目同样采用 MIT License 开源，感谢原作者与所有贡献者！
+
+## 本地开发与构建
+
+### 1. 安装依赖并启动开发服务器
 
 ```bash
 npm install
@@ -35,21 +34,36 @@ npm run dev
 
 打开浏览器访问 `http://localhost:5173/` 即可游玩。
 
-### 生产构建与预览
+### 2. 构建生产静态产物
 
 ```bash
 npm run build
-npm run preview
 ```
 
-### 重新编译 WASM（需要 Emscripten `em++`）
+产物输出至 `dist/` 目录，可直接部署到任意静态托管或对象存储 + CDN（需部署在域名根路径 `/` 下，并保证 `.wasm` 文件的 `Content-Type` 为 `application/wasm`）。
 
-```bash
-npm run build:wasm
-node scripts/test_wasm_bots.mjs
+### 3. 可选环境变量
+
+复制 [.env.example](.env.example) 为 `.env.production.local`（已被 `.gitignore` 忽略，不会提交到仓库）：
+
+```env
+# 可选：填写后在主界面底部展示备案号并链接至工信部备案查询页；留空则不显示
+VITE_ICP_NUMBER=
 ```
 
-## 开源许可与致谢
+### 4. 重新编译 WASM 或重新导出资源（可选）
 
-本项目沿用原仓库 [MIT License](https://github.com/chen-006/meow-ai-arena/blob/main/LICENSE)。
-规则引擎、地图、体素小人与 AI 选手源码源自 [chen-006/meow-ai-arena](https://github.com/chen-006/meow-ai-arena)（角色形象设计参考：小叶子XIYZ；美术和制作：喵了个猫了个咪了个猫）。
+仓库已包含编译好的 `public/wasm/*.{js,wasm}` 与导出好的 `public/assets/*`，常规前端开发无需重新编译。
+
+- 若修改了 `wasm/include/dart.hpp` 或 `wasm/bots/*.cpp`（需本机安装 [Emscripten](https://emscripten.org/) `em++`）：
+  ```bash
+  npm run build:wasm
+  ```
+- 若需从上游仓库重新导出地图/角色资源：
+  ```bash
+  MEOW_AI_ARENA_DIR=/path/to/meow-ai-arena npm run export:assets
+  ```
+
+## 开源协议
+
+本项目基于 [MIT License](LICENSE) 开源。

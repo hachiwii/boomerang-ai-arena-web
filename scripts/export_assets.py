@@ -15,7 +15,16 @@ if "numpy" not in sys.modules:
     except ImportError:
         sys.modules["numpy"] = types.ModuleType("numpy")
 
-SRC_REPO = Path(os.environ.get("MEOW_AI_ARENA_DIR", "../meow-ai-arena")).expanduser().resolve()
+SRC_REPO = Path(
+    os.environ.get("MEOW_AI_ARENA_DIR")
+    or (sys.argv[1] if len(sys.argv) > 1 else "../meow-ai-arena")
+).expanduser().resolve()
+if not SRC_REPO.exists():
+    sys.exit(
+        f"Source repo not found at {SRC_REPO}.\n"
+        "Clone https://github.com/chen-006/meow-ai-arena and pass its path via "
+        "MEOW_AI_ARENA_DIR or the first CLI argument."
+    )
 BOOM = SRC_REPO / "boomerang"
 RENDER_SRC = BOOM / "renderer" / "src"
 CHARS_DIR = SRC_REPO / "characters" / "boomerang"
