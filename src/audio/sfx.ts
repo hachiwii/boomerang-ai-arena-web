@@ -155,4 +155,16 @@ export class SoundFX {
     this.tone(1046.5, 1060, 0.24, 'triangle', 0.16);
     this.tone(1318.5, 1340, 0.22, 'sine', 0.11, 0.04);
   }
+
+  public playRankUp() {
+    const notes = [587.33, 783.99, 987.77, 1174.66];
+    notes.forEach((f, i) => {
+      this.tone(f, f * 1.01, 0.18, 'triangle', 0.11, i * 0.065);
+    });
+  }
+
+  public playRankDown() {
+    this.tone(392, 311, 0.18, 'triangle', 0.09);
+    this.tone(311, 246.9, 0.22, 'sine', 0.08, 0.1);
+  }
 }

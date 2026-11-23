@@ -108,9 +108,11 @@ async function bootstrap() {
     const hSeat = controller.getHumanSeat();
     // Pure AI spectator match
     if (hSeat < 0) return true;
-    // Human match: only allowed once human is eliminated (spectating)
     const st = controller.getCurrentState();
     if (!st) return false;
+    // Once a ranked match is finished (result screen), R can also launch New Match
+    if (st.over && activeConfig.matchMode !== 'custom') return true;
+    // During live match, only allowed once human is eliminated (spectating)
     const me = st.players[hSeat];
     return !!me && !me.alive;
   };
@@ -247,6 +249,10 @@ async function bootstrap() {
       input.setCliffGuard(next);
       lobbyUI.setCliffGuard(next);
       return next;
+    },
+    onRankCue: (kind) => {
+      if (kind === 'up') sfx.playRankUp();
+      else sfx.playRankDown();
     },
   });
   renderer.setNameplateLayer(hudUI.nameplateLayer);

@@ -1,4 +1,4 @@
-import { EloUpdateResult } from '../game/leaderboard';
+import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
 import { CountdownStage } from '../game/matchController';
 import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
 
@@ -8,6 +8,7 @@ export interface HudCallbacks {
   onToggleMute: () => boolean;
   onToggleUncap: () => boolean;
   onToggleCliffGuard: () => boolean;
+  onRankCue?: (kind: 'up' | 'down') => void;
 }
 
 function causeLabel(cause: number, killerName?: string): string {
@@ -53,6 +54,8 @@ export class HudUI {
   private autoReturnTimer: number | null = null;
   private countdownInterval: number | null = null;
   private eloToastTimer: number | null = null;
+  private rankAnimTimers: number[] = [];
+  private rankAnimRaf: number | null = null;
 
   // Cached DOM references for ultra-fast HUD updates (no full innerHTML rebuild per tick!)
   private timerEl: HTMLElement | null = null;
@@ -327,6 +330,12 @@ export class HudUI {
 
   public showMatchResult(finalState: TickSnapshot, eloResult: EloUpdateResult | null = null) {
     this.clearTimers();
+    const isRanked = this.matchMode !== 'custom';
+    if (isRanked && eloResult) {
+      this.showRankedMatchResult(finalState, eloResult);
+      return;
+    }
+
     const winner = finalState.winner >= 0 ? this.slots[finalState.winner] : null;
     const rows = finalState.players
       .map((p, idx) => ({
@@ -336,17 +345,7 @@ export class HudUI {
       }))
       .sort((a, b) => a.p.rank - b.p.rank || b.p.kills - a.p.kills);
 
-    const isRanked = this.matchMode !== 'custom';
-    const eloBannerHtml = eloResult
-      ? `<div class="result-elo-banner ${eloResult.delta > 0 ? 'elo-up' : eloResult.delta < 0 ? 'elo-down' : ''}">
-          <span class="re-label">${eloResult.mode === 'solo' ? 'SOLO' : '四人混战'} ELO</span>
-          <span class="re-nums">${eloResult.oldRating} → <strong>${eloResult.newRating}</strong></span>
-          <span class="re-delta">(${eloResult.delta >= 0 ? '+' : ''}${eloResult.delta})</span>
-        </div>`
-      : '';
-
     const canRestart = this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive);
-    const rankedModeForBtn: RankedMode = this.matchMode === 'ranked-ffa' ? 'ffa' : 'solo';
 
     let remainSec = 4;
     this.resultOverlay.innerHTML = `
@@ -360,7 +359,6 @@ export class HudUI {
               </div>`
             : `<div class="result-wname">平局 (Draw)</div>`
         }
-        ${eloBannerHtml}
         <div class="result-table">
           ${rows
             .map(({ slot, p }) => {
@@ -377,8 +375,7 @@ export class HudUI {
             .join('')}
         </div>
         <div class="result-btn-row">
-          ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">${isRanked ? '↻ 重新匹配 (R)' : '↻ 重开 (R)'}</button>` : ''}
-          ${isRanked ? `<button class="result-lb-btn" id="btn-result-lb">🏆 排行榜</button>` : ''}
+          ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">↻ 重开 (R)</button>` : ''}
           <button class="start-btn result-back-btn" id="btn-result-back">返回主界面 (${remainSec}s)</button>
         </div>
       </div>
@@ -397,11 +394,6 @@ export class HudUI {
       this.callbacks.onRestartMatch();
     });
 
-    this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-lb')?.addEventListener('click', () => {
-      this.clearTimers();
-      this.callbacks.onReturnToLobby({ openLeaderboard: true, rankedMode: rankedModeForBtn });
-    });
-
     this.countdownInterval = window.setInterval(() => {
       remainSec--;
       if (backBtn && remainSec > 0) {
@@ -413,6 +405,297 @@ export class HudUI {
       this.clearTimers();
       this.callbacks.onReturnToLobby();
     }, 4000);
+  }
+
+  private showRankedMatchResult(finalState: TickSnapshot, elo: EloUpdateResult) {
+    const modeLabel = elo.mode === 'solo' ? 'SOLO 排位' : '四人混战排位';
+    const humanP = this.humanSeat >= 0 ? finalState.players[this.humanSeat] : null;
+    const humanWon = finalState.winner >= 0 && finalState.winner === this.humanSeat;
+    const isDraw = finalState.winner === -1 && humanP?.rank === 1;
+
+    const outcomeText = humanWon
+      ? '🏆 本局胜利'
+      : isDraw
+        ? '🤝 平局'
+        : humanP
+          ? `第 #${humanP.rank} 名`
+          : '对局结束';
+    const outcomeCls = humanWon ? 'is-win' : isDraw ? 'is-draw' : 'is-loss';
+
+    const matchRows = finalState.players
+      .map((p, idx) => ({ idx, slot: this.slots[idx], p }))
+      .sort((a, b) => a.p.rank - b.p.rank || b.p.kills - a.p.kills);
+
+    // Build focused animated mini-ladder slice around oldRank & newRank
+    const total = elo.afterLadder.length;
+    const oldIdx = Math.max(0, elo.oldRank - 1);
+    const newIdx = Math.max(0, elo.newRank - 1);
+    const minIdx = Math.min(oldIdx, newIdx);
+    const maxIdx = Math.max(oldIdx, newIdx);
+    let winStart = Math.max(0, minIdx - 1);
+    let winEnd = Math.min(total - 1, maxIdx + 1);
+    while (winEnd - winStart + 1 < 4 && (winStart > 0 || winEnd < total - 1)) {
+      if (winStart > 0) winStart--;
+      if (winEnd - winStart + 1 < 4 && winEnd < total - 1) winEnd++;
+    }
+    const visibleCount = winEnd - winStart + 1;
+    const ROW_STRIDE = 48; // 42px row + 6px gap
+    const viewportHeight = visibleCount * ROW_STRIDE - 6;
+
+    const beforePos = new Map(elo.beforeLadder.map((e, i) => [e.id, i]));
+    const afterPos = new Map(elo.afterLadder.map((e, i) => [e.id, i]));
+    const afterById = new Map(elo.afterLadder.map((e) => [e.id, e]));
+    const beforeById = new Map(elo.beforeLadder.map((e) => [e.id, e]));
+
+    const involvedIds = new Set<string>();
+    for (let i = winStart; i <= winEnd; i++) {
+      if (elo.beforeLadder[i]) involvedIds.add(elo.beforeLadder[i].id);
+      if (elo.afterLadder[i]) involvedIds.add(elo.afterLadder[i].id);
+    }
+
+    const overtookIds = new Set(elo.overtook.map((e) => e.id));
+    const overtakenByIds = new Set(elo.overtakenBy.map((e) => e.id));
+
+    interface AnimRowSpec {
+      id: string;
+      entry: LadderEntrySnap;
+      startSlot: number;
+      endSlot: number;
+      beforeRank: number;
+      afterRank: number;
+    }
+
+    const animRows: AnimRowSpec[] = [];
+    for (const id of involvedIds) {
+      const bEntry = beforeById.get(id);
+      const aEntry = afterById.get(id);
+      if (!bEntry || !aEntry) continue;
+      const bIdx = beforePos.get(id) ?? 0;
+      const aIdx = afterPos.get(id) ?? 0;
+      // Clamp offscreen entry/exit distance to 1 row outside viewport for clean slide-in/out
+      const startSlot = Math.max(-1, Math.min(visibleCount, bIdx - winStart));
+      const endSlot = Math.max(-1, Math.min(visibleCount, aIdx - winStart));
+      animRows.push({
+        id,
+        entry: aEntry,
+        startSlot,
+        endSlot,
+        beforeRank: bEntry.rank,
+        afterRank: aEntry.rank,
+      });
+    }
+
+    const renderMiniChips = (list: LadderEntrySnap[]) =>
+      list
+        .map(
+          (e) => `
+        <span class="rr-pass-chip">
+          <img src="${e.avatar || ''}" alt="" />
+          <span>${e.shortName}</span>
+          <em>${e.rating}</em>
+        </span>`,
+        )
+        .join('');
+
+    let passBannerCls = 'is-flat';
+    let passBannerHtml = '';
+    if (elo.overtook.length > 0) {
+      passBannerCls = 'is-up';
+      passBannerHtml = `<span class="rr-pass-tag">🚀 超过了</span><span class="rr-pass-chips">${renderMiniChips(elo.overtook)}</span>`;
+    } else if (elo.overtakenBy.length > 0) {
+      passBannerCls = 'is-down';
+      passBannerHtml = `<span class="rr-pass-tag">⚠️ 被</span><span class="rr-pass-chips">${renderMiniChips(elo.overtakenBy)}</span><span class="rr-pass-tag">超过</span>`;
+    } else if (elo.newRank === 1) {
+      passBannerCls = 'is-top';
+      passBannerHtml = `<span class="rr-pass-tag">👑 稳居榜首！</span>`;
+    } else {
+      const above = elo.afterLadder[newIdx - 1];
+      if (above) {
+        const gap = Math.max(0, above.rating - elo.newRating);
+        passBannerHtml = `<span class="rr-pass-tag">距离超越</span><span class="rr-pass-chips">${renderMiniChips([above])}</span><span class="rr-pass-tag">还差 <strong>${gap}</strong> 分</span>`;
+      }
+    }
+
+    const deltaSign = elo.delta > 0 ? `+${elo.delta}` : `${elo.delta}`;
+    const deltaCls = elo.delta > 0 ? 'elo-up' : elo.delta < 0 ? 'elo-down' : 'elo-flat';
+    const rankDiff = elo.oldRank - elo.newRank; // > 0 means climbed up
+    const rankDeltaText =
+      rankDiff > 0 ? `▲ 上升 ${rankDiff} 名` : rankDiff < 0 ? `▼ 下降 ${Math.abs(rankDiff)} 名` : '名次不变';
+    const rankDeltaCls = rankDiff > 0 ? 'rk-up' : rankDiff < 0 ? 'rk-down' : 'rk-flat';
+
+    this.resultOverlay.innerHTML = `
+      <div class="result-card ranked-result-card">
+        <div class="rr-head">
+          <div class="rr-head-left">
+            <span class="rr-mode-pill">${modeLabel}</span>
+            <span class="rr-outcome ${outcomeCls}">${outcomeText}</span>
+          </div>
+          <button type="button" class="rr-lb-mini-btn" id="btn-result-lb">🏆 完整榜单</button>
+        </div>
+
+        <div class="rr-hero">
+          <div class="rr-hero-block">
+            <div class="rr-hero-label">ELO 分数</div>
+            <div class="rr-elo-line">
+              <span class="rr-elo-num ${deltaCls}" id="rr-elo-num">${elo.oldRating}</span>
+              <span class="rr-delta-pill ${deltaCls}" id="rr-delta-pill">${deltaSign}</span>
+            </div>
+          </div>
+          <div class="rr-hero-sep"></div>
+          <div class="rr-hero-block">
+            <div class="rr-hero-label">当前排名</div>
+            <div class="rr-rank-line">
+              <span class="rr-rank-num" id="rr-rank-num">#${elo.oldRank}</span>
+              <span class="rr-rank-total">/ ${elo.totalRanked}</span>
+            </div>
+            <div class="rr-rank-delta ${rankDeltaCls}" id="rr-rank-delta">${rankDeltaText}</div>
+          </div>
+        </div>
+
+        <div class="rr-ladder-wrap">
+          <div class="rr-ladder-viewport" style="height:${viewportHeight}px">
+            ${animRows
+              .map((r) => {
+                const startVisible = r.startSlot >= 0 && r.startSlot < visibleCount;
+                const initY = r.startSlot * ROW_STRIDE;
+                const initScore = r.entry.isHuman ? elo.oldRating : r.entry.rating;
+                return `
+                <div
+                  class="rr-lrow ${r.entry.isHuman ? 'is-human' : ''}"
+                  data-lrow-id="${r.id}"
+                  style="transform:translate3d(0, ${initY}px, 0); opacity:${startVisible ? 1 : 0};"
+                >
+                  <span class="rr-lr-rank" data-lrow-rank="${r.id}">#${r.beforeRank}</span>
+                  <img class="rr-lr-av" src="${r.entry.avatar || ''}" alt="" />
+                  <span class="rr-lr-name">${r.entry.name}</span>
+                  <span class="rr-lr-score" ${r.entry.isHuman ? 'id="rr-human-row-elo"' : ''}>${initScore}</span>
+                </div>`;
+              })
+              .join('')}
+          </div>
+        </div>
+
+        <div class="rr-pass-banner ${passBannerCls}" id="rr-pass-banner">
+          ${passBannerHtml}
+        </div>
+
+        <div class="result-table rr-match-table">
+          ${matchRows
+            .map(({ slot, p }) => {
+              const killerName = p.killer >= 0 && this.slots[p.killer] ? this.slots[p.killer].displayName : undefined;
+              return `
+              <div class="result-row ${slot.kind === 'human' ? 'is-human-row' : ''} ${p.rank === 1 && finalState.winner >= 0 ? 'is-first' : ''}">
+                <span class="r-rank">#${p.rank}</span>
+                <img class="r-av" src="${slot.avatar || ''}" alt="" />
+                <span class="r-name">${slot.displayName}</span>
+                <span class="r-kills">${p.kills} 击杀</span>
+                <span class="r-cause">${p.alive ? '存活至终场' : causeLabel(p.cause, killerName)}</span>
+              </div>`;
+            })
+            .join('')}
+        </div>
+
+        <div class="rr-btn-row">
+          <button type="button" class="rr-back-btn" id="btn-result-back">返回主界面</button>
+          <button type="button" class="start-btn rr-primary-btn" id="btn-result-new-match">⚔️ 新对战</button>
+        </div>
+      </div>
+    `;
+
+    this.nameplateLayer.classList.add('hidden');
+    this.resultOverlay.classList.remove('hidden');
+
+    // Bind buttons
+    this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-back')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onReturnToLobby();
+    });
+    this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-new-match')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onRestartMatch();
+    });
+    this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-lb')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onReturnToLobby({ openLeaderboard: true, rankedMode: elo.mode });
+    });
+
+    // Choreographed score count-up + ladder row-swap + overtake reveal animation
+    const eloNumEl = this.resultOverlay.querySelector<HTMLElement>('#rr-elo-num');
+    const humanRowEloEl = this.resultOverlay.querySelector<HTMLElement>('#rr-human-row-elo');
+    const deltaPillEl = this.resultOverlay.querySelector<HTMLElement>('#rr-delta-pill');
+    const rankNumEl = this.resultOverlay.querySelector<HTMLElement>('#rr-rank-num');
+    const rankDeltaEl = this.resultOverlay.querySelector<HTMLElement>('#rr-rank-delta');
+    const passBannerEl = this.resultOverlay.querySelector<HTMLElement>('#rr-pass-banner');
+
+    const scheduleAnim = (delayMs: number, fn: () => void) => {
+      const h = window.setTimeout(fn, delayMs);
+      this.rankAnimTimers.push(h);
+    };
+
+    // Beat 1 -> Beat 2: Smoothly roll ELO score and glide ladder rows
+    scheduleAnim(260, () => {
+      deltaPillEl?.classList.add('is-shown');
+
+      const durMs = elo.delta === 0 ? 220 : 820;
+      const tStart = performance.now();
+      const stepNum = (now: number) => {
+        const u = Math.min(1, (now - tStart) / durMs);
+        const eased = 1 - Math.pow(1 - u, 3);
+        const cur = Math.round(elo.oldRating + (elo.newRating - elo.oldRating) * eased);
+        if (eloNumEl) eloNumEl.textContent = String(cur);
+        if (humanRowEloEl) humanRowEloEl.textContent = String(cur);
+        if (u < 1) {
+          this.rankAnimRaf = requestAnimationFrame(stepNum);
+        } else {
+          this.rankAnimRaf = null;
+        }
+      };
+      this.rankAnimRaf = requestAnimationFrame(stepNum);
+    });
+
+    // Beat 2: Swap ladder rows smoothly
+    scheduleAnim(360, () => {
+      for (const r of animRows) {
+        const rowEl = this.resultOverlay.querySelector<HTMLElement>(`[data-lrow-id="${r.id}"]`);
+        const rkEl = this.resultOverlay.querySelector<HTMLElement>(`[data-lrow-rank="${r.id}"]`);
+        if (!rowEl) continue;
+        const endVisible = r.endSlot >= 0 && r.endSlot < visibleCount;
+        const endY = r.endSlot * ROW_STRIDE;
+        if (r.entry.isHuman) {
+          rowEl.classList.add(rankDiff > 0 ? 'is-climbing' : rankDiff < 0 ? 'is-dropping' : 'is-pulsing');
+        } else if (overtookIds.has(r.id)) {
+          rowEl.classList.add('is-overtaken');
+        } else if (overtakenByIds.has(r.id)) {
+          rowEl.classList.add('is-overtaking');
+        }
+        rowEl.style.transform = `translate3d(0, ${endY}px, 0)`;
+        rowEl.style.opacity = endVisible ? '1' : '0';
+        if (rkEl) rkEl.textContent = `#${r.afterRank}`;
+      }
+    });
+
+    // Beat 3: Pop new rank, reveal "超过了 XXX / 被 XXX 超过" banner, and trigger audio cue
+    scheduleAnim(880, () => {
+      if (rankNumEl) {
+        rankNumEl.textContent = `#${elo.newRank}`;
+        if (rankDiff !== 0) {
+          rankNumEl.classList.add(rankDiff > 0 ? 'pop-up' : 'pop-down');
+        }
+      }
+      rankDeltaEl?.classList.add('is-shown');
+      passBannerEl?.classList.add('is-shown');
+      if (elo.overtook.length > 0) {
+        this.callbacks.onRankCue?.('up');
+      } else if (elo.overtakenBy.length > 0) {
+        this.callbacks.onRankCue?.('down');
+      }
+    });
+
+    // Settle human row lift after glide finishes
+    scheduleAnim(1220, () => {
+      const humanEl = this.resultOverlay.querySelector<HTMLElement>('.rr-lrow.is-human');
+      humanEl?.classList.remove('is-climbing', 'is-dropping', 'is-pulsing');
+    });
   }
 
   public showEloToast(rank: number, eloResult: EloUpdateResult) {
@@ -461,6 +744,14 @@ export class HudUI {
     if (this.countdownInterval !== null) {
       window.clearInterval(this.countdownInterval);
       this.countdownInterval = null;
+    }
+    for (const h of this.rankAnimTimers) {
+      window.clearTimeout(h);
+    }
+    this.rankAnimTimers = [];
+    if (this.rankAnimRaf !== null) {
+      cancelAnimationFrame(this.rankAnimRaf);
+      this.rankAnimRaf = null;
     }
   }
 }

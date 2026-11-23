@@ -12,11 +12,29 @@ export interface ModeStats {
   cliffFalls: number;   // 坠崖次数
 }
 
+export interface LadderEntrySnap {
+  id: string;
+  isHuman: boolean;
+  name: string;
+  shortName: string;
+  avatar: string | null;
+  color: string;
+  rating: number;
+  rank: number;
+}
+
 export interface EloUpdateResult {
   mode: RankedMode;
   oldRating: number;
   newRating: number;
   delta: number;
+  oldRank: number;
+  newRank: number;
+  totalRanked: number;
+  overtook: LadderEntrySnap[];
+  overtakenBy: LadderEntrySnap[];
+  beforeLadder: LadderEntrySnap[];
+  afterLadder: LadderEntrySnap[];
 }
 
 export interface LeaderboardRow {
@@ -165,6 +183,19 @@ export class LeaderboardStore {
     return bucket[entityId];
   }
 
+  private snapshotLadder(mode: RankedMode): LadderEntrySnap[] {
+    return this.getRows(mode, 'rating').map((r) => ({
+      id: r.id,
+      isHuman: r.isHuman,
+      name: r.name,
+      shortName: r.shortName,
+      avatar: r.avatar,
+      color: r.color,
+      rating: r.rating,
+      rank: r.eloRank,
+    }));
+  }
+
   private applyHumanEloUpdate(
     mode: RankedMode,
     config: MatchConfig,
@@ -173,6 +204,10 @@ export class LeaderboardStore {
     const n = config.slots.length;
     const humanSeat = config.slots.findIndex((s) => s.kind === 'human');
     if (humanSeat < 0 || humanSeat >= state.players.length) return null;
+
+    const beforeLadder = this.snapshotLadder(mode);
+    const oldHumanIdx = beforeLadder.findIndex((r) => r.isHuman);
+    const oldRank = oldHumanIdx >= 0 ? beforeLadder[oldHumanIdx].rank : beforeLadder.length;
 
     const oldRating = this.humanRatings[mode];
     const humanP = state.players[humanSeat];
@@ -202,7 +237,48 @@ export class LeaderboardStore {
     const newRating = clampHumanElo(oldRating + rawDelta);
     const delta = newRating - oldRating;
     this.humanRatings[mode] = newRating;
-    return { mode, oldRating, newRating, delta };
+
+    const afterLadder = this.snapshotLadder(mode);
+    const newHumanIdx = afterLadder.findIndex((r) => r.isHuman);
+    const newRank = newHumanIdx >= 0 ? afterLadder[newHumanIdx].rank : afterLadder.length;
+
+    // Identify bots human overtook (were above human before, now below human)
+    const beforePosById = new Map(beforeLadder.map((e, idx) => [e.id, idx]));
+    const afterPosById = new Map(afterLadder.map((e, idx) => [e.id, idx]));
+
+    const overtook: LadderEntrySnap[] = [];
+    const overtakenBy: LadderEntrySnap[] = [];
+
+    if (oldHumanIdx >= 0 && newHumanIdx >= 0) {
+      for (const e of afterLadder) {
+        if (e.isHuman) continue;
+        const bPos = beforePosById.get(e.id);
+        const aPos = afterPosById.get(e.id);
+        if (bPos === undefined || aPos === undefined) continue;
+        if (bPos < oldHumanIdx && aPos > newHumanIdx) {
+          overtook.push(e);
+        } else if (bPos > oldHumanIdx && aPos < newHumanIdx) {
+          overtakenBy.push(e);
+        }
+      }
+      // Order overtook from closest passed -> highest passed (ascending Elo); overtakenBy highest -> lowest
+      overtook.sort((a, b) => a.rating - b.rating);
+      overtakenBy.sort((a, b) => b.rating - a.rating);
+    }
+
+    return {
+      mode,
+      oldRating,
+      newRating,
+      delta,
+      oldRank,
+      newRank,
+      totalRanked: afterLadder.length,
+      overtook,
+      overtakenBy,
+      beforeLadder,
+      afterLadder,
+    };
   }
 
   /**
