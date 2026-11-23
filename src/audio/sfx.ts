@@ -4,9 +4,15 @@
 export class SoundFX {
   private ctx: AudioContext | null = null;
   public muted = false;
+  public volume = 1.0;
+
+  public applySettings(soundEnabled: boolean, volumePct: number) {
+    this.muted = !soundEnabled;
+    this.volume = Math.max(0, Math.min(1, volumePct / 100));
+  }
 
   private ensure(): AudioContext | null {
-    if (this.muted) return null;
+    if (this.muted || this.volume <= 0.001) return null;
     if (!this.ctx) {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AC) return null;
@@ -21,6 +27,7 @@ export class SoundFX {
   private tone(freq0: number, freq1: number, dur: number, type: OscillatorType, gainVal: number, delay = 0) {
     const ctx = this.ensure();
     if (!ctx) return;
+    const gScaled = Math.max(0.0002, gainVal * this.volume);
     const t0 = ctx.currentTime + delay;
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
@@ -28,7 +35,7 @@ export class SoundFX {
     osc.frequency.setValueAtTime(freq0, t0);
     osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq1), t0 + dur);
     g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(gainVal, t0 + 0.008);
+    g.gain.linearRampToValueAtTime(gScaled, t0 + 0.008);
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     osc.connect(g).connect(ctx.destination);
     osc.start(t0);
@@ -38,6 +45,7 @@ export class SoundFX {
   private noise(dur: number, gainVal: number, filterFreq: number, q = 1.5, delay = 0) {
     const ctx = this.ensure();
     if (!ctx) return;
+    const gScaled = Math.max(0.0002, gainVal * this.volume);
     const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
     const buf = ctx.createBuffer(1, len, ctx.sampleRate);
     const data = buf.getChannelData(0);
@@ -51,7 +59,7 @@ export class SoundFX {
     const g = ctx.createGain();
     const t0 = ctx.currentTime + delay;
     g.gain.setValueAtTime(0.0001, t0);
-    g.gain.linearRampToValueAtTime(gainVal, t0 + Math.min(0.004, dur * 0.25));
+    g.gain.linearRampToValueAtTime(gScaled, t0 + Math.min(0.004, dur * 0.25));
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     src.connect(flt).connect(g).connect(ctx.destination);
     src.start(t0);

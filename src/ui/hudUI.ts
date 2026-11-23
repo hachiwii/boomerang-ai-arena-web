@@ -1,12 +1,12 @@
 import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
 import { CountdownStage } from '../game/matchController';
+import { formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
 import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
 
 export interface HudCallbacks {
   onReturnToLobby: (opts?: { openLeaderboard?: boolean; rankedMode?: RankedMode }) => void;
   onRestartMatch: () => void;
-  onToggleMute: () => boolean;
-  onToggleUncap: () => boolean;
+  onOpenSettings: () => void;
   onToggleCliffGuard: () => boolean;
   onRankCue?: (kind: 'up' | 'down') => void;
 }
@@ -43,14 +43,14 @@ export class HudUI {
   private readonly eloToastEl: HTMLDivElement;
   private readonly countdownOverlay: HTMLDivElement;
   private readonly resultOverlay: HTMLDivElement;
+  private readonly settings: SettingsStore;
   private readonly callbacks: HudCallbacks;
 
   private slots: SlotConfig[] = [];
   private matchMode: MatchMode = 'custom';
   private humanSeat = -1;
-  private muted = false;
-  private uncapped = true;
   private cliffGuard = true;
+  private lastTickState: TickSnapshot | null = null;
   private autoReturnTimer: number | null = null;
   private countdownInterval: number | null = null;
   private eloToastTimer: number | null = null;
@@ -72,8 +72,13 @@ export class HudUI {
   private humanHintRight: HTMLElement | null = null;
   private humanHintShift: HTMLElement | null = null;
 
-  constructor(parent: HTMLElement, callbacks: HudCallbacks) {
+  constructor(parent: HTMLElement, settings: SettingsStore, callbacks: HudCallbacks) {
+    this.settings = settings;
     this.callbacks = callbacks;
+
+    this.settings.onChange(() => {
+      this.refreshKeyHints();
+    });
 
     this.nameplateLayer = document.createElement('div');
     this.nameplateLayer.className = 'nameplate-layer';
@@ -186,10 +191,7 @@ export class HudUI {
             ? `<button class="hud-btn ${this.cliffGuard ? 'active' : ''}" id="hud-cliff-guard" title="跌落防护：开启时人类不会走路坠崖，冲刺/塌陷/被踢不受影响">🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}</button>`
             : ''
         }
-        <button class="hud-btn ${this.uncapped ? 'active' : ''}" id="hud-uncap" title="切换 VSync / 240Hz+ 解锁帧率">
-          ${this.uncapped ? '240Hz+ 解锁' : '高刷 VSync'}
-        </button>
-        <button class="hud-btn" id="hud-mute">${this.muted ? '静音' : '音效开'}</button>
+        <button class="hud-btn" id="hud-settings" title="音效、帧率上限与键位设置">⚙️ 设置</button>
         <button class="hud-btn hud-exit" id="hud-exit">主界面 (ESC)</button>
       </div>
     `;
@@ -208,9 +210,8 @@ export class HudUI {
       this.clearTimers();
       this.callbacks.onReturnToLobby();
     });
-    this.topBar.querySelector('#hud-mute')?.addEventListener('click', (e) => {
-      this.muted = this.callbacks.onToggleMute();
-      (e.currentTarget as HTMLButtonElement).textContent = this.muted ? '静音' : '音效开';
+    this.topBar.querySelector('#hud-settings')?.addEventListener('click', () => {
+      this.callbacks.onOpenSettings();
     });
     this.topBar.querySelector('#hud-cliff-guard')?.addEventListener('click', (e) => {
       this.cliffGuard = this.callbacks.onToggleCliffGuard();
@@ -218,26 +219,32 @@ export class HudUI {
       btn.classList.toggle('active', this.cliffGuard);
       btn.textContent = `🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}`;
     });
-    this.topBar.querySelector('#hud-uncap')?.addEventListener('click', (e) => {
-      this.uncapped = this.callbacks.onToggleUncap();
-      const btn = e.currentTarget as HTMLButtonElement;
-      btn.classList.toggle('active', this.uncapped);
-      btn.textContent = this.uncapped ? '240Hz+ 解锁' : '高刷 VSync';
-    });
+
+    this.lastTickState = null;
+    this.renderBottomHints(humanSeat);
+  }
+
+  private renderBottomHints(humanSeat: number) {
+    const kb = this.settings.get().keybindings;
+    const mv = formatMoveSummary(kb);
+    const thr = formatPrimaryBind(kb.throwRecall);
+    const mel = formatPrimaryBind(kb.melee);
+    const dsh = formatPrimaryBind(kb.dash);
+    const rst = formatPrimaryBind(kb.quickRestart);
 
     if (humanSeat >= 0) {
       this.bottomBar.innerHTML = `
-        <div class="action-pill" id="hint-move"><kbd>WASD</kbd> 移动</div>
-        <div class="action-pill" id="hint-left"><kbd>左键</kbd> 向鼠标扔镖</div>
-        <div class="action-pill" id="hint-right"><kbd>右键</kbd> 挥砍 / 挡镖</div>
-        <div class="action-pill" id="hint-shift"><kbd>Shift</kbd> 冲刺就绪</div>
+        <div class="action-pill" id="hint-move"><kbd>${mv}</kbd> 移动</div>
+        <div class="action-pill" id="hint-left"><kbd>${thr}</kbd> 向鼠标扔镖</div>
+        <div class="action-pill" id="hint-right"><kbd>${mel}</kbd> 挥砍 / 挡镖</div>
+        <div class="action-pill" id="hint-shift"><kbd>${dsh}</kbd> 冲刺就绪</div>
       `;
       this.humanHintMove = this.bottomBar.querySelector('#hint-move');
       this.humanHintLeft = this.bottomBar.querySelector('#hint-left');
       this.humanHintRight = this.bottomBar.querySelector('#hint-right');
       this.humanHintShift = this.bottomBar.querySelector('#hint-shift');
     } else {
-      this.bottomBar.innerHTML = `<div class="action-pill spectate-pill">AI 观战模式 · 按 <kbd>R</kbd> 立即原配置重开</div>`;
+      this.bottomBar.innerHTML = `<div class="action-pill spectate-pill">AI 观战模式 · 按 <kbd>${rst}</kbd> 立即原配置重开</div>`;
       this.humanHintMove = null;
       this.humanHintLeft = null;
       this.humanHintRight = null;
@@ -245,7 +252,22 @@ export class HudUI {
     }
   }
 
+  public refreshKeyHints() {
+    if (this.root.classList.contains('hidden')) return;
+    this.renderBottomHints(this.humanSeat);
+    if (this.lastTickState) {
+      this.updateHumanActionHints(this.lastTickState);
+    }
+    // Also refresh shortcut keycap on open result overlay if present
+    const rst = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
+    const kbdEl = this.resultOverlay.querySelector<HTMLElement>('.rr-btn-kbd');
+    if (kbdEl) kbdEl.textContent = rst;
+    const customRstBtn = this.resultOverlay.querySelector<HTMLElement>('#btn-result-restart');
+    if (customRstBtn) customRstBtn.textContent = `↻ 重开 (${rst})`;
+  }
+
   public updateTick(state: TickSnapshot, colStart = 240, colEvery = 30) {
+    this.lastTickState = state;
     const remSec = Math.max(0, (800 - state.t) / 20);
     if (this.timerEl) {
       this.timerEl.textContent = `${remSec.toFixed(1)}s`;
@@ -280,42 +302,51 @@ export class HudUI {
       el.cdBar.style.width = `${readyPct}%`;
     }
 
-    if (this.humanSeat >= 0 && state.players[this.humanSeat]) {
-      const me = state.players[this.humanSeat];
-      const md = state.darts[this.humanSeat];
-      if (!me.alive) {
-        if (this.humanHintMove) this.humanHintMove.style.display = 'none';
-        if (this.humanHintLeft) {
-          this.humanHintLeft.innerHTML =
-            this.matchMode !== 'custom'
-              ? `已出局观战中 · 按 <kbd>R</kbd> 重新匹配下一局`
-              : `已出局观战中 · 按 <kbd>R</kbd> 立即原配置重开`;
-          this.humanHintLeft.classList.add('spectate-pill');
-        }
-        if (this.humanHintRight) this.humanHintRight.style.display = 'none';
-        if (this.humanHintShift) this.humanHintShift.style.display = 'none';
-      } else {
-        if (this.humanHintMove) this.humanHintMove.style.display = '';
-        if (this.humanHintLeft) this.humanHintLeft.classList.remove('spectate-pill');
-        if (this.humanHintRight) this.humanHintRight.style.display = '';
-        if (this.humanHintShift) this.humanHintShift.style.display = '';
-        if (this.humanHintLeft) {
-          if (md.st === DState.HAND) this.humanHintLeft.innerHTML = `<kbd>左键</kbd> 向鼠标扔镖`;
-          else if (md.st === DState.GROUND) this.humanHintLeft.innerHTML = `<kbd>长按左键</kbd> 召回落地镖`;
-          else if (md.st === DState.RISE) this.humanHintLeft.innerHTML = `<kbd>按住中</kbd> 召回引导 ${Math.round((1 - me.timer / 12) * 100)}%`;
-          else this.humanHintLeft.innerHTML = `<kbd>左键</kbd> 飞镖飞行中`;
-        }
-        if (this.humanHintRight) {
-          this.humanHintRight.innerHTML =
-            md.st === DState.HAND ? `<kbd>右键</kbd> 挥砍 / 挡镖` : `<kbd>右键</kbd> 踢人击退`;
-        }
-        if (this.humanHintShift) {
-          this.humanHintShift.innerHTML =
-            me.cd === 0
-              ? `<kbd>Shift</kbd> 冲刺就绪`
-              : `<kbd>Shift</kbd> 冷却 ${(me.cd / 20).toFixed(1)}s`;
-          this.humanHintShift.classList.toggle('ready', me.cd === 0);
-        }
+    this.updateHumanActionHints(state);
+  }
+
+  private updateHumanActionHints(state: TickSnapshot) {
+    if (this.humanSeat < 0 || !state.players[this.humanSeat]) return;
+    const kb = this.settings.get().keybindings;
+    const thr = formatPrimaryBind(kb.throwRecall);
+    const mel = formatPrimaryBind(kb.melee);
+    const dsh = formatPrimaryBind(kb.dash);
+    const rst = formatPrimaryBind(kb.quickRestart);
+
+    const me = state.players[this.humanSeat];
+    const md = state.darts[this.humanSeat];
+    if (!me.alive) {
+      if (this.humanHintMove) this.humanHintMove.style.display = 'none';
+      if (this.humanHintLeft) {
+        this.humanHintLeft.innerHTML =
+          this.matchMode !== 'custom'
+            ? `已出局观战中 · 按 <kbd>${rst}</kbd> 重新匹配下一局`
+            : `已出局观战中 · 按 <kbd>${rst}</kbd> 立即原配置重开`;
+        this.humanHintLeft.classList.add('spectate-pill');
+      }
+      if (this.humanHintRight) this.humanHintRight.style.display = 'none';
+      if (this.humanHintShift) this.humanHintShift.style.display = 'none';
+    } else {
+      if (this.humanHintMove) this.humanHintMove.style.display = '';
+      if (this.humanHintLeft) this.humanHintLeft.classList.remove('spectate-pill');
+      if (this.humanHintRight) this.humanHintRight.style.display = '';
+      if (this.humanHintShift) this.humanHintShift.style.display = '';
+      if (this.humanHintLeft) {
+        if (md.st === DState.HAND) this.humanHintLeft.innerHTML = `<kbd>${thr}</kbd> 向鼠标扔镖`;
+        else if (md.st === DState.GROUND) this.humanHintLeft.innerHTML = `<kbd>长按 ${thr}</kbd> 召回落地镖`;
+        else if (md.st === DState.RISE) this.humanHintLeft.innerHTML = `<kbd>按住中</kbd> 召回引导 ${Math.round((1 - me.timer / 12) * 100)}%`;
+        else this.humanHintLeft.innerHTML = `<kbd>${thr}</kbd> 飞镖飞行中`;
+      }
+      if (this.humanHintRight) {
+        this.humanHintRight.innerHTML =
+          md.st === DState.HAND ? `<kbd>${mel}</kbd> 挥砍 / 挡镖` : `<kbd>${mel}</kbd> 踢人击退`;
+      }
+      if (this.humanHintShift) {
+        this.humanHintShift.innerHTML =
+          me.cd === 0
+            ? `<kbd>${dsh}</kbd> 冲刺就绪`
+            : `<kbd>${dsh}</kbd> 冷却 ${(me.cd / 20).toFixed(1)}s`;
+        this.humanHintShift.classList.toggle('ready', me.cd === 0);
       }
     }
   }
@@ -346,6 +377,7 @@ export class HudUI {
       .sort((a, b) => a.p.rank - b.p.rank || b.p.kills - a.p.kills);
 
     const canRestart = this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive);
+    const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
 
     let remainSec = 4;
     this.resultOverlay.innerHTML = `
@@ -375,7 +407,7 @@ export class HudUI {
             .join('')}
         </div>
         <div class="result-btn-row">
-          ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">↻ 重开 (R)</button>` : ''}
+          ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">↻ 重开 (${rstKey})</button>` : ''}
           <button class="start-btn result-back-btn" id="btn-result-back">返回主界面 (${remainSec}s)</button>
         </div>
       </div>
@@ -597,7 +629,7 @@ export class HudUI {
 
         <div class="rr-btn-row">
           <button type="button" class="rr-back-btn" id="btn-result-back">返回主界面</button>
-          <button type="button" class="start-btn rr-primary-btn" id="btn-result-new-match">⚔️ 重新匹配 <kbd class="rr-btn-kbd">R</kbd></button>
+          <button type="button" class="start-btn rr-primary-btn" id="btn-result-new-match">⚔️ 重新匹配 <kbd class="rr-btn-kbd">${formatPrimaryBind(this.settings.get().keybindings.quickRestart)}</kbd></button>
         </div>
       </div>
     `;

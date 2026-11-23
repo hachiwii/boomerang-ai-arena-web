@@ -1,21 +1,21 @@
 import { applyCliffGuard } from './cliffGuard';
+import { ActionBindKey, isBoundToAction, SettingsStore } from './settings';
 import { ActType, DState, EngineMapData, HumanAction, PState, TickSnapshot } from './types';
 
 /**
- * Human input controller:
- * - WASD / Arrow keys: move
- * - Mouse position (projected onto arena ground plane in meters): aim direction
- * - Left Click: throw boomerang toward mouse (when holding dart)
- * - Hold Left Click: recall boomerang when dart is on the ground (releasing cancels recall)
- * - Right Click: slash (holding dart) / kick (empty-handed) toward mouse, also triggers Dash-Slash/Dash-Kick
- * - Shift: dash (in WASD direction if moving, otherwise toward mouse)
- * Includes responsive input buffering so clicks between 20Hz ticks are never lost!
+ * Human input controller driven by user-editable dual keybindings (keyboard & mouse buttons):
+ * - Move Up/Down/Left/Right (2 slots each)
+ * - Throw / Hold Recall (2 slots)
+ * - Melee: Slash / Kick (2 slots)
+ * - Dash (2 slots)
+ * Includes responsive input buffering so clicks between logic ticks are never lost!
  */
 export type InputMode = 'off' | 'countdown' | 'active';
 
 export class HumanInputController {
-  private keys = new Set<string>();
+  private pressedCodes = new Set<string>();
   private inputMode: InputMode = 'off';
+  private paused = false;
 
   // Screen mouse coordinates (client space)
   public mouseX = window.innerWidth * 0.5;
@@ -26,14 +26,11 @@ export class HumanInputController {
   public aimWorldMmX = 0;
   public aimWorldMmY = 0;
 
-  // Mouse button states
-  private leftDown = false;
-  private leftDownTime = 0;
-  private leftThrowConsumed = false;
+  // Throw/recall hold tracking
+  private throwConsumed = false;
   private groundSinceMs = -1;
-  private wasHoldingRecall = false;
 
-  // Buffered one-shot actions (timestamp in ms, expires after ~140ms so actions feel snappy)
+  // Buffered one-shot actions (timestamp in ms)
   private queuedThrowAt = -1;
   private queuedMeleeAt = -1;
   private queuedDashAt = -1;
@@ -43,9 +40,11 @@ export class HumanInputController {
   private mapData: EngineMapData | null = null;
   private cliffGuard = true;
   private canvas: HTMLCanvasElement;
+  private settings: SettingsStore;
 
-  constructor(canvas: HTMLCanvasElement) {
+  constructor(canvas: HTMLCanvasElement, settings: SettingsStore) {
     this.canvas = canvas;
+    this.settings = settings;
     this.bindEvents();
   }
 
@@ -62,24 +61,33 @@ export class HumanInputController {
   }
 
   public setTickIntervalMs(tickMs: number) {
-    // Ensure clicks between slow-motion ticks (e.g. 500ms at 0.1x) never expire before the next tick!
     this.bufferMs = Math.max(140, tickMs * 1.15);
     this.recallHoldDelayMs = Math.min(240, Math.max(120, tickMs * 1.1));
+  }
+
+  /**
+   * Pause gameplay input capture while Settings modal is open mid-match.
+   */
+  public setPaused(v: boolean) {
+    this.paused = v;
+    if (v) {
+      this.pressedCodes.clear();
+      this.throwConsumed = false;
+      this.queuedThrowAt = -1;
+      this.queuedMeleeAt = -1;
+      this.queuedDashAt = -1;
+    }
   }
 
   public setInputMode(mode: InputMode) {
     const prev = this.inputMode;
     this.inputMode = mode;
-    if (mode === 'off') {
-      this.reset();
-    } else if (mode === 'countdown') {
+    if (mode === 'off' || mode === 'countdown') {
       this.reset();
     } else if (mode === 'active' && prev === 'countdown') {
-      // Keep pre-held WASD movement keys from countdown, while clearing any stale action state
-      this.leftDown = false;
-      this.leftThrowConsumed = false;
+      // Keep pre-held movement keys from countdown, while clearing any stale action state
+      this.throwConsumed = false;
       this.groundSinceMs = -1;
-      this.wasHoldingRecall = false;
       this.queuedThrowAt = -1;
       this.queuedMeleeAt = -1;
       this.queuedDashAt = -1;
@@ -91,44 +99,77 @@ export class HumanInputController {
   }
 
   public reset() {
-    this.keys.clear();
-    this.leftDown = false;
-    this.leftThrowConsumed = false;
+    this.pressedCodes.clear();
+    this.throwConsumed = false;
     this.groundSinceMs = -1;
-    this.wasHoldingRecall = false;
     this.queuedThrowAt = -1;
     this.queuedMeleeAt = -1;
     this.queuedDashAt = -1;
   }
 
-  public isLeftHeld(): boolean {
-    return this.leftDown;
+  private isActionHeld(action: ActionBindKey): boolean {
+    const pair = this.settings.get().keybindings[action];
+    return (
+      (pair[0] !== null && this.pressedCodes.has(pair[0])) ||
+      (pair[1] !== null && this.pressedCodes.has(pair[1]))
+    );
+  }
+
+  public isThrowRecallHeld(): boolean {
+    return this.isActionHeld('throwRecall');
   }
 
   private bindEvents() {
     window.addEventListener('keydown', (e) => {
-      if (this.inputMode === 'off') return;
+      if (this.paused || this.inputMode === 'off') return;
+      if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const code = e.code;
-      if (
-        code === 'KeyW' || code === 'KeyA' || code === 'KeyS' || code === 'KeyD' ||
-        code === 'ArrowUp' || code === 'ArrowDown' || code === 'ArrowLeft' || code === 'ArrowRight'
-      ) {
-        this.keys.add(code);
-      } else if (this.inputMode === 'active' && (code === 'ShiftLeft' || code === 'ShiftRight')) {
-        if (!e.repeat) {
-          this.queuedDashAt = performance.now();
+      const kb = this.settings.get().keybindings;
+
+      const isMove =
+        isBoundToAction(kb, 'moveUp', code) ||
+        isBoundToAction(kb, 'moveDown', code) ||
+        isBoundToAction(kb, 'moveLeft', code) ||
+        isBoundToAction(kb, 'moveRight', code);
+
+      if (isMove) {
+        this.pressedCodes.add(code);
+        if (code === 'Space' || code.startsWith('Arrow')) e.preventDefault();
+      }
+
+      if (this.inputMode === 'active') {
+        const now = performance.now();
+        if (isBoundToAction(kb, 'dash', code)) {
+          if (code === 'Space') e.preventDefault();
+          if (!e.repeat) this.queuedDashAt = now;
+          this.pressedCodes.add(code);
         }
-        this.keys.add(code);
+        if (isBoundToAction(kb, 'melee', code)) {
+          if (code === 'Space') e.preventDefault();
+          if (!e.repeat) this.queuedMeleeAt = now;
+          this.pressedCodes.add(code);
+        }
+        if (isBoundToAction(kb, 'throwRecall', code)) {
+          if (code === 'Space') e.preventDefault();
+          this.pressedCodes.add(code);
+          if (!e.repeat) {
+            this.throwConsumed = false;
+            this.queuedThrowAt = now;
+          }
+        }
       }
     });
 
     window.addEventListener('keyup', (e) => {
-      this.keys.delete(e.code);
+      this.pressedCodes.delete(e.code);
+      if (!this.isThrowRecallHeld()) {
+        this.throwConsumed = false;
+      }
     });
 
     window.addEventListener('blur', () => {
-      this.keys.clear();
-      this.leftDown = false;
+      this.pressedCodes.clear();
+      this.throwConsumed = false;
     });
 
     this.canvas.addEventListener('mousemove', (e) => {
@@ -138,42 +179,59 @@ export class HumanInputController {
     });
 
     this.canvas.addEventListener('mousedown', (e) => {
-      if (this.inputMode !== 'active') return;
       this.mouseX = e.clientX;
       this.mouseY = e.clientY;
       this.hasMouse = true;
+      if (this.paused || this.inputMode === 'off') return;
+
+      const code = `Mouse${e.button}`;
+      const kb = this.settings.get().keybindings;
+      const isMove =
+        isBoundToAction(kb, 'moveUp', code) ||
+        isBoundToAction(kb, 'moveDown', code) ||
+        isBoundToAction(kb, 'moveLeft', code) ||
+        isBoundToAction(kb, 'moveRight', code);
+
+      if (isMove) {
+        this.pressedCodes.add(code);
+      }
+
+      if (this.inputMode !== 'active') return;
       const now = performance.now();
 
-      if (e.button === 0) {
-        this.leftDown = true;
-        this.leftDownTime = now;
-        this.leftThrowConsumed = false;
+      if (isBoundToAction(kb, 'throwRecall', code)) {
+        if (e.button !== 0) e.preventDefault();
+        this.pressedCodes.add(code);
+        this.throwConsumed = false;
         this.queuedThrowAt = now;
-      } else if (e.button === 2) {
+      }
+      if (isBoundToAction(kb, 'melee', code)) {
         e.preventDefault();
+        this.pressedCodes.add(code);
         this.queuedMeleeAt = now;
+      }
+      if (isBoundToAction(kb, 'dash', code)) {
+        e.preventDefault();
+        this.pressedCodes.add(code);
+        this.queuedDashAt = now;
       }
     });
 
     window.addEventListener('mouseup', (e) => {
-      if (e.button === 0) {
-        this.leftDown = false;
-        this.leftThrowConsumed = false;
+      this.pressedCodes.delete(`Mouse${e.button}`);
+      if (!this.isThrowRecallHeld()) {
+        this.throwConsumed = false;
       }
-    });
-
-    this.canvas.addEventListener('contextmenu', (e) => {
-      if (this.inputMode !== 'off') e.preventDefault();
     });
   }
 
   private getMoveVector(): [number, number] {
     let mx = 0;
     let my = 0;
-    if (this.keys.has('KeyA') || this.keys.has('ArrowLeft')) mx -= 1;
-    if (this.keys.has('KeyD') || this.keys.has('ArrowRight')) mx += 1;
-    if (this.keys.has('KeyW') || this.keys.has('ArrowUp')) my -= 1;
-    if (this.keys.has('KeyS') || this.keys.has('ArrowDown')) my += 1;
+    if (this.isActionHeld('moveLeft')) mx -= 1;
+    if (this.isActionHeld('moveRight')) mx += 1;
+    if (this.isActionHeld('moveUp')) my -= 1;
+    if (this.isActionHeld('moveDown')) my += 1;
     if (mx === 0 && my === 0) return [0, 0];
     const len = Math.hypot(mx, my);
     return [Math.round((mx / len) * 1000), Math.round((my / len) * 1000)];
@@ -193,18 +251,18 @@ export class HumanInputController {
   }
 
   /**
-   * Sample human action at the exact 20Hz logic tick boundary.
+   * Sample human action at the exact logic tick boundary.
    */
   public sampleAction(state: TickSnapshot | null, seat: number): HumanAction {
     const raw = this.sampleRawAction(state, seat);
-    if (this.cliffGuard && this.mapData && state && this.inputMode === 'active') {
+    if (this.cliffGuard && this.mapData && state && this.inputMode === 'active' && !this.paused) {
       return applyCliffGuard(this.mapData, state, seat, raw);
     }
     return raw;
   }
 
   private sampleRawAction(state: TickSnapshot | null, seat: number): HumanAction {
-    if (this.inputMode !== 'active' || !state || seat < 0 || seat >= state.n) {
+    if (this.paused || this.inputMode !== 'active' || !state || seat < 0 || seat >= state.n) {
       return { mx: 0, my: 0, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
     const me = state.players[seat];
@@ -217,7 +275,6 @@ export class HumanInputController {
     const [mx, my] = this.getMoveVector();
     const [aimX, aimY] = this.getAimVector(me.x, me.y, me.face);
 
-    // Track how long dart has been on ground (to distinguish throw-click-and-hold vs deliberate recall hold)
     if (dart.st === DState.GROUND) {
       if (this.groundSinceMs < 0) this.groundSinceMs = now;
     } else if (dart.st !== DState.RISE) {
@@ -229,59 +286,50 @@ export class HumanInputController {
     const hasBufferedThrow = this.queuedThrowAt > 0 && now - this.queuedThrowAt <= this.bufferMs;
 
     const canStartNew = me.st === PState.FREE || me.st === PState.RECALL;
-    // Dash-slash/kick window: S_DASH and timer in [3..6] (dash_post+1 .. dash_t+dash_post)
     const canDashMelee = me.st === PState.DASH && me.timer >= 3 && me.timer <= 6;
 
-    // 1. Priority: Melee (Right Click) - supports Dash-Slash / Dash-Kick and cancels recall!
+    // 1. Priority: Melee (Slash / Kick)
     if (hasBufferedMelee && (canStartNew || canDashMelee)) {
       this.queuedMeleeAt = -1;
-      this.wasHoldingRecall = false;
       return { mx, my, act: ActType.MELEE, ax: aimX, ay: aimY, msg: 0 };
     }
 
-    // 2. Priority: Dash (Shift) - cancels recall; dashes in WASD direction if held, else mouse aim
+    // 2. Priority: Dash
     if (hasBufferedDash && canStartNew && me.cd === 0) {
       this.queuedDashAt = -1;
-      this.wasHoldingRecall = false;
-      const [dx, dy] = (mx !== 0 || my !== 0) ? [mx, my] : [aimX, aimY];
+      const [dx, dy] = mx !== 0 || my !== 0 ? [mx, my] : [aimX, aimY];
       return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
     }
 
-    // 3. Priority: Throw (Left Click) when holding dart
+    // 3. Priority: Throw when holding dart
     if (hasBufferedThrow && dart.st === DState.HAND && me.st === PState.FREE) {
       this.queuedThrowAt = -1;
-      this.leftThrowConsumed = true;
-      this.wasHoldingRecall = false;
+      this.throwConsumed = true;
       return { mx, my, act: ActType.THROW, ax: aimX, ay: aimY, msg: 0 };
     }
 
-    // 4. Hold Left Click -> Recall when dart is on the ground or already rising
+    // 4. Hold Throw/Recall key -> Recall when dart is on the ground or already rising
+    const recallHeld = this.isThrowRecallHeld();
     const wantsRecall =
-      this.leftDown &&
+      recallHeld &&
       (dart.st === DState.RISE ||
         (dart.st === DState.GROUND &&
-          (!this.leftThrowConsumed || (this.groundSinceMs > 0 && now - this.groundSinceMs >= this.recallHoldDelayMs))));
+          (!this.throwConsumed || (this.groundSinceMs > 0 && now - this.groundSinceMs >= this.recallHoldDelayMs))));
 
     if (wantsRecall && (me.st === PState.FREE || me.st === PState.RECALL)) {
-      // Must send mx=0, my=0 to keep recall channeling without cancelling!
-      this.wasHoldingRecall = true;
       return { mx: 0, my: 0, act: ActType.RECALL, ax: 0, ay: 0, msg: 0 };
     }
 
-    // If user released Left Click while channeling recall and isn't pressing WASD,
-    // send mx=1 (speed=0 because rdiv(250*1, 1000)=0) to cleanly cancel S_RECALL immediately!
+    // Release recall cleanly while stationary
     if (!wantsRecall && me.st === PState.RECALL) {
-      this.wasHoldingRecall = false;
       const cancelMx = mx !== 0 || my !== 0 ? mx : 1;
       return { mx: cancelMx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
 
-    // Expire old throw click if dart wasn't in hand
     if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.bufferMs) {
       this.queuedThrowAt = -1;
     }
 
-    this.wasHoldingRecall = false;
     return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
   }
 }

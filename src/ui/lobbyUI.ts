@@ -1,4 +1,5 @@
 import { LeaderboardStore } from '../game/leaderboard';
+import { formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
 import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { getTheme } from '../render/themes';
 import { LeaderboardPanel } from './leaderboardUI';
@@ -15,6 +16,7 @@ interface DraftSlot {
 export interface LobbyCallbacks {
   onSelectMap: (map: MapMeta) => void;
   onStartMatch: (config: MatchConfig) => void;
+  onOpenSettings: () => void;
 }
 
 export type LobbyTab = 'ranked' | 'custom';
@@ -145,6 +147,7 @@ export class LobbyUI {
   private readonly maps: MapMeta[];
   private readonly roster: RosterEntry[];
   private readonly leaderboard: LeaderboardStore;
+  private readonly settings: SettingsStore;
   private readonly leaderboardPanel: LeaderboardPanel;
   private readonly callbacks: LobbyCallbacks;
 
@@ -175,13 +178,21 @@ export class LobbyUI {
     maps: MapMeta[],
     roster: RosterEntry[],
     leaderboard: LeaderboardStore,
+    settings: SettingsStore,
     callbacks: LobbyCallbacks,
   ) {
     this.maps = maps;
     this.roster = roster;
     this.leaderboard = leaderboard;
+    this.settings = settings;
     this.callbacks = callbacks;
     this.selectedMapId = maps[0]?.id || 'twinlakes';
+
+    this.settings.onChange(() => {
+      if (!this.container.classList.contains('hidden')) {
+        this.render();
+      }
+    });
 
     this.rankedMapPools = this.loadMapPools();
     this.recentMapIds = this.loadRecentMaps();
@@ -704,6 +715,22 @@ export class LobbyUI {
     this.render();
   }
 
+  private renderControlsLegend(extraClass = ''): string {
+    const kb = this.settings.get().keybindings;
+    const mv = formatMoveSummary(kb);
+    const thr = formatPrimaryBind(kb.throwRecall);
+    const mel = formatPrimaryBind(kb.melee);
+    const dsh = formatPrimaryBind(kb.dash);
+    return `
+      <div class="controls-legend ${extraClass}">
+        <div><kbd>${mv}</kbd> 移动</div>
+        <div><kbd>${thr}</kbd> 扔镖 / <kbd>长按</kbd> 召回</div>
+        <div><kbd>${mel}</kbd> 挥砍 / 空手踢人</div>
+        <div><kbd>${dsh}</kbd> 冲刺越坑</div>
+      </div>
+    `;
+  }
+
   private renderRankedBody(): string {
     if (this.showLeaderboard) {
       return `<div id="leaderboard-mount"></div>`;
@@ -772,12 +799,7 @@ export class LobbyUI {
           ${this.loadingMessage || '开始对战'}
         </button>
 
-        <div class="controls-legend ranked-controls-legend">
-          <div><kbd>WASD</kbd> 移动</div>
-          <div><kbd>左键</kbd> 向鼠标扔镖 / <kbd>长按</kbd> 召回</div>
-          <div><kbd>右键</kbd> 挥砍 / 空手踢人</div>
-          <div><kbd>Shift</kbd> 冲刺越坑</div>
-        </div>
+        ${this.renderControlsLegend('ranked-controls-legend')}
       </div>
     `;
   }
@@ -947,12 +969,7 @@ export class LobbyUI {
             </button>
           </div>
 
-          <div class="controls-legend">
-            <div><kbd>WASD</kbd> 移动</div>
-            <div><kbd>左键</kbd> 向鼠标扔镖 / <kbd>长按</kbd> 召回</div>
-            <div><kbd>右键</kbd> 挥砍 / 空手踢人</div>
-            <div><kbd>Shift</kbd> 冲刺越坑</div>
-          </div>
+          ${this.renderControlsLegend()}
 
           <button class="start-btn" id="btn-start-match" ${this.loadingMessage ? 'disabled' : ''}>
             ${this.loadingMessage || (isHumanPlaying ? '开始对战' : '开始 AI 观战')}
@@ -971,11 +988,12 @@ export class LobbyUI {
           <div class="lobby-title-group">
             <h1>回旋镖大作战</h1>
           </div>
-          <div class="lobby-nav-right">
+          <div class="lobby-nav-right lobby-nav-row">
             <div class="lobby-tabs">
               <button class="lobby-tab ${this.activeTab === 'ranked' ? 'active' : ''}" id="tab-ranked">🏆 排位赛</button>
-              <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">⚙️ 自定义对局</button>
+              <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">🎛️ 自定义对局</button>
             </div>
+            <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、帧率上限与键位设置">⚙️ 设置</button>
           </div>
         </header>
 
@@ -983,7 +1001,11 @@ export class LobbyUI {
       </div>
     `;
 
-    // Bind top tabs
+    // Bind top tabs & settings button
+    this.container.querySelector('#btn-open-settings')?.addEventListener('click', () => {
+      this.closeDropdown();
+      this.callbacks.onOpenSettings();
+    });
     this.container.querySelector('#tab-ranked')?.addEventListener('click', () => {
       if (this.activeTab === 'ranked' && !this.showLeaderboard) return;
       this.activeTab = 'ranked';

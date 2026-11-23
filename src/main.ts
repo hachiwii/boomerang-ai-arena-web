@@ -3,10 +3,12 @@ import { SoundFX } from './audio/sfx';
 import { HumanInputController } from './game/humanInput';
 import { LeaderboardStore } from './game/leaderboard';
 import { MatchController } from './game/matchController';
+import { FpsCapOption, isBoundToAction, SettingsStore } from './game/settings';
 import { CellType, EngineMapData, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
 import { GameRenderer } from './render/renderer';
 import { HudUI } from './ui/hudUI';
 import { LobbyUI, makeHoodieAvatarDataUrl } from './ui/lobbyUI';
+import { SettingsModal } from './ui/settingsUI';
 
 function parseQuickPreviewMap(map: MapMeta): EngineMapData {
   const cells: number[] = [];
@@ -57,8 +59,11 @@ async function bootstrap() {
   const maps = (await mapsResp.json()) as MapMeta[];
   const roster = (await rosterResp.json()) as RosterEntry[];
 
+  const settings = new SettingsStore();
   const sfx = new SoundFX();
-  const input = new HumanInputController(canvas);
+  sfx.applySettings(settings.get().soundEnabled, settings.get().volume);
+
+  const input = new HumanInputController(canvas, settings);
   const renderer = new GameRenderer(canvas, sfx);
   const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
 
@@ -69,8 +74,8 @@ async function bootstrap() {
   let matchRecorded = false;
   let restarting = false;
 
-  // Default to 240Hz+ uncapped smooth render loop (toggleable to VSync in HUD anytime)
-  let uncappedRender = true;
+  // Frame-rate cap driven directly by SettingsStore ('vsync' | 60..360 | 'uncapped')
+  let activeFpsCap: FpsCapOption = settings.get().fpsCap;
   let rafId = 0;
   let uncapChannel: MessageChannel | null = null;
   let uncapRunning = false;
@@ -80,6 +85,15 @@ async function bootstrap() {
   let lobbyUI: LobbyUI;
   let hudUI: HudUI;
   let controller: MatchController;
+
+  const settingsModal = new SettingsModal(settings, {
+    onOpenChange: (open) => {
+      input.setPaused(open);
+    },
+    onTestSound: () => {
+      sfx.playCatch();
+    },
+  });
 
   const clearMatchOverTimer = () => {
     if (matchOverTimer !== null) {
@@ -187,18 +201,19 @@ async function bootstrap() {
       }
     };
 
-    if (!uncappedRender) {
+    if (activeFpsCap === 'vsync') {
       const loop = () => {
         tickRender();
         rafId = requestAnimationFrame(loop);
       };
       rafId = requestAnimationFrame(loop);
     } else {
-      // Uncapped 240Hz+ high-frequency render loop (hybrid setTimeout + MessageChannel avoids busy-spinning 100% CPU!)
+      // Custom FPS cap or 240Hz+ uncapped pacer (hybrid setTimeout + MessageChannel avoids busy-spinning 100% CPU!)
+      const targetHz = activeFpsCap === 'uncapped' ? 260 : activeFpsCap;
       uncapRunning = true;
       uncapChannel = new MessageChannel();
       lastUncapRenderMs = performance.now();
-      const targetIntervalMs = 1000 / 260; // 260 Hz target (> 240 Hz!)
+      const targetIntervalMs = 1000 / targetHz;
       const step = () => {
         if (!uncapRunning) return;
         const now = performance.now();
@@ -206,9 +221,10 @@ async function bootstrap() {
         if (rem <= 0.25) {
           lastUncapRenderMs = now;
           tickRender();
-          window.setTimeout(() => uncapChannel?.port2.postMessage(null), 1);
-        } else if (rem > 1.5) {
-          window.setTimeout(() => uncapChannel?.port2.postMessage(null), 1);
+          const sleepMs = Math.max(1, Math.floor(targetIntervalMs - 2));
+          window.setTimeout(() => uncapChannel?.port2.postMessage(null), sleepMs);
+        } else if (rem > 2.0) {
+          window.setTimeout(() => uncapChannel?.port2.postMessage(null), Math.max(1, Math.floor(rem - 1.5)));
         } else {
           uncapChannel?.port2.postMessage(null);
         }
@@ -232,17 +248,19 @@ async function bootstrap() {
     }
   };
 
-  hudUI = new HudUI(uiRoot, {
+  settings.onChange((s) => {
+    sfx.applySettings(s.soundEnabled, s.volume);
+    if (s.fpsCap !== activeFpsCap) {
+      activeFpsCap = s.fpsCap;
+      startRenderLoop();
+    }
+  });
+
+  hudUI = new HudUI(uiRoot, settings, {
     onReturnToLobby: returnToLobby,
     onRestartMatch: restartCurrentMatch,
-    onToggleMute: () => {
-      sfx.muted = !sfx.muted;
-      return sfx.muted;
-    },
-    onToggleUncap: () => {
-      uncappedRender = !uncappedRender;
-      startRenderLoop();
-      return uncappedRender;
+    onOpenSettings: () => {
+      settingsModal.open();
     },
     onToggleCliffGuard: () => {
       const next = !input.isCliffGuard();
@@ -309,7 +327,7 @@ async function bootstrap() {
     },
   });
 
-  lobbyUI = new LobbyUI(uiRoot, maps, roster, leaderboard, {
+  lobbyUI = new LobbyUI(uiRoot, maps, roster, leaderboard, settings, {
     onSelectMap: (map) => {
       if (mode === 'lobby') {
         void renderer.loadPreviewMap(parseQuickPreviewMap(map), map.theme);
@@ -327,6 +345,9 @@ async function bootstrap() {
         alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);
       });
     },
+    onOpenSettings: () => {
+      settingsModal.open();
+    },
   });
 
   // Disable native browser right-click context menu everywhere inside the page
@@ -334,21 +355,31 @@ async function bootstrap() {
     e.preventDefault();
   });
 
-  // Match keyboard shortcuts: ESC returns to lobby; R restarts with exact same config & spawn positions when spectating
+  // Match keyboard & mouse shortcuts: ESC returns to lobby; quickRestart binding restarts / re-matches when allowed
   window.addEventListener('keydown', (e) => {
+    if (settingsModal.isOpen()) return;
     if (e.code === 'Escape' && mode === 'playing') {
       returnToLobby();
       return;
     }
     if (
-      e.code === 'KeyR' &&
       !e.repeat &&
       !e.ctrlKey &&
       !e.metaKey &&
       !e.altKey &&
       !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) &&
+      isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
       canQuickRestart()
     ) {
+      e.preventDefault();
+      restartCurrentMatch();
+    }
+  });
+
+  window.addEventListener('mousedown', (e) => {
+    if (settingsModal.isOpen()) return;
+    const code = `Mouse${e.button}`;
+    if (isBoundToAction(settings.get().keybindings, 'quickRestart', code) && canQuickRestart()) {
       e.preventDefault();
       restartCurrentMatch();
     }
