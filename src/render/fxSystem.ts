@@ -788,9 +788,13 @@ export class FXSystem {
       this.aimLinePositions[4] = 0.06;
       this.aimLinePositions[5] = hz + (dz / dist) * maxLen;
       (this.aimLine.geometry.getAttribute('position') as THREE.BufferAttribute).needsUpdate = true;
-      (this.aimLine.material as THREE.LineBasicMaterial).color.set(
-        hd.st === DState.HAND ? '#a8d0ff' : '#ffd27a',
-      );
+      const aimLineCol =
+        hd.st === DState.HAND
+          ? '#8ec2ff'
+          : hd.st === DState.OUT || hd.st === DState.BACK || hd.st === DState.CALL
+            ? '#ffe066'
+            : '#ff6e6e';
+      (this.aimLine.material as THREE.LineBasicMaterial).color.set(aimLineCol);
       this.aimLine.visible = true;
 
       if (hp1.st === PState.RECALL) {

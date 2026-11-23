@@ -20,6 +20,38 @@ import { VoxelModelData } from './voxelBuilder';
 
 const PITCH_RAD = (58 * Math.PI) / 180;
 const CAM_FOV = 26;
+const RECALL_CURSOR_STEPS = 16;
+
+function buildAimCursorCss(ringHex: string, dotHex: string, dotRadius: number): string {
+  const r = Number(dotRadius.toFixed(2));
+  const centerSvg =
+    r > 3.2
+      ? `<circle cx="16" cy="16" r="${r}" fill="${dotHex}" fill-opacity="0.92"/>`
+      : `<circle cx="16" cy="16" r="${Number((r + 1.0).toFixed(2))}" fill="#080e1c" fill-opacity="0.72"/><circle cx="16" cy="16" r="${r}" fill="${dotHex}"/>`;
+  const svg =
+    `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32">` +
+    centerSvg +
+    `<circle cx="16" cy="16" r="10" fill="none" stroke="#080e1c" stroke-opacity="0.75" stroke-width="3.6"/>` +
+    `<circle cx="16" cy="16" r="10" fill="none" stroke="${ringHex}" stroke-width="1.9"/>` +
+    `<path d="M16 2.5v4.2M16 25.3v4.2M2.5 16h4.2M25.3 16h4.2" stroke="#080e1c" stroke-opacity="0.78" stroke-width="3.2" stroke-linecap="round"/>` +
+    `<path d="M16 2.5v4.2M16 25.3v4.2M2.5 16h4.2M25.3 16h4.2" stroke="${ringHex}" stroke-width="1.7" stroke-linecap="round"/>` +
+    `</svg>`;
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 16 16, crosshair`;
+}
+
+// Precomputed zero-latency OS hardware-plane SVG cursor table:
+// - armed:   blue   (holding boomerang)
+// - flying:  yellow (boomerang flying out / returning / recalled)
+// - dropped: red    (boomerang knocked down / on ground)
+// - recall-0..16: red with center dot expanding from r=2.6 to r=9.2 until full -> snaps to flying (yellow)
+const AIM_CURSOR_BLUE = buildAimCursorCss('#66b8ff', '#3d7eff', 2.6);
+const AIM_CURSOR_YELLOW = buildAimCursorCss('#ffe055', '#ffbe1a', 2.6);
+const AIM_CURSOR_RED = buildAimCursorCss('#ff6464', '#ff2a2a', 2.6);
+const AIM_CURSOR_RECALL: string[] = Array.from({ length: RECALL_CURSOR_STEPS + 1 }, (_, i) => {
+  const prog = i / RECALL_CURSOR_STEPS;
+  const r = 2.6 + (9.2 - 2.6) * prog;
+  return buildAimCursorCss('#ff6464', '#ff2a2a', r);
+});
 
 export interface ProjectedNameplate {
   seat: number;
@@ -79,7 +111,7 @@ export class GameRenderer {
   private readonly _hitPoint = new THREE.Vector3();
   private readonly _projVec = new THREE.Vector3();
   private cursorSuppressed = false;
-  private activeCursorMode: 'default' | 'armed' | 'kick' = 'default';
+  private activeCursorKey = 'default';
 
   // Floating nameplate DOM elements (positioned via CSS transform3d for 240Hz smoothness!)
   private nameplateLayer: HTMLDivElement | null = null;
@@ -871,15 +903,29 @@ export class GameRenderer {
       this.camera.lookAt(this.camTargetX + sx * 0.4, 0, this.camTargetZ - 0.35 + sz * 0.4);
       this.camera.updateMatrixWorld();
 
-      // Update hardware-plane tactical crosshair cursor (0ms OS cursor latency)
+      // Update hardware-plane tactical crosshair cursor (0ms OS cursor latency):
+      // Blue = holding dart, Yellow = dart flying/recalled, Red = dart on ground (+ growing center dot while channeling recall)
       const humanAliveNow =
         !this.cursorSuppressed &&
         this.humanSeat >= 0 &&
         !this.currState.over &&
         this.currState.players[this.humanSeat]?.alive === 1;
       if (humanAliveNow) {
-        const hasDart = this.currState.darts[this.humanSeat]?.st === DState.HAND;
-        this.applyCanvasCursor(hasDart ? 'armed' : 'kick');
+        const me = this.currState.players[this.humanSeat];
+        const dart = this.currState.darts[this.humanSeat];
+        if (!dart || dart.st === DState.HAND) {
+          this.applyCanvasCursor('armed');
+        } else if (dart.st === DState.OUT || dart.st === DState.BACK || dart.st === DState.CALL) {
+          this.applyCanvasCursor('flying');
+        } else if (dart.st === DState.RISE) {
+          const recallPre = Math.max(1, this.arena?.mapData.recallPre || 12);
+          const remTicks = Math.max(0, me.timer);
+          const prog = Math.max(0, Math.min(1, (recallPre - remTicks + alpha) / recallPre));
+          const step = Math.max(0, Math.min(RECALL_CURSOR_STEPS, Math.round(prog * RECALL_CURSOR_STEPS)));
+          this.applyCanvasCursor(`recall-${step}`);
+        } else {
+          this.applyCanvasCursor('dropped');
+        }
       } else {
         this.applyCanvasCursor('default');
       }
@@ -1053,11 +1099,25 @@ export class GameRenderer {
     }
   }
 
-  private applyCanvasCursor(mode: 'default' | 'armed' | 'kick') {
-    if (this.activeCursorMode === mode) return;
-    this.activeCursorMode = mode;
-    this.canvas.classList.toggle('aim-cursor-armed', mode === 'armed');
-    this.canvas.classList.toggle('aim-cursor-kick', mode === 'kick');
+  private applyCanvasCursor(key: string) {
+    if (this.activeCursorKey === key) return;
+    this.activeCursorKey = key;
+    if (key === 'default') {
+      this.canvas.style.cursor = '';
+      delete this.canvas.dataset.cursorState;
+      return;
+    }
+    this.canvas.dataset.cursorState = key;
+    if (key === 'armed') {
+      this.canvas.style.cursor = AIM_CURSOR_BLUE;
+    } else if (key === 'flying') {
+      this.canvas.style.cursor = AIM_CURSOR_YELLOW;
+    } else if (key === 'dropped') {
+      this.canvas.style.cursor = AIM_CURSOR_RED;
+    } else if (key.startsWith('recall-')) {
+      const idx = Math.max(0, Math.min(RECALL_CURSOR_STEPS, Number(key.slice(7)) || 0));
+      this.canvas.style.cursor = AIM_CURSOR_RECALL[idx];
+    }
   }
 
   public projectClientToWorldMm(clientX: number, clientY: number): [number, number] | null {
