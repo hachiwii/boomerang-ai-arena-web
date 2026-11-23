@@ -64,8 +64,8 @@ export const EXPORT_RESOLUTION_OPTIONS: {
   desc: string;
 }[] = [
   { value: '480p', label: '480p', width: 854, height: 480, desc: '854×480 · 极小体积' },
-  { value: '720p', label: '720p', width: 1280, height: 720, desc: '1280×720 · 适合 Web 分享' },
-  { value: '1080p', label: '1080p', width: 1920, height: 1080, desc: '1920×1080 · 全高清' },
+  { value: '720p', label: '720p', width: 1280, height: 720, desc: '1280×720 · 高清轻量' },
+  { value: '1080p', label: '1080p', width: 1920, height: 1080, desc: '1920×1080 · 全高清推荐' },
   { value: '1440p', label: '1440p', width: 2560, height: 1440, desc: '2560×1440 · 2K 超清' },
 ];
 
@@ -84,7 +84,7 @@ export const EXPORT_SPEED_OPTIONS: { value: ExportSpeedOption; label: string }[]
 ];
 
 export function getExportResolutionSpec(res: ExportResolutionOption) {
-  return EXPORT_RESOLUTION_OPTIONS.find((o) => o.value === res) || EXPORT_RESOLUTION_OPTIONS[1];
+  return EXPORT_RESOLUTION_OPTIONS.find((o) => o.value === res) || EXPORT_RESOLUTION_OPTIONS[2];
 }
 
 export function cloneDefaultKeybindings(): KeyBindings {
@@ -107,7 +107,7 @@ export function defaultSettings(): GameSettings {
     volume: 100,
     fpsCap: 'vsync',
     dashInputBuffer: true,
-    exportResolution: '720p',
+    exportResolution: '1080p',
     exportBitrateMbps: 4,
     exportSpeed: 1.0,
     keybindings: cloneDefaultKeybindings(),
