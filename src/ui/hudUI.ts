@@ -188,7 +188,7 @@ export class HudUI {
         <div class="hud-perf" id="hud-perf">20Hz · --Hz</div>
         ${
           humanSeat >= 0
-            ? `<button class="hud-btn ${this.cliffGuard ? 'active' : ''}" id="hud-cliff-guard" title="跌落防护：开启时人类不会走路坠崖，冲刺/塌陷/被踢不受影响">🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}</button>`
+            ? `<button class="hud-btn ${this.cliffGuard ? 'active' : ''}" id="hud-cliff-guard" title="跌落防护：开启时不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点">🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}</button>`
             : ''
         }
         <button class="hud-btn" id="hud-settings" title="音效、帧率上限与键位设置">⚙️ 设置</button>

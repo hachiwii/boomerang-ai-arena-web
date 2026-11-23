@@ -21,13 +21,17 @@ const { applyCliffGuard, cellOfPoint } = await import(modUrl);
 const { default: createEngineModule } = await import(pathToFileURL(ENGINE_JS).href);
 const engineMod = await createEngineModule({ printErr: () => {} });
 const engineInit = engineMod.cwrap('engine_init', 'number', ['string', 'number', 'number']);
+const engineSetHumanSeat = engineMod.cwrap('engine_set_human_seat', null, ['number']);
+const engineSetHumanCliffGuard = engineMod.cwrap('engine_set_human_cliff_guard', null, ['number']);
 const engineGetMap = engineMod.cwrap('engine_get_map_json', 'string', []);
 const engineStep = engineMod.cwrap('engine_step', 'number', ['string']);
 const engineGetState = engineMod.cwrap('engine_get_state_json', 'string', []);
 
-function startMap(mapName, seed = 0) {
+function startMap(mapName, seed = 0, humanSeat = -1, cliffGuard = false) {
   const mapText = fs.readFileSync(path.join(MAPS_DIR, `${mapName}.txt`), 'utf8');
   if (!engineInit(mapText, 2, seed)) throw new Error(`init failed for ${mapName}`);
+  engineSetHumanSeat(humanSeat);
+  engineSetHumanCliffGuard(cliffGuard ? 1 : 0);
   return {
     map: JSON.parse(engineGetMap()),
     state: JSON.parse(engineGetState()),
@@ -311,4 +315,112 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
   console.log(`  [TEST 8 PASS] Stopped cleanly at newly collapsed cliff rim (x=${state.players[0].x}, fallen=${state.fallen} waves, t=${state.t}) with 0 falls!`);
 }
 
-console.log('ALL 8 CLIFF-GUARD WASM PHYSICS TESTS PASSED!');
+// ---------------------------------------------------------------------------
+// Test 9: Human dash-tail cliff guard — dashing 3000mm left from x=3000 (rim at x=500)
+// normally lands at x=0 (C_PIT), but the final 25% [x=750..0] contains safe ground [750..500].
+// With human cliffGuard ON, must stop at exact farthest safe landing point x=500 and stay alive!
+// With human cliffGuard OFF (or for a Bot), exact same dash MUST fall!
+// ---------------------------------------------------------------------------
+{
+  const runDashFromX = (startX, humanSeat, cliffGuard, seatToDash = 0) => {
+    let { state } = startMap('stonecircle', 0, humanSeat, cliffGuard);
+    // Move seat 0 horizontally to exact startX on y=6000 (stonecircle left rim is at x=500)
+    for (let i = 0; i < 40; i++) {
+      const dx = startX - state.players[0].x;
+      if (Math.abs(dx) <= 1) break;
+      const step = Math.max(-250, Math.min(250, dx));
+      const mx = Math.round((step / 250) * 1000);
+      engineStep(`${mx} 0 0 0 0 0\n0 0 0 0 0 0`);
+      state = JSON.parse(engineGetState());
+    }
+    engineStep('0 0 0 0 0 0\n0 0 0 0 0 0');
+    state = JSON.parse(engineGetState());
+    const x0 = state.players[0].x;
+    // Dash straight left (-1000, 0) for full 8 ticks + 2 extra ticks to verify zero post-dash slide-off
+    engineStep(`${seatToDash === 0 ? '0 0 3 -1000 0 0' : '0 0 0 0 0 0'}\n0 0 0 0 0 0`);
+    for (let i = 0; i < 10 && !state.over; i++) {
+      engineStep('0 0 0 0 0 0\n0 0 0 0 0 0');
+      state = JSON.parse(engineGetState());
+    }
+    return { x0, state };
+  };
+
+  // 9a: Overshoot by 500mm (within final 25% = 750mm) with human cliffGuard ON -> SAVED at x=500!
+  const saved = runDashFromX(3000, 0, true);
+  assert(saved.state.players[0].alive === 1, `Expected human saved by dash-tail cliff guard from x0=${saved.x0}, got alive=0`);
+  assert(saved.state.players[0].x === 500, `Expected human stopped at exact farthest safe point x=500, got x=${saved.state.players[0].x}`);
+  assert(saved.state.players[0].st === 0, `Expected human back to S_FREE after dash_post, got st=${saved.state.players[0].st}`);
+
+  // 9b: Exact same dash with cliffGuard OFF -> FALLS!
+  const off = runDashFromX(3000, 0, false);
+  assert(off.state.players[0].alive === 0 && off.state.players[0].cause === 3, 'With cliffGuard OFF, overshoot dash must fall!');
+
+  // 9c: Exact same dash as a BOT (humanSeat = 1, seat 0 is bot) with cliffGuard ON -> FALLS!
+  const bot = runDashFromX(3000, 1, true);
+  assert(bot.state.players[0].alive === 0 && bot.state.players[0].cause === 3, 'Bot dash must NEVER be affected by human cliffGuard!');
+
+  // 9d: Overshoot by 900mm (> final 25% = 750mm; startX=2600 -> 75% mark is x=350, ALREADY C_PIT!) -> MUST STILL FALL!
+  const deepAbyss = runDashFromX(2600, 0, true);
+  assert(deepAbyss.state.players[0].alive === 0 && deepAbyss.state.players[0].cause === 3, `When entire final 25% is pit (x0=${deepAbyss.x0}), human must still fall!`);
+
+  console.log(`  [TEST 9 PASS] Dash-tail 25% cliff guard: saved at exact x=${saved.state.players[0].x} (ON), fell when OFF/Bot/deep-abyss!`);
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: Gap-dash overshoot onto a narrow far island — 75% mark is still over the pit,
+// 80%..96% is solid ground on the far island, and 100% overshoots off the far edge into pit.
+// Human with cliffGuard ON must land safely at the FARTHEST safe point on the far island!
+// ---------------------------------------------------------------------------
+{
+  // Build a clean synthetic test map (20x8 cells, CELL=500mm):
+  // Row 3..4: cols 1..3 solid (x=500..2000), cols 4..7 pit (x=2000..4000, 2000mm gap),
+  //           col 8 solid narrow island (x=4000..4500, 500mm wide!), cols 9..19 pit (x=4500..10000).
+  // Seat 0 spawns at (1.6, 3.5) -> x=1600, y=3500:
+  //   Dash right (+3000mm):
+  //     75% mark = 1600 + 2250 = 3850 (STILL in pit col 7!)
+  //     80%..96.6% = 4000..4500 (SOLID narrow island col 8!)
+  //     100% mark = 1600 + 3000 = 4600 (OVERSHOT into pit col 9!)
+  //   Farthest safe landing point in [3850..4600] is EXACTLY x = 4500!
+  const syntheticMap = [
+    'NAME gap_dash_test',
+    'MODES 0',
+    'SPAWN 0 1.6 2.0 8.5 2.0',
+    'GRID 20 8',
+    '~~~~~~~~~~~~~~~~~~~~',
+    '~~~~~~~~~~~~~~~~~~~~',
+    '~~~~~~~~~~~~~~~~~~~~',
+    '~...~~~~.~~~~~~~...~',
+    '~...~~~~.~~~~~~~...~',
+    '~~~~~~~~~~~~~~~~~~~~',
+    '~~~~~~~~~~~~~~~~~~~~',
+    '~~~~~~~~~~~~~~~~~~~~',
+  ].join('\n');
+
+  assert(engineInit(syntheticMap, 2, 0), 'synthetic gap_dash_test init failed');
+  engineSetHumanSeat(0);
+  engineSetHumanCliffGuard(1);
+  let st = JSON.parse(engineGetState());
+  assert(st.players[0].x === 1600, `Expected start x=1600, got ${st.players[0].x}`);
+  engineStep('0 0 3 1000 0 0\n0 0 0 0 0 0');
+  for (let i = 0; i < 10 && !st.over; i++) {
+    engineStep('0 0 0 0 0 0\n0 0 0 0 0 0');
+    st = JSON.parse(engineGetState());
+  }
+  assert(st.players[0].alive === 1, 'Human should survive gap-dash overshoot onto narrow island!');
+  assert(st.players[0].x === 4500, `Expected landing at farthest safe edge x=4500 of narrow island, got x=${st.players[0].x}`);
+
+  // Confirm without cliffGuard, exact same gap-dash overshoots to x=4600 and falls!
+  assert(engineInit(syntheticMap, 2, 0), 'synthetic gap_dash_test init 2 failed');
+  engineSetHumanSeat(0);
+  engineSetHumanCliffGuard(0);
+  engineStep('0 0 3 1000 0 0\n0 0 0 0 0 0');
+  for (let i = 0; i < 10; i++) {
+    engineStep('0 0 0 0 0 0\n0 0 0 0 0 0');
+    st = JSON.parse(engineGetState());
+    if (st.over) break;
+  }
+  assert(st.players[0].alive === 0 && st.players[0].cause === 3, 'Without cliffGuard, gap-dash overshoot to x=4600 must fall!');
+  console.log('  [TEST 10 PASS] Gap-dash overshoot onto narrow island (75%=pit, 80..96%=land, 100%=pit) saved at exact farthest safe point x=4500!');
+}
+
+console.log('ALL 10 CLIFF-GUARD WASM PHYSICS TESTS PASSED!');

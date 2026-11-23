@@ -72,6 +72,14 @@ export class MatchController {
     return this.running;
   }
 
+  public setCliffGuard(enabled: boolean) {
+    this.input.setCliffGuard(enabled);
+    if (this.config) {
+      this.config.cliffGuard = enabled;
+    }
+    this.engineWorker?.postMessage({ type: 'set_cliff_guard', enabled });
+  }
+
   private rpc(worker: Worker, payload: Record<string, unknown>, timeoutMs = 15000): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
       const reqId = this.reqCounter++;
@@ -135,6 +143,7 @@ export class MatchController {
       seed: config.seed,
       botSeats: this.botSeats,
       humanSeat: this.humanSeat,
+      cliffGuard: config.cliffGuard,
     });
     if (this.stopped) return;
 

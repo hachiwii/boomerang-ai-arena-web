@@ -6,6 +6,7 @@ interface EngineWasmModule {
 
 let engineInit: ((mapText: string, nPlayers: number, seed: number) => number) | null = null;
 let engineSetHumanSeat: ((seat: number) => void) | null = null;
+let engineSetHumanCliffGuard: ((enabled: number) => void) | null = null;
 let engineLastErr: (() => string) | null = null;
 let engineGetHeader: ((seat: number) => string) | null = null;
 let engineGetObs: ((seat: number) => string) | null = null;
@@ -26,6 +27,7 @@ async function ensureLoaded(origin: string, buildId?: string) {
   });
   engineInit = mod.cwrap('engine_init', 'number', ['string', 'number', 'number']) as (m: string, n: number, s: number) => number;
   engineSetHumanSeat = mod.cwrap('engine_set_human_seat', null, ['number']) as (s: number) => void;
+  engineSetHumanCliffGuard = mod.cwrap('engine_set_human_cliff_guard', null, ['number']) as (e: number) => void;
   engineLastErr = mod.cwrap('engine_last_error', 'string', []) as () => string;
   engineGetHeader = mod.cwrap('engine_get_header', 'string', ['number']) as (s: number) => string;
   engineGetObs = mod.cwrap('engine_get_obs', 'string', ['number']) as (s: number) => string;
@@ -38,7 +40,7 @@ self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      const { reqId, origin, buildId, mapText, nPlayers, seed, botSeats, humanSeat } = msg as {
+      const { reqId, origin, buildId, mapText, nPlayers, seed, botSeats, humanSeat, cliffGuard } = msg as {
         reqId: number;
         origin: string;
         buildId?: string;
@@ -47,6 +49,7 @@ self.onmessage = async (ev: MessageEvent) => {
         seed: number;
         botSeats: number[];
         humanSeat?: number;
+        cliffGuard?: boolean;
       };
       await ensureLoaded(origin, buildId);
       const ok = engineInit!(mapText, nPlayers, seed);
@@ -55,6 +58,7 @@ self.onmessage = async (ev: MessageEvent) => {
         return;
       }
       engineSetHumanSeat!(typeof humanSeat === 'number' ? humanSeat : -1);
+      engineSetHumanCliffGuard!(cliffGuard ? 1 : 0);
       const mapData = JSON.parse(engineGetMapJson!());
       const state = JSON.parse(engineGetStateJson!());
       const headers: Record<number, string> = {};
@@ -64,6 +68,10 @@ self.onmessage = async (ev: MessageEvent) => {
         obs[seat] = engineGetObs!(seat);
       }
       self.postMessage({ type: 'init_done', reqId, mapData, state, headers, obs });
+    } else if (msg.type === 'set_cliff_guard') {
+      if (engineSetHumanCliffGuard) {
+        engineSetHumanCliffGuard(msg.enabled ? 1 : 0);
+      }
     } else if (msg.type === 'step') {
       const { reqId, actionsText, botSeats } = msg as {
         reqId: number;

@@ -266,7 +266,7 @@ async function bootstrap() {
     },
     onToggleCliffGuard: () => {
       const next = !input.isCliffGuard();
-      input.setCliffGuard(next);
+      controller.setCliffGuard(next);
       lobbyUI.setCliffGuard(next);
       return next;
     },

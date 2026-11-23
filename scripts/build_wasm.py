@@ -39,7 +39,7 @@ def build_engine():
         str(WASM_DIR / "engine_wasm.cpp"),
         *COMMON_FLAGS,
         "-sEXPORT_NAME=createEngineModule",
-        "-sEXPORTED_FUNCTIONS=[\"_engine_init\",\"_engine_set_human_seat\",\"_engine_last_error\",\"_engine_get_header\",\"_engine_get_obs\",\"_engine_step\",\"_engine_get_map_json\",\"_engine_get_state_json\"]",
+        "-sEXPORTED_FUNCTIONS=[\"_engine_init\",\"_engine_set_human_seat\",\"_engine_set_human_cliff_guard\",\"_engine_last_error\",\"_engine_get_header\",\"_engine_get_obs\",\"_engine_step\",\"_engine_get_map_json\",\"_engine_get_state_json\"]",
         "-o", str(out_js),
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)

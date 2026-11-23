@@ -95,6 +95,13 @@ void engine_set_human_seat(int seat) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void engine_set_human_cliff_guard(int enabled) {
+    if (g_game) {
+        g_game->human_cliff_guard = (enabled != 0);
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
 const char* engine_get_header(int seat) {
     if (!g_game || seat < 0 || seat >= g_game->n) {
         g_ret_buf.clear();

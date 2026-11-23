@@ -788,7 +788,7 @@ export class LobbyUI {
             id="btn-toggle-cliff-guard"
             role="switch"
             aria-checked="${this.cliffGuard}"
-            title="开启时人类不会走路坠崖，冲刺、平台塌陷、被踢不受影响"
+            title="开启时人类不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点"
           >
             <span class="rand-track"><span class="rand-thumb"></span></span>
             <span class="rand-label">🛡️ 跌落防护</span>
@@ -962,7 +962,7 @@ export class LobbyUI {
               id="btn-toggle-cliff-guard"
               role="switch"
               aria-checked="${this.cliffGuard}"
-              title="开启时人类不会走路坠崖，冲刺、平台塌陷、被踢不受影响"
+              title="开启时人类不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点"
             >
               <span class="rand-track"><span class="rand-thumb"></span></span>
               <span class="rand-label">${this.cliffGuard ? '已开启' : '已关闭'}</span>

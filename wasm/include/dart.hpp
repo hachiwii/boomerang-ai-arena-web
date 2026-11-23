@@ -1003,6 +1003,7 @@ struct Game {
     i64 winner = -2;         // 结束后：1v1 = 胜者座位，4v4 = 胜队，四人局 = 最后存活者；-1 = 平局 / 没人活；-2 = 未结束
     int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的近战（挥砍/踢人）从按下起持续 human_slash_ticks 步判定（默认 5 步 = 原速 250ms）
     i64 human_slash_ticks = 5;  // 原速 20Hz 下 250ms = 5 逻辑 tick（覆盖完整 2 步前摇 + 前 3 步后摇）
+    bool human_cliff_guard = false;  // 开启跌落防护时：人类冲刺若原本会坠崖，但末尾 25% 存在安全落点，则停在最远安全点
     bool record = false;
     std::vector<Event> events;
     std::shared_ptr<const Map> live;  // 当前步的地图（塌掉的是坑）；按塌了几波缓存
@@ -1343,14 +1344,47 @@ struct Game {
             if (P.st == S_DASH && dash_moving(P)) {
                 // 冲刺移动：速度固定 = 方向 × DASH_V（被墙挡住就沿墙滑），这几步不判落坑、不推人也不被推
                 // （前摇、收势不进这里：和其他出手动作一样按"不能移动"减速，照常判落坑、推人）
+                const i64 start_x = P.x, start_y = P.y;
                 i64 vx = rdiv(P.ax * cf.dash_v, UNIT), vy = rdiv(P.ay * cf.dash_v, UNIT);
+                const i64 raw_vx = vx, raw_vy = vy;
                 move_body(m, cf.body_r, P.x, P.y, vx, vy);
+                bool clamped_safe = false;
+                if (P.timer == cf.dash_post + 1 &&
+                    k == human_slash_seat &&
+                    human_cliff_guard &&
+                    cell_of_point(cf, m, P.x, P.y, t) == C_PIT) {
+                    // 人类开启跌落防护时：若原冲刺终点坠崖，在冲刺总距离的末尾 25% 内反向寻找最远安全落点
+                    const i64 total_dash_len = imax(1, cf.dash_t) * cf.dash_v;
+                    const i64 tail_len = (total_dash_len + 3) / 4;
+                    const i64 step_len = imax(1, cf.dash_v);
+                    const i64 min_frac_num = tail_len >= step_len ? 0 : (step_len - tail_len);
+                    const i64 sub = imax(1, step_len); // 1mm 精度
+                    const i64 min_s = (min_frac_num * sub + step_len - 1) / step_len;
+                    for (i64 s = sub - 1; s >= min_s; --s) {
+                        i64 tx = start_x, ty = start_y;
+                        i64 svx = rdiv(raw_vx * s, sub), svy = rdiv(raw_vy * s, sub);
+                        move_body(m, cf.body_r, tx, ty, svx, svy);
+                        if (cell_of_point(cf, m, tx, ty, t) != C_PIT) {
+                            P.x = tx;
+                            P.y = ty;
+                            vx = 0;
+                            vy = 0;
+                            clamped_safe = true;
+                            break;
+                        }
+                    }
+                }
                 P.dashing = P.timer > cf.dash_post + 1 ? 1 : 0;  // 最后一步冲刺移动照常判落坑（停下来的地方要站得住）
                 ++P.dash_steps;
                 if (cell_of_point(cf, m, P.x, P.y, t) == C_PIT) P.dash_pit = 1;
                 if (P.timer == cf.dash_post + 1) {  // 最后一步冲刺移动：速度降到跑速（之后收势减速）
-                    P.vx = rdiv(vx * cf.run_v, imax(1, cf.dash_v));
-                    P.vy = rdiv(vy * cf.run_v, imax(1, cf.dash_v));
+                    if (clamped_safe) {
+                        P.vx = 0;
+                        P.vy = 0;
+                    } else {
+                        P.vx = rdiv(vx * cf.run_v, imax(1, cf.dash_v));
+                        P.vy = rdiv(vy * cf.run_v, imax(1, cf.dash_v));
+                    }
                     if (P.dash_pit && cell_of_point(cf, m, P.x, P.y, t) != C_PIT) ++P.gap_dash;  // 统计：越过了坑、而且停在地上
                     P.dash_pit = 0;
                     ev(EV_STOP, k, P.x, P.y);
