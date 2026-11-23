@@ -336,6 +336,7 @@ export function drawBroadcastOverlay(
   }
 
   // 3. Top-Center Match Pill
+  const matchSpeed = Number.isFinite(summary.speed) && summary.speed > 0 ? summary.speed : 1.0;
   const modeTag =
     summary.matchMode === 'ranked-solo'
       ? 'SOLO 排位'
@@ -343,7 +344,7 @@ export function drawBroadcastOverlay(
         ? '混战排位'
         : summary.matchMode === 'cricket'
           ? '斗蛐蛐'
-          : '自定义';
+          : `自定义 ${matchSpeed.toFixed(1)}x`;
   const topTitle = `${summary.mapTitle} · ${modeTag}`;
   const remSec = Math.max(0, (800 - state.t) / 20);
   const timerStr = `${remSec.toFixed(1)}s`;

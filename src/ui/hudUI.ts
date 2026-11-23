@@ -352,6 +352,7 @@ export class HudUI {
     this.root.classList.remove('hidden');
 
     const isCricket = summary.matchMode === 'cricket';
+    const matchSpeed = Number.isFinite(summary.speed) && summary.speed > 0 ? summary.speed : 1.0;
     const modeTag =
       summary.matchMode === 'ranked-solo'
         ? 'SOLO 排位'
@@ -361,7 +362,7 @@ export class HudUI {
             ? summary.slots.length === 2
               ? '1v1'
               : '4人混战'
-            : '自定义';
+            : `自定义 ${matchSpeed.toFixed(1)}x`;
     const replayBadge = this.replayIsLiveAi
       ? isCricket
         ? '🦗 斗蛐蛐'
