@@ -674,12 +674,11 @@ async function bootstrap() {
         }
       }
 
-      // Wait for victory celebration (extended smoothly when cinematic winner close-up is active!)
+      // Wait for victory celebration at 1.0x (post-match playback smoothly transitions to 1.0x regardless of gameSpeed)
       clearMatchOverTimer();
-      const baseSpeed = Math.max(0.25, activeConfig?.speed ?? 1.0);
       const celebrateMs =
         activeDirector && activeDirector.isEnabled()
-          ? Math.round((activeDirector.getRecommendedOutroRealSec(1.6) / baseSpeed) * 1000)
+          ? Math.round(activeDirector.getRecommendedOutroRealSec(1.6) * 1000)
           : 1600;
       matchOverTimer = window.setTimeout(() => {
         matchOverTimer = null;

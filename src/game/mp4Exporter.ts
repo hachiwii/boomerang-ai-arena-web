@@ -488,10 +488,21 @@ export async function exportReplayToMp4(
   const director = new CinematicDirector(ticks, bundle.replay.mapData, options.cinematic ?? false);
   const tickSec = LOGIC_DT_MS / 1000;
   const matchEndSimSec = Math.max(0, ticks.length - 1) * tickSec;
-  const playDurationSec = director.simToReal(matchEndSimSec) / speed;
+  const matchEndReal1x = director.simToReal(matchEndSimSec);
+  const playDurationSec = matchEndReal1x / speed;
   const outroDurationSec = director.isEnabled()
-    ? Math.max(OUTRO_SEC, director.getRecommendedOutroRealSec(OUTRO_SEC) / Math.min(speed, 1.5))
+    ? Math.max(OUTRO_SEC, director.getRecommendedOutroRealSec(OUTRO_SEC))
     : OUTRO_SEC;
+  const OUTRO_SPEED_RAMP_SEC = 0.45;
+  const integrateOutroTo1x = (dtOutro: number): number => {
+    if (dtOutro <= 0) return 0;
+    const R = OUTRO_SPEED_RAMP_SEC;
+    if (dtOutro <= R) {
+      const u = dtOutro / R;
+      return speed * dtOutro + (1.0 - speed) * R * (u * u * u - 0.5 * u * u * u * u);
+    }
+    return R * (speed + 1.0) * 0.5 + (dtOutro - R);
+  };
   const totalDurationSec = LEAD_IN_SEC + playDurationSec + outroDurationSec;
   const totalFrames = Math.max(1, Math.ceil(totalDurationSec * EXPORT_FPS));
 
@@ -612,7 +623,11 @@ export async function exportReplayToMp4(
         gt = ticks[0].t;
         prevSimSec = 0;
       } else {
-        const playReal1xSec = (videoTimeSec - LEAD_IN_SEC) * speed;
+        const elapsedSincePlay = videoTimeSec - LEAD_IN_SEC;
+        const playReal1xSec =
+          elapsedSincePlay <= playDurationSec
+            ? elapsedSincePlay * speed
+            : matchEndReal1x + integrateOutroTo1x(elapsedSincePlay - playDurationSec);
         const simSec = director.realToSim(playReal1xSec);
         frameDtSim = Math.max(1e-4, simSec - prevSimSec);
         prevSimSec = simSec;

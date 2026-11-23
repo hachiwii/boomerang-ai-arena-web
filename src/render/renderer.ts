@@ -125,6 +125,7 @@ export class GameRenderer {
   private previewAngle = 0;
   private cinematicDirector: CinematicDirector | null = null;
   private overElapsedSimSec = 0;
+  private overElapsedRealSec = 0;
   private nextWinnerRibbonSec = -1;
   private winnerRibbonWave = 0;
 
@@ -470,6 +471,7 @@ export class GameRenderer {
     this.pausedAlpha = 1.0;
     this.shakeAmp = 0;
     this.overElapsedSimSec = 0;
+    this.overElapsedRealSec = 0;
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
     this.cinematicDirector = null;
@@ -644,6 +646,7 @@ export class GameRenderer {
     this.cinematicDirector = null;
     this.shakeAmp = 0;
     this.overElapsedSimSec = 0;
+    this.overElapsedRealSec = 0;
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
 
@@ -684,6 +687,7 @@ export class GameRenderer {
     }
     if (!next.over) {
       this.overElapsedSimSec = 0;
+      this.overElapsedRealSec = 0;
       this.nextWinnerRibbonSec = -1;
       this.winnerRibbonWave = 0;
     }
@@ -793,6 +797,7 @@ export class GameRenderer {
     this.prevState = ticks[Math.max(0, idx - 1)];
     this.currState = ticks[idx];
     this.overElapsedSimSec = 0;
+    this.overElapsedRealSec = 0;
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
     this.tickReceivedAtMs = performance.now();
@@ -1161,6 +1166,7 @@ export class GameRenderer {
 
       let gt: number;
       let liveScale = 1.0;
+      let effectiveBaseSpeed = this.gameSpeed;
       if (this.playbackPaused) {
         gt = this.currState.over
           ? this.currState.t + this.overElapsedSimSec * 20
@@ -1169,16 +1175,23 @@ export class GameRenderer {
             : this.prevState.t + alpha;
         liveScale = this.cinematicDirector?.getSpeedScaleAtSim(gt * 0.05) ?? 1.0;
       } else if (this.currState.over) {
+        // Smoothly transition base playback speed from configured gameSpeed -> 1.0x after match end
+        // so winner close-up, victory hops, confetti, and result overlay always play cleanly at 1.0x!
+        this.overElapsedRealSec += frameDt;
+        const uRamp = Math.min(1, this.overElapsedRealSec / 0.45);
+        const smoothRamp = uRamp * uRamp * (3 - 2 * uRamp);
+        effectiveBaseSpeed = this.gameSpeed + (1.0 - this.gameSpeed) * smoothRamp;
+
         const curOverSim = this.currState.t * 0.05 + this.overElapsedSimSec;
         liveScale = this.cinematicDirector?.getSpeedScaleAtSim(curOverSim) ?? 1.0;
-        this.overElapsedSimSec += frameDt * this.gameSpeed * liveScale;
+        this.overElapsedSimSec += frameDt * effectiveBaseSpeed * liveScale;
         gt = this.currState.t + this.overElapsedSimSec * 20;
       } else {
         gt = sameTick ? this.currState.t : this.prevState.t + alpha;
         liveScale = this.cinematicDirector?.getSpeedScaleAtSim(gt * 0.05) ?? 1.0;
       }
 
-      const simFrameDt = frameDt * this.gameSpeed * liveScale;
+      const simFrameDt = frameDt * effectiveBaseSpeed * liveScale;
       if (!this.playbackPaused) {
         this.elapsedSec += simFrameDt;
       }
@@ -1627,6 +1640,7 @@ export class GameRenderer {
     this.playbackPaused = false;
     this.pausedAlpha = 1.0;
     this.overElapsedSimSec = 0;
+    this.overElapsedRealSec = 0;
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
     this.cinematicDirector = null;
