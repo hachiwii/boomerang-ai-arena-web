@@ -295,6 +295,35 @@ export class CharacterRig {
     this.shadowBlob.visible = false;
   }
 
+  /**
+   * Resets transient animation & death states so replay timeline scrubbing can
+   * cleanly jump forward or backward without rebuilding voxel geometry.
+   */
+  public resetDynamicState() {
+    this.sliceState = null;
+    this.fallState = null;
+    this.slashFallState = null;
+    if (this.slicedUpper) this.slicedUpper.visible = false;
+    if (this.slicedLower) this.slicedLower.visible = false;
+    this.lastThrowTick = -999;
+    this.lastSlashTick = -999;
+    this.lastKickTick = -999;
+    this.lastCatchTick = -999;
+    this.lastPickTick = -999;
+    this.walkDist = 0;
+    this.initializedPos = false;
+    this.stealthBlend = 0;
+    this.visibilityAlpha = 1;
+    const baseScale = CHAR_SCALE * (this.model.scale || 1.0);
+    this.rigRoot.scale.setScalar(baseScale);
+    this.root.rotation.set(0, 0, 0);
+    this.root.visible = true;
+    this.shadowBlob.visible = true;
+    this.groundRing.visible = true;
+    this.dashCdRing.visible = false;
+    this.setFace('open');
+  }
+
   public update(
     prevP: PlayerSnapshot,
     currP: PlayerSnapshot,

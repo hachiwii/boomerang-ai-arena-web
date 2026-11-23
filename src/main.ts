@@ -1,11 +1,14 @@
 import './style.css';
 import { SoundFX } from './audio/sfx';
 import { HumanInputController } from './game/humanInput';
-import { LeaderboardStore } from './game/leaderboard';
+import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
 import { MatchController } from './game/matchController';
+import { buildMatchHistoryBundle, MatchHistoryStore } from './game/matchHistory';
+import { ReplayController } from './game/replayController';
 import { FpsCapOption, isBoundToAction, SettingsStore } from './game/settings';
 import { CellType, EngineMapData, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
 import { GameRenderer } from './render/renderer';
+import { HistoryModal } from './ui/historyUI';
 import { HudUI } from './ui/hudUI';
 import { LobbyUI, makeHoodieAvatarDataUrl } from './ui/lobbyUI';
 import { SettingsModal } from './ui/settingsUI';
@@ -67,12 +70,15 @@ async function bootstrap() {
   const renderer = new GameRenderer(canvas, sfx);
   input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
   const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
+  const matchHistory = new MatchHistoryStore();
 
-  let mode: 'lobby' | 'playing' = 'lobby';
+  let mode: 'lobby' | 'playing' | 'replay' = 'lobby';
   let activeConfig: MatchConfig | null = null;
   let activeMapData: EngineMapData | null = null;
+  let replayMapData: EngineMapData | null = null;
   let matchOverTimer: number | null = null;
   let matchRecorded = false;
+  let historyRecorded = false;
   let restarting = false;
 
   // Frame-rate cap driven directly by SettingsStore ('vsync' | 60..360 | 'uncapped')
@@ -86,6 +92,8 @@ async function bootstrap() {
   let lobbyUI: LobbyUI;
   let hudUI: HudUI;
   let controller: MatchController;
+  let replayController: ReplayController;
+  let historyModal: HistoryModal;
 
   const settingsModal = new SettingsModal(settings, {
     onOpenChange: (open) => {
@@ -104,19 +112,62 @@ async function bootstrap() {
     }
   };
 
-  const returnToLobby = (opts?: { openLeaderboard?: boolean; rankedMode?: RankedMode }) => {
+  const persistCurrentMatchHistory = (eloResult: EloUpdateResult | null, earlyExit: boolean) => {
+    if (historyRecorded || !activeConfig || !activeMapData) return;
+    const ticks = controller.getRecordedTicks().slice();
+    if (ticks.length === 0) return;
+    historyRecorded = true;
+    const bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, eloResult, earlyExit);
+    void matchHistory.saveBundle(bundle);
+  };
+
+  const returnToLobby = (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => {
     clearMatchOverTimer();
     matchRecorded = false;
+    historyRecorded = false;
     restarting = false;
     controller.stop();
+    replayController.stop();
     input.setEnabled(false);
     hudUI.hide();
     mode = 'lobby';
     activeConfig = null;
     activeMapData = null;
+    replayMapData = null;
     lobbyUI.show(opts?.openLeaderboard ? 'ranked' : undefined, opts);
     const m = lobbyUI.getSelectedMap();
     void renderer.loadPreviewMap(parseQuickPreviewMap(m), m.theme);
+    if (opts?.openHistory) {
+      void historyModal.open();
+    }
+  };
+
+  const startReplayById = async (matchId: string) => {
+    const bundle = await matchHistory.getReplayBundle(matchId);
+    if (!bundle) {
+      alert('未找到该场对局的回放数据（可能已被清理）。');
+      return;
+    }
+    clearMatchOverTimer();
+    matchRecorded = false;
+    historyRecorded = false;
+    restarting = false;
+    controller.stop();
+    replayController.stop();
+    input.setEnabled(false);
+    activeConfig = null;
+    activeMapData = null;
+    replayMapData = bundle.replay.mapData;
+    historyModal.close();
+    lobbyUI.hide();
+    mode = 'replay';
+    try {
+      await replayController.start(bundle, 1.0);
+    } catch (err) {
+      console.error('Failed to start replay:', err);
+      alert(`回放加载失败：${err instanceof Error ? err.message : String(err)}`);
+      returnToLobby({ openHistory: true });
+    }
   };
 
   const canQuickRestart = (): boolean => {
@@ -147,6 +198,7 @@ async function bootstrap() {
         const eloResult = leaderboard.recordHumanEarlyExit(activeConfig, st);
         if (eloResult) {
           hudUI.showEloToast(st.players[hSeat].rank, eloResult);
+          persistCurrentMatchHistory(eloResult, true);
         }
       }
     }
@@ -154,6 +206,7 @@ async function bootstrap() {
     const isRanked = activeConfig.matchMode !== 'custom';
     hudUI.cancelResultOverlay(true, isRanked);
     matchRecorded = false;
+    historyRecorded = false;
     lobbyUI.setCliffGuard(input.isCliffGuard());
 
     let cfg: MatchConfig;
@@ -200,6 +253,10 @@ async function bootstrap() {
           controller.lastBotMaxMs,
           activeConfig?.speed ?? 1.0,
         );
+      } else if (mode === 'replay' && now - lastTelemetryUpdateMs >= 200) {
+        lastTelemetryUpdateMs = now;
+        const rs = replayController.getState();
+        hudUI.updateReplayTelemetry(renderer.renderHz, renderer.avgFrameWorkMs, rs.speed, rs.paused);
       }
     };
 
@@ -274,8 +331,42 @@ async function bootstrap() {
       if (kind === 'up') sfx.playRankUp();
       else sfx.playRankDown();
     },
+    onReplayTogglePause: () => {
+      replayController.togglePause();
+    },
+    onReplayRestart: () => {
+      replayController.restart();
+    },
+    onReplaySeek: (tickIdx) => {
+      replayController.seekTo(tickIdx);
+    },
+    onReplaySpeed: (spd) => {
+      replayController.setSpeed(spd);
+    },
   });
   renderer.setNameplateLayer(hudUI.nameplateLayer);
+
+  replayController = new ReplayController(renderer, {
+    onLoaded: (bundle, state) => {
+      hudUI.showReplay(bundle, state);
+      hudUI.updateTick(
+        bundle.replay.ticks[0],
+        bundle.replay.mapData.colStart,
+        bundle.replay.mapData.colEvery,
+      );
+    },
+    onTick: (snapshot, state) => {
+      hudUI.updateTick(snapshot, replayMapData?.colStart, replayMapData?.colEvery);
+      hudUI.updateReplayControls(state);
+    },
+    onStateChange: (state) => {
+      hudUI.updateReplayControls(state);
+    },
+  });
+
+  historyModal = new HistoryModal(matchHistory, {
+    onReplay: startReplayById,
+  });
 
   controller = new MatchController(input, {
     onStatus: (msg) => {
@@ -307,11 +398,12 @@ async function bootstrap() {
     },
     onMatchOver: (finalState) => {
       hudUI.updateTick(finalState, activeMapData?.colStart, activeMapData?.colEvery);
-      let eloResult = null;
+      let eloResult: EloUpdateResult | null = null;
       if (activeConfig && !matchRecorded) {
         matchRecorded = true;
         eloResult = leaderboard.recordMatch(activeConfig, finalState);
       }
+      persistCurrentMatchHistory(eloResult, false);
       // Wait 1.6s so players see the victory celebration & confetti, then show result card + auto return!
       clearMatchOverTimer();
       matchOverTimer = window.setTimeout(() => {
@@ -338,7 +430,10 @@ async function bootstrap() {
     onStartMatch: (config) => {
       clearMatchOverTimer();
       matchRecorded = false;
+      historyRecorded = false;
       restarting = false;
+      replayController.stop();
+      historyModal.close();
       activeConfig = config;
       lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
       void controller.start(config).catch((err) => {
@@ -346,6 +441,9 @@ async function bootstrap() {
         lobbyUI.setLoading(null);
         alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);
       });
+    },
+    onOpenHistory: () => {
+      void historyModal.open();
     },
     onOpenSettings: () => {
       settingsModal.open();
@@ -357,11 +455,31 @@ async function bootstrap() {
     e.preventDefault();
   });
 
-  // Match keyboard & mouse shortcuts: ESC returns to lobby; quickRestart binding restarts / re-matches when allowed
+  // Match & Replay keyboard/mouse shortcuts
   window.addEventListener('keydown', (e) => {
-    if (settingsModal.isOpen()) return;
-    if (e.code === 'Escape' && mode === 'playing') {
+    if (settingsModal.isOpen() || historyModal.isOpen()) return;
+    if (e.code === 'Escape' && (mode === 'playing' || mode === 'replay')) {
       returnToLobby();
+      return;
+    }
+    if (mode === 'replay') {
+      if (e.code === 'Space' && !e.repeat) {
+        e.preventDefault();
+        replayController.togglePause();
+        return;
+      }
+      if (e.code === 'ArrowLeft') {
+        e.preventDefault();
+        const st = replayController.getState();
+        replayController.seekTo(st.tickIndex - 40);
+        return;
+      }
+      if (e.code === 'ArrowRight') {
+        e.preventDefault();
+        const st = replayController.getState();
+        replayController.seekTo(st.tickIndex + 40);
+        return;
+      }
       return;
     }
     if (
@@ -379,7 +497,7 @@ async function bootstrap() {
   });
 
   window.addEventListener('mousedown', (e) => {
-    if (settingsModal.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || mode !== 'playing') return;
     const code = `Mouse${e.button}`;
     if (isBoundToAction(settings.get().keybindings, 'quickRestart', code) && canQuickRestart()) {
       e.preventDefault();

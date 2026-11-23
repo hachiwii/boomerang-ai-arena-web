@@ -808,6 +808,18 @@ export class FXSystem {
     }
   }
 
+  public clearAll() {
+    this.bursts.length = 0;
+    this.rings.reset();
+    this.arcs.reset();
+    this.sparks.reset();
+    this.puffs.reset();
+    this.cubes.reset();
+    this.streaks.reset();
+    for (const r of this.dartTrails) r.clear();
+    for (const r of this.dashTrails) r.clear();
+  }
+
   public dispose() {
     this.rings.dispose(this.scene);
     this.arcs.dispose(this.scene);

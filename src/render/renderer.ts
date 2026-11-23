@@ -46,6 +46,8 @@ export class GameRenderer {
   private tickReceivedAtMs = 0;
   private tickIntervalMs = LOGIC_DT_MS;
   private gameSpeed = 1.0;
+  private playbackPaused = false;
+  private pausedAlpha = 1.0;
 
   // Dynamic camera framing
   private camTargetX = 9;
@@ -261,6 +263,8 @@ export class GameRenderer {
     this.prevState = initialState;
     this.currState = initialState;
     this.tickReceivedAtMs = performance.now();
+    this.playbackPaused = false;
+    this.pausedAlpha = 1.0;
     this.shakeAmp = 0;
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;
@@ -303,7 +307,110 @@ export class GameRenderer {
     this.prevState = prev;
     this.currState = next;
     this.tickReceivedAtMs = performance.now();
+    this.pausedAlpha = 1.0;
     this.processEvents(prev, next, next.events);
+  }
+
+  public setPlaybackSpeed(speed: number) {
+    const nextSpeed = Math.max(0.1, Math.min(4.0, speed || 1.0));
+    const nextInterval = LOGIC_DT_MS / nextSpeed;
+    const now = performance.now();
+    if (!this.playbackPaused && this.currState && !this.currState.over) {
+      const curAlpha = Math.max(0, Math.min(1, (now - this.tickReceivedAtMs) / this.tickIntervalMs));
+      this.tickReceivedAtMs = now - curAlpha * nextInterval;
+    }
+    this.gameSpeed = nextSpeed;
+    this.tickIntervalMs = nextInterval;
+  }
+
+  public setPlaybackPaused(paused: boolean) {
+    if (this.playbackPaused === paused) return;
+    const now = performance.now();
+    if (paused) {
+      this.pausedAlpha =
+        !this.currState || this.currState.over
+          ? 1.0
+          : Math.max(0, Math.min(1, (now - this.tickReceivedAtMs) / this.tickIntervalMs));
+      this.playbackPaused = true;
+    } else {
+      this.playbackPaused = false;
+      this.tickReceivedAtMs = now - this.pausedAlpha * this.tickIntervalMs;
+    }
+  }
+
+  /**
+   * Cleanly seeks to an arbitrary replay tick index (forward or backward)
+   * without triggering SFX spam or rebuilding WebGL arena geometry.
+   */
+  public seekToReplayTick(ticks: TickSnapshot[], targetIndex: number) {
+    if (ticks.length === 0) return;
+    const idx = Math.max(0, Math.min(ticks.length - 1, Math.round(targetIndex)));
+    this.fx?.clearAll();
+    this.shakeAmp = 0;
+    for (const rig of this.rigs) {
+      rig.resetDynamicState();
+    }
+
+    const targetT = ticks[idx].t;
+    for (let i = 1; i <= idx; i++) {
+      const prev = ticks[i - 1];
+      const curr = ticks[i];
+      const gt = curr.t;
+      for (const ev of curr.events) {
+        if (ev.name === 'DEATH') {
+          const victimIdx = ev.a;
+          const cause = ev.b;
+          const killerIdx = ev.c;
+          const rig = this.rigs[victimIdx];
+          const vp = curr.players[victimIdx];
+          const vpPrev = prev.players[victimIdx];
+          if (!rig || !vp) continue;
+          const vx = vp.x / 1000;
+          const vz = vp.y / 1000;
+          if (cause === CauseType.DART) {
+            let dx = 1;
+            let dz = 0;
+            if (killerIdx >= 0 && prev.darts[killerIdx] && curr.darts[killerIdx]) {
+              const d0 = prev.darts[killerIdx];
+              const d1 = curr.darts[killerIdx];
+              dx = d1.x - d0.x;
+              dz = d1.y - d0.y;
+              if (Math.hypot(dx, dz) < 5) {
+                dx = vp.x - d0.x;
+                dz = vp.y - d0.y;
+              }
+            }
+            const len = Math.hypot(dx, dz) || 1;
+            const yaw = Math.PI * 0.5 - ((vp.face / 100) * Math.PI) / 180;
+            rig.triggerSlice(this.scene, gt, vx, vz, yaw, dx / len, dz / len);
+          } else if (cause === CauseType.SLASH) {
+            let dx = 0;
+            let dz = 1;
+            if (killerIdx >= 0 && curr.players[killerIdx]) {
+              dx = vp.x - curr.players[killerIdx].x;
+              dz = vp.y - curr.players[killerIdx].y;
+            }
+            rig.triggerSlashDeath(gt, vx, vz, dx, dz);
+          } else if (cause === CauseType.FALL) {
+            const mvx = (vp.x - vpPrev.x) / 1000;
+            const mvz = (vp.y - vpPrev.y) / 1000;
+            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0);
+          }
+        } else if (targetT - gt <= 20) {
+          if (ev.name === 'RELEASE' && this.rigs[ev.a]) this.rigs[ev.a].lastThrowTick = gt;
+          else if (ev.name === 'SWING' && this.rigs[ev.a]) {
+            if (ev.b === 1) this.rigs[ev.a].lastSlashTick = gt;
+            else this.rigs[ev.a].lastKickTick = gt;
+          } else if (ev.name === 'CATCH' && this.rigs[ev.a]) this.rigs[ev.a].lastCatchTick = gt;
+          else if (ev.name === 'PICK' && this.rigs[ev.a]) this.rigs[ev.a].lastPickTick = gt;
+        }
+      }
+    }
+
+    this.prevState = ticks[Math.max(0, idx - 1)];
+    this.currState = ticks[idx];
+    this.tickReceivedAtMs = performance.now();
+    this.pausedAlpha = 1.0;
   }
 
   private processEvents(prev: TickSnapshot, curr: TickSnapshot, events: GameEvent[]) {
@@ -549,7 +656,9 @@ export class GameRenderer {
     const tWork0 = performance.now();
     const frameDt = Math.min(0.05, Math.max(0.0005, (tWork0 - this.lastFrameMs) / 1000));
     this.lastFrameMs = tWork0;
-    this.elapsedSec += frameDt * (this.previewMode ? 1.0 : this.gameSpeed);
+    if (this.previewMode || !this.playbackPaused) {
+      this.elapsedSec += frameDt * (this.previewMode ? 1.0 : this.gameSpeed);
+    }
 
     // Measure actual Render Hz (rolling 0.5s window)
     this.frameTimes.push(tWork0);
@@ -576,12 +685,21 @@ export class GameRenderer {
       this.arena.update(0, this.elapsedSec);
     } else if (this.arena && this.prevState && this.currState) {
       // Smooth sub-tick interpolation factor [0..1] adapted to current game speed (0.1x..2.0x)!
-      const alpha = this.currState.over
-        ? 1.0
-        : Math.max(0, Math.min(1, (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs));
-      const gt = this.currState.over
-        ? this.currState.t + (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs
-        : this.prevState.t + alpha;
+      const sameTick = this.prevState === this.currState || this.prevState.t === this.currState.t;
+      const alpha = this.playbackPaused
+        ? this.pausedAlpha
+        : this.currState.over || sameTick
+          ? 1.0
+          : Math.max(0, Math.min(1, (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs));
+      const gt = this.playbackPaused
+        ? sameTick || this.currState.over
+          ? this.currState.t
+          : this.prevState.t + alpha
+        : this.currState.over
+          ? this.currState.t + (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs
+          : sameTick
+            ? this.currState.t
+            : this.prevState.t + alpha;
 
       // Subtle camera shake decay
       let sx = 0;
@@ -782,6 +900,8 @@ export class GameRenderer {
     this.nameplates = [];
     this.prevState = null;
     this.currState = null;
+    this.playbackPaused = false;
+    this.pausedAlpha = 1.0;
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;
   }

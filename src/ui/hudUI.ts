@@ -1,14 +1,20 @@
 import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
 import { CountdownStage } from '../game/matchController';
+import { MatchReplayBundle } from '../game/matchHistory';
+import { ReplayPlaybackState } from '../game/replayController';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
 import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
 
 export interface HudCallbacks {
-  onReturnToLobby: (opts?: { openLeaderboard?: boolean; rankedMode?: RankedMode }) => void;
+  onReturnToLobby: (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => void;
   onRestartMatch: () => void;
   onOpenSettings: () => void;
   onToggleCliffGuard: () => boolean;
   onRankCue?: (kind: 'up' | 'down') => void;
+  onReplayTogglePause?: () => void;
+  onReplayRestart?: () => void;
+  onReplaySeek?: (tickIndex: number) => void;
+  onReplaySpeed?: (speed: number) => void;
 }
 
 function causeLabel(cause: number, killerName?: string): string {
@@ -49,6 +55,8 @@ export class HudUI {
   private slots: SlotConfig[] = [];
   private matchMode: MatchMode = 'custom';
   private humanSeat = -1;
+  private isReplayMode = false;
+  private replayBundle: MatchReplayBundle | null = null;
   private cliffGuard = true;
   private lastTickState: TickSnapshot | null = null;
   private autoReturnTimer: number | null = null;
@@ -71,6 +79,13 @@ export class HudUI {
   private humanHintLeft: HTMLElement | null = null;
   private humanHintRight: HTMLElement | null = null;
   private humanHintShift: HTMLElement | null = null;
+
+  // Cached replay controls DOM
+  private replayPlayBtn: HTMLButtonElement | null = null;
+  private replaySlider: HTMLInputElement | null = null;
+  private replayTimeEl: HTMLElement | null = null;
+  private replayBannerEl: HTMLElement | null = null;
+  private replaySpeedBtns: HTMLButtonElement[] = [];
 
   constructor(parent: HTMLElement, settings: SettingsStore, callbacks: HudCallbacks) {
     this.settings = settings;
@@ -142,6 +157,9 @@ export class HudUI {
 
   public showMatch(config: MatchConfig, humanSeat: number) {
     this.clearTimers();
+    this.isReplayMode = false;
+    this.replayBundle = null;
+    this.clearReplayRefs();
     this.slots = config.slots;
     this.matchMode = config.matchMode;
     this.humanSeat = humanSeat;
@@ -224,6 +242,228 @@ export class HudUI {
     this.renderBottomHints(humanSeat);
   }
 
+  private clearReplayRefs() {
+    this.replayPlayBtn = null;
+    this.replaySlider = null;
+    this.replayTimeEl = null;
+    this.replayBannerEl = null;
+    this.replaySpeedBtns = [];
+  }
+
+  public showReplay(bundle: MatchReplayBundle, playback: ReplayPlaybackState) {
+    this.clearTimers();
+    this.isReplayMode = true;
+    this.replayBundle = bundle;
+    const { summary, replay } = bundle;
+    this.slots = summary.slots;
+    this.matchMode = summary.matchMode;
+    this.humanSeat = -1; // Spectator perspective
+    this.setCountdown(null);
+    this.resultOverlay.classList.add('hidden');
+    this.nameplateLayer.classList.remove('hidden');
+    this.root.classList.remove('hidden');
+
+    const modeTag =
+      summary.matchMode === 'ranked-solo'
+        ? 'SOLO 排位'
+        : summary.matchMode === 'ranked-ffa'
+          ? '混战排位'
+          : '自定义';
+
+    this.topBar.innerHTML = `
+      <div class="hud-players">
+        ${summary.slots
+          .map(
+            (s, i) => `
+          <div class="hud-pcard ${s.kind === 'human' ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}">
+            <img class="hud-avatar" src="${s.avatar || ''}" alt="" />
+            <div class="hud-pmeta">
+              <div class="hud-pname">${s.displayName}</div>
+              <div class="hud-pstats">
+                <span class="hud-dart st-hand" data-pdart="${i}">持镖</span>
+                <span class="hud-kills" data-pkills="${i}">0 击杀</span>
+              </div>
+              <div class="hud-cd-track"><div class="hud-cd-fill" data-pcd="${i}"></div></div>
+            </div>
+          </div>`,
+          )
+          .join('')}
+      </div>
+
+      <div class="hud-center-pill hud-replay-pill">
+        <div class="hud-map-label"><span class="hud-replay-tag">🎬 观战回放</span> ${summary.mapTitle} · ${modeTag}</div>
+        <div class="hud-timer" id="hud-timer">40.0s</div>
+        <div class="hud-collapse" id="hud-collapse">塌陷倒计时 12s</div>
+      </div>
+
+      <div class="hud-actions">
+        <div class="hud-perf" id="hud-perf">回放 ${playback.speed.toFixed(1)}x</div>
+        <button class="hud-btn" id="hud-replay-history" title="返回对局历史列表">📜 对局历史</button>
+        <button class="hud-btn" id="hud-settings" title="音效与帧率上限设置">⚙️ 设置</button>
+        <button class="hud-btn hud-exit" id="hud-exit">退出回放 (ESC)</button>
+      </div>
+    `;
+
+    this.timerEl = this.topBar.querySelector('#hud-timer');
+    this.collapseEl = this.topBar.querySelector('#hud-collapse');
+    this.perfEl = this.topBar.querySelector('#hud-perf');
+    this.cardEls = summary.slots.map((_, i) => ({
+      card: this.topBar.querySelector(`[data-pcard="${i}"]`)!,
+      kills: this.topBar.querySelector(`[data-pkills="${i}"]`)!,
+      dart: this.topBar.querySelector(`[data-pdart="${i}"]`)!,
+      cdBar: this.topBar.querySelector(`[data-pcd="${i}"]`)!,
+    }));
+
+    this.topBar.querySelector('#hud-exit')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onReturnToLobby();
+    });
+    this.topBar.querySelector('#hud-replay-history')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onReturnToLobby({ openHistory: true });
+    });
+    this.topBar.querySelector('#hud-settings')?.addEventListener('click', () => {
+      this.callbacks.onOpenSettings();
+    });
+
+    // Compute kill event markers along timeline (percentage positions)
+    const maxIdx = Math.max(1, replay.ticks.length - 1);
+    const deathMarkers: { pct: number; color: string; title: string }[] = [];
+    for (let i = 1; i < replay.ticks.length; i++) {
+      for (const ev of replay.ticks[i].events) {
+        if (ev.name === 'DEATH') {
+          const victim = summary.slots[ev.a];
+          deathMarkers.push({
+            pct: (i / maxIdx) * 100,
+            color: victim?.ringAccent || victim?.color || '#ff6b6b',
+            title: `${(replay.ticks[i].t / 20).toFixed(1)}s · ${victim?.displayName || `P${ev.a + 1}`} 出局`,
+          });
+        }
+      }
+    }
+
+    const totalSec = (summary.durationTicks / 20).toFixed(1);
+    const winnerSlot = summary.winner >= 0 ? summary.slots[summary.winner] : null;
+    const endBannerText = summary.earlyExit
+      ? '🏁 回放结束（提前结算） · 点击重播或拖动进度条'
+      : winnerSlot
+        ? `🏆 回放结束 · 胜者：${winnerSlot.displayName}`
+        : '🤝 回放结束 · 平局';
+
+    this.bottomBar.innerHTML = `
+      <div class="replay-dock">
+        <div class="replay-end-banner hidden" id="replay-end-banner">${endBannerText}</div>
+        <div class="replay-bar">
+          <button type="button" class="replay-ctrl-btn replay-play-btn" id="replay-play-btn" title="播放 / 暂停 (Space)">⏸ 暂停</button>
+          <button type="button" class="replay-ctrl-btn" id="replay-restart-btn" title="从头重播">↺ 重播</button>
+
+          <div class="replay-timeline-wrap">
+            <div class="replay-markers" aria-hidden="true">
+              ${deathMarkers
+                .map(
+                  (m) =>
+                    `<span class="replay-marker" style="left:${m.pct.toFixed(2)}%;background:${m.color}" title="${m.title}"></span>`,
+                )
+                .join('')}
+            </div>
+            <input
+              type="range"
+              class="replay-slider"
+              id="replay-slider"
+              min="0"
+              max="${playback.maxIndex}"
+              step="1"
+              value="${playback.tickIndex}"
+              style="--rep-pct:0%"
+              aria-label="回放进度条"
+            />
+          </div>
+
+          <span class="replay-time" id="replay-time">0.0s / ${totalSec}s</span>
+
+          <div class="replay-speed-group" role="group" aria-label="回放倍速">
+            ${[0.5, 1.0, 1.5, 2.0]
+              .map(
+                (sp) =>
+                  `<button type="button" class="replay-spd-btn ${Math.abs(playback.speed - sp) < 0.01 ? 'active' : ''}" data-replay-speed="${sp}">${sp === 1 ? '1x' : `${sp}x`}</button>`,
+              )
+              .join('')}
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.humanHintMove = null;
+    this.humanHintLeft = null;
+    this.humanHintRight = null;
+    this.humanHintShift = null;
+
+    this.replayPlayBtn = this.bottomBar.querySelector('#replay-play-btn');
+    this.replaySlider = this.bottomBar.querySelector('#replay-slider');
+    this.replayTimeEl = this.bottomBar.querySelector('#replay-time');
+    this.replayBannerEl = this.bottomBar.querySelector('#replay-end-banner');
+    this.replaySpeedBtns = Array.from(this.bottomBar.querySelectorAll<HTMLButtonElement>('[data-replay-speed]'));
+
+    this.replayPlayBtn?.addEventListener('click', () => {
+      this.callbacks.onReplayTogglePause?.();
+    });
+    this.bottomBar.querySelector('#replay-restart-btn')?.addEventListener('click', () => {
+      this.callbacks.onReplayRestart?.();
+    });
+    this.replaySlider?.addEventListener('input', () => {
+      if (!this.replaySlider) return;
+      this.callbacks.onReplaySeek?.(Number(this.replaySlider.value));
+    });
+    for (const btn of this.replaySpeedBtns) {
+      btn.addEventListener('click', () => {
+        this.callbacks.onReplaySpeed?.(Number(btn.dataset.replaySpeed));
+      });
+    }
+
+    this.lastTickState = null;
+    this.updateReplayControls(playback);
+  }
+
+  public updateReplayControls(playback: ReplayPlaybackState) {
+    if (!this.isReplayMode) return;
+    const pct = playback.maxIndex > 0 ? (playback.tickIndex / playback.maxIndex) * 100 : 100;
+    if (this.replaySlider) {
+      this.replaySlider.max = String(playback.maxIndex);
+      this.replaySlider.value = String(playback.tickIndex);
+      this.replaySlider.style.setProperty('--rep-pct', `${pct.toFixed(2)}%`);
+    }
+    if (this.replayTimeEl && this.replayBundle) {
+      const curTick = this.replayBundle.replay.ticks[playback.tickIndex]?.t ?? playback.tickIndex;
+      const totalTick = this.replayBundle.summary.durationTicks;
+      this.replayTimeEl.textContent = `${(curTick / 20).toFixed(1)}s / ${(totalTick / 20).toFixed(1)}s`;
+    }
+    if (this.replayPlayBtn) {
+      if (playback.finished) {
+        this.replayPlayBtn.textContent = '↺ 重播';
+        this.replayPlayBtn.classList.add('is-paused');
+      } else if (playback.paused) {
+        this.replayPlayBtn.textContent = '▶ 播放';
+        this.replayPlayBtn.classList.add('is-paused');
+      } else {
+        this.replayPlayBtn.textContent = '⏸ 暂停';
+        this.replayPlayBtn.classList.remove('is-paused');
+      }
+    }
+    if (this.replayBannerEl) {
+      this.replayBannerEl.classList.toggle('hidden', !playback.finished);
+    }
+    for (const btn of this.replaySpeedBtns) {
+      const sp = Number(btn.dataset.replaySpeed);
+      btn.classList.toggle('active', Math.abs(sp - playback.speed) < 0.01);
+    }
+  }
+
+  public updateReplayTelemetry(renderHz: number, frameWorkMs: number, speed: number, paused: boolean) {
+    if (!this.perfEl || !this.isReplayMode) return;
+    const spdStr = paused ? '已暂停' : `${speed === 1 ? '1.0' : speed}x`;
+    this.perfEl.textContent = `观战回放 ${spdStr} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms)`;
+  }
+
   private renderBottomHints(humanSeat: number) {
     const kb = this.settings.get().keybindings;
     const mv = formatMoveSummary(kb);
@@ -253,7 +493,7 @@ export class HudUI {
   }
 
   public refreshKeyHints() {
-    if (this.root.classList.contains('hidden')) return;
+    if (this.root.classList.contains('hidden') || this.isReplayMode) return;
     this.renderBottomHints(this.humanSeat);
     if (this.lastTickState) {
       this.updateHumanActionHints(this.lastTickState);
@@ -758,6 +998,9 @@ export class HudUI {
 
   public hide() {
     this.clearTimers();
+    this.isReplayMode = false;
+    this.replayBundle = null;
+    this.clearReplayRefs();
     if (this.eloToastTimer !== null) {
       window.clearTimeout(this.eloToastTimer);
       this.eloToastTimer = null;

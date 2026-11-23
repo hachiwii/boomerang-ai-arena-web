@@ -39,6 +39,7 @@ export class MatchController {
   private stopped = false;
 
   private currentState: TickSnapshot | null = null;
+  private recordedTicks: TickSnapshot[] = [];
   private tickIntervalMs = LOGIC_DT_MS;
   private gameSpeed = 1.0;
   private nextTickDeadline = 0;
@@ -66,6 +67,10 @@ export class MatchController {
 
   public getCurrentState(): TickSnapshot | null {
     return this.currentState;
+  }
+
+  public getRecordedTicks(): TickSnapshot[] {
+    return this.recordedTicks;
   }
 
   public isRunning(): boolean {
@@ -177,6 +182,7 @@ export class MatchController {
     if (this.stopped) return;
 
     this.currentState = initialState;
+    this.recordedTicks = [initialState];
     await this.callbacks.onMapLoaded(mapData, initialState);
     if (this.stopped) return;
 
@@ -317,6 +323,7 @@ export class MatchController {
       }
 
       this.currentState = nextState;
+      this.recordedTicks.push(nextState);
       this.callbacks.onTick(prevState, nextState, this.tickIntervalMs);
 
       if (nextState.over) {
@@ -370,5 +377,6 @@ export class MatchController {
     this.botWorkers.clear();
     this.pendingBots = [];
     this.currentState = null;
+    this.recordedTicks = [];
   }
 }
