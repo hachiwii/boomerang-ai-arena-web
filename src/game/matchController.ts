@@ -16,6 +16,13 @@ interface PendingBotDecision {
 
 export type CountdownStage = 3 | 2 | 1 | 'GO' | null;
 
+export interface StreamingAiCallbacks {
+  onStatus?: (msg: string) => void;
+  onInit: (mapData: EngineMapData, ticks: TickSnapshot[], simComplete: boolean) => Promise<void> | void;
+  onProgress: (ticks: TickSnapshot[], simComplete: boolean) => void;
+  onError?: (err: string) => void;
+}
+
 export interface MatchCallbacks {
   onMapLoaded: (
     mapData: EngineMapData,
@@ -43,6 +50,7 @@ export class MatchController {
   private botSeats: number[] = [];
   private running = false;
   private stopped = false;
+  private simSessionSeq = 0;
 
   private currentState: TickSnapshot | null = null;
   private recordedTicks: TickSnapshot[] = [];
@@ -523,7 +531,167 @@ export class MatchController {
     this.scheduleNextTick();
   }
 
+  /**
+   * Starts a custom pure-AI match in streaming replay mode:
+   * enters playback immediately after a tiny initial lookahead buffer (~0.7s) while
+   * WASM engine + bot workers keep simulating ahead at max speed in the background,
+   * extending `ticks[]` live so the Replay HUD timeline max grows in real time!
+   */
+  public async startStreamingAiSim(config: MatchConfig, cb: StreamingAiCallbacks): Promise<void> {
+    this.stop();
+    const mySeq = ++this.simSessionSeq;
+    this.stopped = false;
+    this.config = config;
+    this.gameSpeed = Math.max(0.1, Math.min(2.0, config.speed || 1.0));
+    this.humanSeat = -1;
+    this.botSeats = [];
+    config.slots.forEach((s, i) => {
+      if (s.kind === 'bot') this.botSeats.push(i);
+    });
+
+    const origin = window.location.origin;
+
+    cb.onStatus?.('加载地图与引擎 WASM...');
+    const mapResp = await fetch(`${origin}/assets/maps/${config.mapId}.txt?v=${__BUILD_ID__}`);
+    if (!mapResp.ok) throw new Error(`无法加载地图 ${config.mapId}`);
+    const mapText = await mapResp.text();
+    if (this.stopped || this.simSessionSeq !== mySeq) return;
+
+    this.engineWorker = new Worker(new URL('../workers/engineWorker.ts', import.meta.url), { type: 'module' });
+    const initRes = await this.rpc(this.engineWorker, {
+      type: 'init',
+      origin,
+      buildId: __BUILD_ID__,
+      mapText,
+      nPlayers: config.slots.length,
+      seed: config.seed,
+      botSeats: this.botSeats,
+      humanSeat: -1,
+      cliffGuard: config.cliffGuard,
+    });
+    if (this.stopped || this.simSessionSeq !== mySeq) return;
+
+    const mapData = initRes.mapData as EngineMapData;
+    const initialState = initRes.state as TickSnapshot;
+    initialState.timestampMs = performance.now();
+    const headers = initRes.headers as Record<number, string>;
+    let curObs = initRes.obs as Record<number, string>;
+
+    if (this.botSeats.length > 0) {
+      cb.onStatus?.(`启动 ${this.botSeats.length} 个 AI WASM 实例...`);
+      await Promise.all(
+        this.botSeats.map(async (seat) => {
+          const slot = config.slots[seat];
+          const w = new Worker(new URL('../workers/botWorker.ts', import.meta.url), { type: 'module' });
+          this.botWorkers.set(seat, w);
+          const res = await this.rpc(w, {
+            type: 'init',
+            origin,
+            buildId: __BUILD_ID__,
+            botId: slot.botId!,
+            header: headers[seat],
+          });
+          if (!res.ok) {
+            throw new Error(`Bot ${slot.displayName} 初始化失败`);
+          }
+        }),
+      );
+    }
+    if (this.stopped || this.simSessionSeq !== mySeq) return;
+
+    const allTicks: TickSnapshot[] = [initialState];
+    this.recordedTicks = allTicks;
+    this.mapDataCache = mapData;
+    let curSnap = initialState;
+    const n = config.slots.length;
+
+    const stepOne = async (): Promise<boolean> => {
+      if (this.stopped || this.simSessionSeq !== mySeq || !this.engineWorker || curSnap.over) {
+        return false;
+      }
+      this.dispatchBots(curObs);
+      const botResults = await Promise.all(
+        this.pendingBots.map(async (p) => ({ seat: p.seat, ...(await p.promise) })),
+      );
+      if (this.stopped || this.simSessionSeq !== mySeq || !this.engineWorker) return false;
+
+      let maxMs = 0;
+      const actionLines: string[] = new Array(n).fill('0 0 0 0 0 0');
+      for (const r of botResults) {
+        actionLines[r.seat] = r.action;
+        if (r.ms > maxMs) maxMs = r.ms;
+      }
+      this.lastBotMaxMs = maxMs;
+
+      const stepRes = await this.rpc(this.engineWorker, {
+        type: 'step',
+        actionsText: actionLines.join('\n'),
+        botSeats: this.botSeats,
+        dashTarget: null,
+      });
+      if (this.stopped || this.simSessionSeq !== mySeq) return false;
+
+      curSnap = stepRes.state as TickSnapshot;
+      curObs = stepRes.obs as Record<number, string>;
+      allTicks.push(curSnap);
+      return true;
+    };
+
+    // Tiny initial warm-up burst (~14 ticks = 0.70s) so even early kills have 0.5s lookahead ready
+    const INITIAL_BUFFER_TICKS = 14;
+    while (!curSnap.over && allTicks.length <= INITIAL_BUFFER_TICKS) {
+      const ok = await stepOne();
+      if (!ok) return;
+    }
+    if (this.stopped || this.simSessionSeq !== mySeq) return;
+
+    const alreadyComplete = Boolean(curSnap.over);
+    if (alreadyComplete) {
+      this.terminateWorkers();
+    }
+
+    await cb.onInit(mapData, allTicks, alreadyComplete);
+    if (alreadyComplete || this.stopped || this.simSessionSeq !== mySeq) return;
+
+    // Continue computing remaining match ticks asynchronously in the background without blocking rendering!
+    void (async () => {
+      let lastYieldMs = performance.now();
+      let lastNotifyMs = lastYieldMs;
+      let dirtySinceNotify = false;
+      try {
+        while (!curSnap.over) {
+          const ok = await stepOne();
+          if (!ok || this.stopped || this.simSessionSeq !== mySeq) return;
+          dirtySinceNotify = true;
+
+          const hasDeath = curSnap.events.some((ev) => ev.name === 'DEATH');
+          const now = performance.now();
+          if (hasDeath || now - lastNotifyMs >= 45) {
+            lastNotifyMs = now;
+            dirtySinceNotify = false;
+            cb.onProgress(allTicks, Boolean(curSnap.over));
+          }
+          if (now - lastYieldMs >= 10) {
+            lastYieldMs = now;
+            await new Promise((r) => window.setTimeout(r, 0));
+          }
+        }
+        if (this.stopped || this.simSessionSeq !== mySeq) return;
+        this.terminateWorkers();
+        if (dirtySinceNotify || curSnap.over) {
+          cb.onProgress(allTicks, true);
+        }
+      } catch (err) {
+        if (!this.stopped && this.simSessionSeq === mySeq) {
+          this.terminateWorkers();
+          cb.onError?.(err instanceof Error ? err.message : String(err));
+        }
+      }
+    })();
+  }
+
   public stop() {
+    this.simSessionSeq++;
     this.stopped = true;
     this.running = false;
     this.stepping = false;

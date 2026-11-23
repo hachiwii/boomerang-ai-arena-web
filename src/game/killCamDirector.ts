@@ -121,6 +121,7 @@ export class CinematicDirector {
   private readonly ticks: TickSnapshot[];
   private readonly mapData: EngineMapData;
   private readonly options: CinematicOptions;
+  private readonly simComplete: boolean;
   private readonly enabled: boolean;
   private readonly widthM: number;
   private readonly heightM: number;
@@ -156,10 +157,12 @@ export class CinematicDirector {
     mapData: EngineMapData,
     optionsOrEnabled: boolean | Partial<CinematicOptions>,
     winnerOnlyFinalState?: TickSnapshot,
+    simComplete = true,
   ) {
     this.ticks = ticks;
     this.mapData = mapData;
     this.options = normalizeCinematicOptions(optionsOrEnabled);
+    this.simComplete = simComplete;
     this.cellM = mapData.cell / 1000;
     this.widthM = mapData.nx * this.cellM;
     this.heightM = mapData.ny * this.cellM;
@@ -540,7 +543,9 @@ export class CinematicDirector {
       const grp = groups[gIdx];
       const first = grp[0];
       const last = grp[grp.length - 1];
-      const isLastKill = gIdx === groups.length - 1;
+      // While background AI simulation is still running, only a match-ending kill (`last.isMatchOver`)
+      // counts as the final kill so mid-match kills never temporarily flip between 0.25x and 0.5x.
+      const isLastKill = this.simComplete ? gIdx === groups.length - 1 : last.isMatchOver;
 
       // Non-final kills controlled by `killCam`; final kill controlled by `finisherCam`
       if (isLastKill && !this.options.finisherCam) continue;

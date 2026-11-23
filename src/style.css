@@ -4187,10 +4187,21 @@ kbd {
   font-weight: 800;
   font-variant-numeric: tabular-nums;
   color: #cfe0ff;
-  min-width: 84px;
+  min-width: 96px;
   text-align: right;
   white-space: nowrap;
   flex-shrink: 0;
+}
+
+.replay-sim-badge {
+  display: inline-block;
+  color: #ffd97d;
+  animation: replaySimPulse 0.9s ease-in-out infinite alternate;
+}
+
+@keyframes replaySimPulse {
+  from { opacity: 0.45; }
+  to { opacity: 1; }
 }
 
 .replay-speed-group {

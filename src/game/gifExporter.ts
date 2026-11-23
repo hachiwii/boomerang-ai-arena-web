@@ -85,7 +85,7 @@ export async function exportReplayClipToGif(
 
   const endPlaySimSec = endTickIndex * tickSec;
   const endPlayRealSec = director.simToReal(endPlaySimSec);
-  const atMatchEnd = endTickIndex >= maxTickIdx;
+  const atMatchEnd = endTickIndex >= maxTickIdx && Boolean(ticks[maxTickIdx]?.over);
   const outroRealSec = atMatchEnd
     ? director.isEnabled() && director.hasWinnerCloseup()
       ? 2.55

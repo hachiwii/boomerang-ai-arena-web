@@ -5,7 +5,7 @@ import { CinematicDirector } from './game/killCamDirector';
 import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
 import { MatchController } from './game/matchController';
 import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
-import { buildMatchHistoryBundle, MatchHistoryStore } from './game/matchHistory';
+import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { ReplayController } from './game/replayController';
 import { FpsCapOption, getCinematicOptions, isBoundToAction, SettingsStore } from './game/settings';
@@ -76,6 +76,7 @@ async function bootstrap() {
   const matchHistory = new MatchHistoryStore();
 
   let mode: 'lobby' | 'playing' | 'replay' = 'lobby';
+  let replayIsLiveAi = false;
   let activeConfig: MatchConfig | null = null;
   let activeMapData: EngineMapData | null = null;
   let replayMapData: EngineMapData | null = null;
@@ -133,6 +134,7 @@ async function bootstrap() {
     pendingMatchElo = null;
     resultOverlayShown = false;
     restarting = false;
+    replayIsLiveAi = false;
     controller.stop();
     replayController.stop();
     input.setEnabled(false);
@@ -149,6 +151,80 @@ async function bootstrap() {
     }
   };
 
+  const startCustomAiSpectator = (cfg: MatchConfig): Promise<void> => {
+    clearMatchOverTimer();
+    matchRecorded = false;
+    historyRecorded = false;
+    pendingMatchElo = null;
+    resultOverlayShown = false;
+    controller.stop();
+    replayController.stop();
+    input.setEnabled(false);
+    historyModal.close();
+    activeConfig = cfg;
+    activeMapData = null;
+    replayMapData = null;
+    replayIsLiveAi = true;
+
+    let liveBundle: MatchReplayBundle | null = null;
+    let liveMapData: EngineMapData | null = null;
+    let savedHistory = false;
+
+    const persistCompleteBundle = () => {
+      if (savedHistory || !liveBundle) return;
+      savedHistory = true;
+      historyRecorded = true;
+      void matchHistory.saveBundle(liveBundle);
+    };
+
+    lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
+    return controller.startStreamingAiSim(cfg, {
+      onStatus: (msg) => {
+        if (mode === 'lobby') lobbyUI.setLoading(msg);
+      },
+      onInit: async (mapData, ticks, simComplete) => {
+        if (activeConfig !== cfg) return;
+        liveMapData = mapData;
+        activeMapData = mapData;
+        replayMapData = mapData;
+        liveBundle = buildMatchHistoryBundle(cfg, mapData, ticks, null, false);
+        lobbyUI.setLoading(null);
+        lobbyUI.hide();
+        mode = 'replay';
+        await replayController.start(
+          liveBundle,
+          cfg.speed,
+          getCinematicOptions(settings.get()),
+          simComplete,
+        );
+        if (simComplete && activeConfig === cfg) {
+          persistCompleteBundle();
+        }
+      },
+      onProgress: (ticks, simComplete) => {
+        if (activeConfig !== cfg || !liveBundle || !liveMapData) return;
+        if (simComplete) {
+          const rebuilt = buildMatchHistoryBundle(cfg, liveMapData, ticks, null, false);
+          liveBundle.summary = {
+            ...rebuilt.summary,
+            id: liveBundle.summary.id,
+            playedAt: liveBundle.summary.playedAt,
+          };
+          persistCompleteBundle();
+        } else {
+          liveBundle.summary.durationTicks = ticks[ticks.length - 1]?.t ?? Math.max(0, ticks.length - 1);
+        }
+        replayController.notifyTicksExtended(simComplete);
+      },
+      onError: (err) => {
+        console.error('Streaming AI match error:', err);
+        lobbyUI.setLoading(null);
+        alert(`AI 对局推演出错：${err}`);
+        returnToLobby();
+      },
+    });
+  };
+
   const startReplayById = async (matchId: string) => {
     const bundle = await matchHistory.getReplayBundle(matchId);
     if (!bundle) {
@@ -161,6 +237,7 @@ async function bootstrap() {
     pendingMatchElo = null;
     resultOverlayShown = false;
     restarting = false;
+    replayIsLiveAi = false;
     controller.stop();
     replayController.stop();
     input.setEnabled(false);
@@ -171,7 +248,7 @@ async function bootstrap() {
     lobbyUI.hide();
     mode = 'replay';
     try {
-      await replayController.start(bundle, 1.0, getCinematicOptions(settings.get()));
+      await replayController.start(bundle, 1.0, getCinematicOptions(settings.get()), true);
     } catch (err) {
       console.error('Failed to start replay:', err);
       alert(`回放加载失败：${err instanceof Error ? err.message : String(err)}`);
@@ -180,7 +257,9 @@ async function bootstrap() {
   };
 
   const canQuickRestart = (): boolean => {
-    if (mode !== 'playing' || !activeConfig || restarting) return false;
+    if (!activeConfig || restarting) return false;
+    if (mode === 'replay' && replayIsLiveAi) return true;
+    if (mode !== 'playing') return false;
     const hSeat = controller.getHumanSeat();
     // Pure AI spectator match
     if (hSeat < 0) return true;
@@ -197,6 +276,26 @@ async function bootstrap() {
     if (!activeConfig || restarting) return;
     restarting = true;
     clearMatchOverTimer();
+
+    const isPureCustomAi =
+      activeConfig.matchMode === 'custom' && activeConfig.slots.every((s) => s.kind === 'bot');
+    if (isPureCustomAi) {
+      const freshCfg: MatchConfig = {
+        ...activeConfig,
+        seed: (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0,
+        slots: activeConfig.slots.map((s) => ({ ...s })),
+      };
+      void startCustomAiSpectator(freshCfg)
+        .catch((err) => {
+          console.error(err);
+          alert(`重开失败：${err instanceof Error ? err.message : String(err)}`);
+          returnToLobby();
+        })
+        .finally(() => {
+          restarting = false;
+        });
+      return;
+    }
 
     // If an eliminated human restarts before remaining bots finish, settle Ranked Elo by current rank first!
     if (!matchRecorded) {
@@ -271,7 +370,7 @@ async function bootstrap() {
       } else if (mode === 'replay' && now - lastTelemetryUpdateMs >= 200) {
         lastTelemetryUpdateMs = now;
         const rs = replayController.getState();
-        hudUI.updateReplayTelemetry(renderer.renderHz, renderer.avgFrameWorkMs, rs.speed, rs.paused);
+        hudUI.updateReplayTelemetry(renderer.renderHz, renderer.avgFrameWorkMs, rs.speed, rs.paused, rs.computing);
       }
     };
 
@@ -393,7 +492,11 @@ async function bootstrap() {
     },
     onReplayExportGif: async (bundle, endTickIndex, signal, onProgress) => {
       const s = settings.get();
-      const result = await exportReplayClipToGif(bundle, {
+      const frozenBundle: MatchReplayBundle = {
+        ...bundle,
+        replay: { ...bundle.replay, ticks: bundle.replay.ticks.slice() },
+      };
+      const result = await exportReplayClipToGif(frozenBundle, {
         endTickIndex,
         maxDurationSec: 10.0,
         cinematic: getCinematicOptions(s),
@@ -409,7 +512,7 @@ async function bootstrap() {
 
   replayController = new ReplayController(renderer, {
     onLoaded: (bundle, state) => {
-      hudUI.showReplay(bundle, state);
+      hudUI.showReplay(bundle, state, { liveAiSpectator: replayIsLiveAi });
       hudUI.updateTick(
         bundle.replay.ticks[0],
         bundle.replay.mapData.colStart,
@@ -422,6 +525,9 @@ async function bootstrap() {
     },
     onStateChange: (state) => {
       hudUI.updateReplayControls(state);
+    },
+    onTimelineExtended: (bundle, state) => {
+      hudUI.updateReplayTimeline(bundle, state);
     },
   });
 
@@ -545,12 +651,24 @@ async function bootstrap() {
       }
     },
     onStartMatch: (config) => {
+      const isPureCustomAi =
+        config.matchMode === 'custom' && config.slots.every((s) => s.kind === 'bot');
+      if (isPureCustomAi) {
+        void startCustomAiSpectator(config).catch((err) => {
+          console.error(err);
+          lobbyUI.setLoading(null);
+          alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);
+        });
+        return;
+      }
+
       clearMatchOverTimer();
       matchRecorded = false;
       historyRecorded = false;
       pendingMatchElo = null;
       resultOverlayShown = false;
       restarting = false;
+      replayIsLiveAi = false;
       replayController.stop();
       historyModal.close();
       activeConfig = config;
@@ -598,6 +716,18 @@ async function bootstrap() {
         const st = replayController.getState();
         replayController.seekTo(st.tickIndex + 40);
         return;
+      }
+      if (
+        !e.repeat &&
+        !e.ctrlKey &&
+        !e.metaKey &&
+        !e.altKey &&
+        !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) &&
+        isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
+        canQuickRestart()
+      ) {
+        e.preventDefault();
+        restartCurrentMatch();
       }
       return;
     }

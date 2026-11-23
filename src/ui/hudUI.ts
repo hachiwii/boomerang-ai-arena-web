@@ -94,8 +94,11 @@ export class HudUI {
   private humanHintShift: HTMLElement | null = null;
 
   // Cached replay controls DOM
+  private replayIsLiveAi = false;
+  private replayComputing = false;
   private replayPlayBtn: HTMLButtonElement | null = null;
   private replaySlider: HTMLInputElement | null = null;
+  private replayMarkersEl: HTMLElement | null = null;
   private replayTimeEl: HTMLElement | null = null;
   private replayBannerEl: HTMLElement | null = null;
   private replaySpeedBtns: HTMLButtonElement[] = [];
@@ -270,8 +273,11 @@ export class HudUI {
       window.clearTimeout(this.replayExportNoticeTimer);
       this.replayExportNoticeTimer = null;
     }
+    this.replayIsLiveAi = false;
+    this.replayComputing = false;
     this.replayPlayBtn = null;
     this.replaySlider = null;
+    this.replayMarkersEl = null;
     this.replayTimeEl = null;
     this.replayBannerEl = null;
     this.replaySpeedBtns = [];
@@ -281,15 +287,55 @@ export class HudUI {
     this.replayCurrentTickIndex = 0;
   }
 
+  private renderReplayDeathMarkersHtml(bundle: MatchReplayBundle): string {
+    const { summary, replay } = bundle;
+    const maxIdx = Math.max(1, replay.ticks.length - 1);
+    const out: string[] = [];
+    for (let i = 1; i < replay.ticks.length; i++) {
+      for (const ev of replay.ticks[i].events) {
+        if (ev.name === 'DEATH') {
+          const victim = summary.slots[ev.a];
+          const pct = (i / maxIdx) * 100;
+          const color = victim?.ringAccent || victim?.color || '#ff6b6b';
+          const title = `${(replay.ticks[i].t / 20).toFixed(1)}s · ${victim?.displayName || `P${ev.a + 1}`} 出局`;
+          out.push(`<span class="replay-marker" style="left:${pct.toFixed(2)}%;background:${color}" title="${title}"></span>`);
+        }
+      }
+    }
+    return out.join('');
+  }
+
+  private buildReplayEndBannerText(bundle: MatchReplayBundle): string {
+    const { summary } = bundle;
+    const winnerSlot = summary.winner >= 0 ? summary.slots[summary.winner] : null;
+    if (this.replayIsLiveAi) {
+      const rst = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
+      return winnerSlot
+        ? `🏆 对局结束 · 胜者：${winnerSlot.displayName} · 按 ${rst} 重开或拖动进度条回看`
+        : `🤝 对局结束 · 平局 · 按 ${rst} 重开或拖动进度条回看`;
+    }
+    return summary.earlyExit
+      ? '🏁 回放结束（提前结算） · 点击重播或拖动进度条'
+      : winnerSlot
+        ? `🏆 回放结束 · 胜者：${winnerSlot.displayName}`
+        : '🤝 回放结束 · 平局';
+  }
+
   private getExportPresetLabel(): string {
     const s = this.settings.get();
     const spd = s.exportSpeed === 1 ? '1x' : `${s.exportSpeed}x`;
     return `${s.exportResolution} · ${s.exportBitrateMbps} Mbps · ${spd}`;
   }
 
-  public showReplay(bundle: MatchReplayBundle, playback: ReplayPlaybackState) {
+  public showReplay(
+    bundle: MatchReplayBundle,
+    playback: ReplayPlaybackState,
+    opts?: { liveAiSpectator?: boolean },
+  ) {
     this.clearTimers();
     this.isReplayMode = true;
+    this.replayIsLiveAi = Boolean(opts?.liveAiSpectator);
+    this.replayComputing = Boolean(playback.computing);
     this.replayBundle = bundle;
     const { summary, replay } = bundle;
     this.slots = summary.slots;
@@ -306,6 +352,7 @@ export class HudUI {
         : summary.matchMode === 'ranked-ffa'
           ? '混战排位'
           : '自定义';
+    const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
 
     this.topBar.innerHTML = `
       <div class="hud-players">
@@ -328,16 +375,21 @@ export class HudUI {
       </div>
 
       <div class="hud-center-pill hud-replay-pill">
-        <div class="hud-map-label"><span class="hud-replay-tag">🎬 观战回放</span> ${summary.mapTitle} · ${modeTag}</div>
+        <div class="hud-map-label"><span class="hud-replay-tag">${this.replayIsLiveAi ? '🤖 AI 观战' : '🎬 观战回放'}</span> ${summary.mapTitle} · ${modeTag}</div>
         <div class="hud-timer" id="hud-timer">40.0s</div>
         <div class="hud-collapse" id="hud-collapse">塌陷倒计时 12s</div>
       </div>
 
       <div class="hud-actions">
-        <div class="hud-perf" id="hud-perf">回放 ${playback.speed.toFixed(1)}x</div>
+        <div class="hud-perf" id="hud-perf">${this.replayIsLiveAi ? 'AI 观战' : '回放'} ${playback.speed.toFixed(1)}x</div>
+        ${
+          this.replayIsLiveAi
+            ? `<button class="hud-btn" id="hud-ai-restart" title="使用当前配置重新开局 (${rstKey})">↺ 重开 (${rstKey})</button>`
+            : ''
+        }
         <button class="hud-btn" id="hud-replay-history" title="返回对局历史列表">📜 对局历史</button>
-        <button class="hud-btn" id="hud-settings" title="音效与帧率上限设置">⚙️ 设置</button>
-        <button class="hud-btn hud-exit" id="hud-exit">退出回放 (ESC)</button>
+        <button class="hud-btn" id="hud-settings" title="音效、特写镜头与导出设置">⚙️ 设置</button>
+        <button class="hud-btn hud-exit" id="hud-exit">${this.replayIsLiveAi ? '主界面 (ESC)' : '退出回放 (ESC)'}</button>
       </div>
     `;
 
@@ -355,6 +407,10 @@ export class HudUI {
       this.clearTimers();
       this.callbacks.onReturnToLobby();
     });
+    this.topBar.querySelector('#hud-ai-restart')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onRestartMatch();
+    });
     this.topBar.querySelector('#hud-replay-history')?.addEventListener('click', () => {
       this.clearTimers();
       this.callbacks.onReturnToLobby({ openHistory: true });
@@ -363,30 +419,9 @@ export class HudUI {
       this.callbacks.onOpenSettings();
     });
 
-    // Compute kill event markers along timeline (percentage positions)
-    const maxIdx = Math.max(1, replay.ticks.length - 1);
-    const deathMarkers: { pct: number; color: string; title: string }[] = [];
-    for (let i = 1; i < replay.ticks.length; i++) {
-      for (const ev of replay.ticks[i].events) {
-        if (ev.name === 'DEATH') {
-          const victim = summary.slots[ev.a];
-          deathMarkers.push({
-            pct: (i / maxIdx) * 100,
-            color: victim?.ringAccent || victim?.color || '#ff6b6b',
-            title: `${(replay.ticks[i].t / 20).toFixed(1)}s · ${victim?.displayName || `P${ev.a + 1}`} 出局`,
-          });
-        }
-      }
-    }
-
-    const totalSec = (summary.durationTicks / 20).toFixed(1);
-    const winnerSlot = summary.winner >= 0 ? summary.slots[summary.winner] : null;
-    const endBannerText = summary.earlyExit
-      ? '🏁 回放结束（提前结算） · 点击重播或拖动进度条'
-      : winnerSlot
-        ? `🏆 回放结束 · 胜者：${winnerSlot.displayName}`
-        : '🤝 回放结束 · 平局';
-
+    const maxTick = replay.ticks[playback.maxIndex]?.t ?? playback.maxIndex;
+    const totalSec = (maxTick / 20).toFixed(1);
+    const endBannerText = this.buildReplayEndBannerText(bundle);
     const exportPreset = this.getExportPresetLabel();
 
     this.bottomBar.innerHTML = `
@@ -398,13 +433,8 @@ export class HudUI {
           <button type="button" class="replay-ctrl-btn" id="replay-restart-btn" title="从头重播">↺ 重播</button>
 
           <div class="replay-timeline-wrap">
-            <div class="replay-markers" aria-hidden="true">
-              ${deathMarkers
-                .map(
-                  (m) =>
-                    `<span class="replay-marker" style="left:${m.pct.toFixed(2)}%;background:${m.color}" title="${m.title}"></span>`,
-                )
-                .join('')}
+            <div class="replay-markers" id="replay-markers" aria-hidden="true">
+              ${this.renderReplayDeathMarkersHtml(bundle)}
             </div>
             <input
               type="range"
@@ -434,8 +464,9 @@ export class HudUI {
             type="button"
             class="replay-ctrl-btn replay-export-btn"
             id="replay-export-btn"
-            title="导出本局观战回放 MP4（当前设置：${exportPreset}）"
-          >⬇ 导出</button>
+            title="${this.replayComputing ? '后台对局推演完成后即可导出完整 MP4' : `导出本局观战回放 MP4（当前设置：${exportPreset}）`}"
+            ${this.replayComputing ? 'disabled' : ''}
+          >${this.replayComputing ? '⏳ 计算中' : '⬇ 导出'}</button>
 
           <button
             type="button"
@@ -454,6 +485,7 @@ export class HudUI {
 
     this.replayPlayBtn = this.bottomBar.querySelector('#replay-play-btn');
     this.replaySlider = this.bottomBar.querySelector('#replay-slider');
+    this.replayMarkersEl = this.bottomBar.querySelector('#replay-markers');
     this.replayTimeEl = this.bottomBar.querySelector('#replay-time');
     this.replayBannerEl = this.bottomBar.querySelector('#replay-end-banner');
     this.replaySpeedBtns = Array.from(this.bottomBar.querySelectorAll<HTMLButtonElement>('[data-replay-speed]'));
@@ -503,10 +535,13 @@ export class HudUI {
 
   private setReplayExportButtonsBusy(activeKind: 'mp4' | 'gif' | null) {
     if (this.replayExportBtn) {
-      this.replayExportBtn.disabled = activeKind !== null;
+      const mp4WaitingSim = activeKind === null && this.replayComputing;
+      this.replayExportBtn.disabled = activeKind !== null || mp4WaitingSim;
       this.replayExportBtn.classList.toggle('is-exporting', activeKind === 'mp4');
       if (activeKind === 'mp4') {
         this.replayExportBtn.textContent = '导出 1%';
+      } else if (mp4WaitingSim) {
+        this.replayExportBtn.textContent = '⏳ 计算中';
       } else {
         this.replayExportBtn.textContent = '⬇ 导出';
       }
@@ -523,7 +558,13 @@ export class HudUI {
   }
 
   private startReplayHudExport() {
-    if (!this.isReplayMode || !this.replayBundle || this.replayExportAbort || !this.callbacks.onReplayExportMp4) {
+    if (
+      !this.isReplayMode ||
+      !this.replayBundle ||
+      this.replayComputing ||
+      this.replayExportAbort ||
+      !this.callbacks.onReplayExportMp4
+    ) {
       return;
     }
     const bundle = this.replayBundle;
@@ -658,9 +699,34 @@ export class HudUI {
       });
   }
 
+  /**
+   * Called in real time as background AI simulation appends new ticks:
+   * dynamically expands timeline slider max, updates death markers, and unlocks MP4 export on completion.
+   */
+  public updateReplayTimeline(bundle: MatchReplayBundle, playback: ReplayPlaybackState) {
+    if (!this.isReplayMode) return;
+    this.replayBundle = bundle;
+    const wasComputing = this.replayComputing;
+    this.replayComputing = Boolean(playback.computing);
+
+    if (this.replayMarkersEl) {
+      this.replayMarkersEl.innerHTML = this.renderReplayDeathMarkersHtml(bundle);
+    }
+    if (this.replayBannerEl && !this.replayComputing) {
+      this.replayBannerEl.textContent = this.buildReplayEndBannerText(bundle);
+    }
+    if (wasComputing && !this.replayComputing && !this.replayExportAbort && this.replayExportBtn) {
+      this.replayExportBtn.disabled = false;
+      this.replayExportBtn.textContent = '⬇ 导出';
+      this.replayExportBtn.title = `导出本局观战回放 MP4（当前设置：${this.getExportPresetLabel()}）`;
+    }
+    this.updateReplayControls(playback);
+  }
+
   public updateReplayControls(playback: ReplayPlaybackState) {
     if (!this.isReplayMode) return;
     this.replayCurrentTickIndex = playback.tickIndex;
+    this.replayComputing = Boolean(playback.computing);
     const pct = playback.maxIndex > 0 ? (playback.tickIndex / playback.maxIndex) * 100 : 100;
     if (this.replaySlider) {
       this.replaySlider.max = String(playback.maxIndex);
@@ -669,8 +735,13 @@ export class HudUI {
     }
     if (this.replayTimeEl && this.replayBundle) {
       const curTick = this.replayBundle.replay.ticks[playback.tickIndex]?.t ?? playback.tickIndex;
-      const totalTick = this.replayBundle.summary.durationTicks;
-      this.replayTimeEl.textContent = `${(curTick / 20).toFixed(1)}s / ${(totalTick / 20).toFixed(1)}s`;
+      const maxTick = this.replayBundle.replay.ticks[playback.maxIndex]?.t ?? playback.maxIndex;
+      const timeStr = `${(curTick / 20).toFixed(1)}s / ${(maxTick / 20).toFixed(1)}s`;
+      if (playback.computing) {
+        this.replayTimeEl.innerHTML = `${timeStr} <span class="replay-sim-badge" title="后台高速推演中">⚡</span>`;
+      } else {
+        this.replayTimeEl.textContent = timeStr;
+      }
     }
     if (this.replayPlayBtn) {
       if (playback.finished) {
@@ -693,10 +764,18 @@ export class HudUI {
     }
   }
 
-  public updateReplayTelemetry(renderHz: number, frameWorkMs: number, speed: number, paused: boolean) {
+  public updateReplayTelemetry(
+    renderHz: number,
+    frameWorkMs: number,
+    speed: number,
+    paused: boolean,
+    computing = false,
+  ) {
     if (!this.perfEl || !this.isReplayMode) return;
+    const prefix = this.replayIsLiveAi ? 'AI 观战' : '观战回放';
     const spdStr = paused ? '已暂停' : `${speed === 1 ? '1.0' : speed}x`;
-    this.perfEl.textContent = `观战回放 ${spdStr} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms)`;
+    const simTag = computing ? ' · 推演中' : '';
+    this.perfEl.textContent = `${prefix} ${spdStr}${simTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms)`;
   }
 
   private renderBottomHints(humanSeat: number) {
