@@ -146,6 +146,12 @@ export class LobbyUI {
   private readonly container: HTMLDivElement;
   private readonly dropdownMenu: HTMLDivElement;
   private readonly mapPoolModal: HTMLDivElement;
+  private mapPoolCard!: HTMLDivElement;
+  private mapPoolTitleEl!: HTMLElement;
+  private mapPoolSubEl!: HTMLElement;
+  private mapPoolWarnEl!: HTMLElement;
+  private mapPoolTiles = new Map<string, { btn: HTMLButtonElement; checkEl: HTMLElement }>();
+  private lastRenderedViewKey = '';
   private readonly maps: MapMeta[];
   private readonly roster: RosterEntry[];
   private readonly leaderboard: LeaderboardStore;
@@ -204,7 +210,7 @@ export class LobbyUI {
 
     this.settings.onChange(() => {
       if (!this.container.classList.contains('hidden')) {
-        this.render();
+        this.syncKeyHintsInPlace();
       }
     });
 
@@ -240,10 +246,11 @@ export class LobbyUI {
     this.dropdownMenu.setAttribute('role', 'listbox');
     document.body.appendChild(this.dropdownMenu);
 
-    // Ranked map pool modal portal
+    // Persistent map pool modal portal (built once so clicking inside never replays fadeIn or redraws canvases)
     this.mapPoolModal = document.createElement('div');
     this.mapPoolModal.className = 'mappool-backdrop hidden';
     document.body.appendChild(this.mapPoolModal);
+    this.initMapPoolModal();
 
     window.addEventListener('mousedown', (e) => {
       if (this.openSlotIdx === null) return;
@@ -493,10 +500,53 @@ export class LobbyUI {
       this.cricketNotice = null;
       this.cricketNoticeTimer = null;
       if (this.activeTab === 'cricket' && !this.container.classList.contains('hidden')) {
-        this.render();
+        this.syncCricketNoticeInPlace();
       }
     }, 2800);
-    this.render();
+    this.syncCricketNoticeInPlace();
+  }
+
+  private renderCricketNoticeHtml(): string {
+    const ready = this.cricket.canStartMatch();
+    if (this.cricketNotice) {
+      return `<div class="cricket-notice is-${this.cricketNotice.kind}">${this.cricketNotice.text}</div>`;
+    }
+    if (!ready.ok && ready.reason) {
+      return `<div class="cricket-notice is-warn">${ready.reason}</div>`;
+    }
+    return '';
+  }
+
+  private syncCricketNoticeInPlace() {
+    const slot = this.container.querySelector<HTMLElement>('#cricket-notice-slot');
+    if (slot) {
+      const html = this.renderCricketNoticeHtml();
+      slot.innerHTML = html;
+      slot.classList.toggle('hidden', !html);
+    } else if (this.activeTab === 'cricket' && !this.container.classList.contains('hidden')) {
+      this.render();
+    }
+  }
+
+  private syncKeyHintsInPlace() {
+    const kb = this.settings.get().keybindings;
+    const legendEl = this.container.querySelector<HTMLElement>('.controls-legend');
+    if (legendEl) {
+      const mv = formatMoveSummary(kb);
+      const thr = formatPrimaryBind(kb.throwRecall);
+      const mel = formatPrimaryBind(kb.melee);
+      const dsh = formatDashSummary(kb);
+      legendEl.innerHTML = `
+        <div><kbd>${mv}</kbd> 移动</div>
+        <div><kbd>${thr}</kbd> 扔镖 / <kbd>长按</kbd> 召回</div>
+        <div><kbd>${mel}</kbd> 挥砍 / 空手踢人</div>
+        <div><kbd>${dsh}</kbd> 冲刺越坑</div>
+      `;
+    }
+    const rstEl = this.container.querySelector<HTMLElement>('#cricket-rst-kbd');
+    if (rstEl) {
+      rstEl.textContent = formatPrimaryBind(kb.quickRestart, 'R');
+    }
   }
 
   private startCustomMatch() {
@@ -653,33 +703,13 @@ export class LobbyUI {
     });
   }
 
-  private openMapPoolModal(target: 'ranked' | 'cricket' = 'ranked') {
-    this.mapPoolTarget = target;
-    this.mapPoolOpen = true;
-    this.mapPoolWarnText = null;
-    this.renderMapPoolModal();
-    this.mapPoolModal.classList.remove('hidden');
-  }
-
-  private closeMapPoolModal() {
-    if (!this.mapPoolOpen && this.mapPoolModal.classList.contains('hidden')) return;
-    this.mapPoolOpen = false;
-    this.mapPoolWarnText = null;
-    this.mapPoolModal.classList.add('hidden');
-  }
-
-  private renderMapPoolModal() {
-    const isCricket = this.mapPoolTarget === 'cricket';
-    const mode = this.rankedMode;
-    const poolSet = isCricket ? this.cricket.getMapPoolSet() : this.rankedMapPools[mode];
-    const titleName = isCricket ? '斗蛐蛐图池' : `${mode === 'solo' ? 'SOLO' : '四人混战'} 地图池`;
-
+  private initMapPoolModal() {
     this.mapPoolModal.innerHTML = `
-      <div class="mappool-card" role="dialog" aria-label="${titleName}">
+      <div class="mappool-card" role="dialog" aria-label="地图池">
         <div class="mappool-head">
           <div>
-            <h3>${titleName}</h3>
-            <p class="mappool-sub">已选 <strong>${poolSet.size}</strong> / ${this.maps.length} 张地图${poolSet.size > 3 ? ' · 最近 3 场不重复' : ''}</p>
+            <h3 id="mp-title"></h3>
+            <p class="mappool-sub" id="mp-sub"></p>
           </div>
           <div class="mappool-head-actions">
             <button type="button" class="mappool-quick-btn" id="mp-select-all">全选</button>
@@ -688,54 +718,63 @@ export class LobbyUI {
             <button type="button" class="mappool-close-btn" id="mp-close">完成</button>
           </div>
         </div>
-        ${this.mapPoolWarnText ? `<div class="mappool-warn">${this.mapPoolWarnText}</div>` : ''}
+        <div class="mappool-warn hidden" id="mp-warn"></div>
         <div class="mappool-grid">
           ${this.maps
-            .map((m) => {
-              const checked = poolSet.has(m.id);
-              return `
-              <button type="button" class="map-tile mappool-tile ${checked ? 'active' : ''}" data-pool-map="${m.id}" aria-pressed="${checked}">
-                <span class="mappool-check">${checked ? '✓' : ''}</span>
+            .map(
+              (m) => `
+              <button type="button" class="map-tile mappool-tile" data-pool-map="${m.id}" aria-pressed="false">
+                <span class="mappool-check"></span>
                 <canvas class="map-mini" width="120" height="76" data-pool-canvas="${m.id}"></canvas>
                 <div class="map-tile-meta">
                   <span class="map-tile-title">${m.title}</span>
                   <span class="map-tile-tag">${m.category === 'standard' ? '标准' : '大图'}</span>
                 </div>
-              </button>`;
-            })
+              </button>`,
+            )
             .join('')}
         </div>
       </div>
     `;
 
+    this.mapPoolCard = this.mapPoolModal.querySelector<HTMLDivElement>('.mappool-card')!;
+    this.mapPoolTitleEl = this.mapPoolModal.querySelector<HTMLElement>('#mp-title')!;
+    this.mapPoolSubEl = this.mapPoolModal.querySelector<HTMLElement>('#mp-sub')!;
+    this.mapPoolWarnEl = this.mapPoolModal.querySelector<HTMLElement>('#mp-warn')!;
+    this.mapPoolTiles.clear();
+
     for (const m of this.maps) {
       const cvs = this.mapPoolModal.querySelector<HTMLCanvasElement>(`canvas[data-pool-canvas="${m.id}"]`);
       if (cvs) drawMiniMap(cvs, m);
+      const btn = this.mapPoolModal.querySelector<HTMLButtonElement>(`[data-pool-map="${m.id}"]`);
+      const checkEl = btn?.querySelector<HTMLElement>('.mappool-check');
+      if (btn && checkEl) {
+        this.mapPoolTiles.set(m.id, { btn, checkEl });
+      }
     }
 
-    this.mapPoolModal.onclick = (e) => {
+    // Bind all modal interactions ONCE on the persistent DOM shell (zero flicker / zero canvas redraw)
+    this.mapPoolModal.addEventListener('click', (e) => {
       if (e.target === this.mapPoolModal) {
         this.closeMapPoolModal();
-        this.render();
       }
-    };
+    });
 
     this.mapPoolModal.querySelector('#mp-close')?.addEventListener('click', () => {
       this.closeMapPoolModal();
-      this.render();
     });
 
     const applyPoolIds = (ids: string[]) => {
       if (ids.length === 0) return;
-      if (isCricket) {
+      if (this.mapPoolTarget === 'cricket') {
         this.cricket.setMapPool(ids);
       } else {
-        this.rankedMapPools[mode] = new Set(ids);
+        this.rankedMapPools[this.rankedMode] = new Set(ids);
         this.saveMapPools();
       }
       this.mapPoolWarnText = null;
-      this.renderMapPoolModal();
-      this.render();
+      this.syncMapPoolModal();
+      this.syncLobbyMapPoolCount();
     };
 
     this.mapPoolModal.querySelector('#mp-select-all')?.addEventListener('click', () => {
@@ -750,21 +789,20 @@ export class LobbyUI {
       applyPoolIds(this.maps.filter((m) => m.category === 'large').map((m) => m.id));
     });
 
-    this.mapPoolModal.querySelectorAll<HTMLButtonElement>('[data-pool-map]').forEach((btn) => {
+    this.mapPoolTiles.forEach(({ btn }, id) => {
       btn.addEventListener('click', () => {
-        const id = btn.dataset.poolMap!;
-        if (isCricket) {
+        if (this.mapPoolTarget === 'cricket') {
           if (!this.cricket.toggleMap(id)) {
             this.mapPoolWarnText = '图池内至少保留 1 张地图';
-            this.renderMapPoolModal();
+            this.syncMapPoolModal();
             return;
           }
         } else {
-          const set = this.rankedMapPools[mode];
+          const set = this.rankedMapPools[this.rankedMode];
           if (set.has(id)) {
             if (set.size <= 1) {
               this.mapPoolWarnText = '图池内至少保留 1 张地图';
-              this.renderMapPoolModal();
+              this.syncMapPoolModal();
               return;
             }
             set.delete(id);
@@ -774,10 +812,63 @@ export class LobbyUI {
           this.saveMapPools();
         }
         this.mapPoolWarnText = null;
-        this.renderMapPoolModal();
-        this.render();
+        this.syncMapPoolModal();
+        this.syncLobbyMapPoolCount();
       });
     });
+  }
+
+  private openMapPoolModal(target: 'ranked' | 'cricket' = 'ranked') {
+    this.mapPoolTarget = target;
+    this.mapPoolOpen = true;
+    this.mapPoolWarnText = null;
+    this.syncMapPoolModal();
+    this.mapPoolModal.classList.remove('hidden');
+    this.mapPoolCard.scrollTop = 0;
+  }
+
+  private closeMapPoolModal() {
+    if (!this.mapPoolOpen && this.mapPoolModal.classList.contains('hidden')) return;
+    this.mapPoolOpen = false;
+    this.mapPoolWarnText = null;
+    this.mapPoolModal.classList.add('hidden');
+  }
+
+  private syncMapPoolModal() {
+    const isCricket = this.mapPoolTarget === 'cricket';
+    const mode = this.rankedMode;
+    const poolSet = isCricket ? this.cricket.getMapPoolSet() : this.rankedMapPools[mode];
+    const titleName = isCricket ? '斗蛐蛐图池' : `${mode === 'solo' ? 'SOLO' : '四人混战'} 地图池`;
+
+    this.mapPoolCard.setAttribute('aria-label', titleName);
+    this.mapPoolTitleEl.textContent = titleName;
+    this.mapPoolSubEl.innerHTML = `已选 <strong>${poolSet.size}</strong> / ${this.maps.length} 张地图${poolSet.size > 3 ? ' · 最近 3 场不重复' : ''}`;
+
+    if (this.mapPoolWarnText) {
+      this.mapPoolWarnEl.textContent = this.mapPoolWarnText;
+      this.mapPoolWarnEl.classList.remove('hidden');
+    } else {
+      this.mapPoolWarnEl.textContent = '';
+      this.mapPoolWarnEl.classList.add('hidden');
+    }
+
+    this.mapPoolTiles.forEach(({ btn, checkEl }, id) => {
+      const checked = poolSet.has(id);
+      btn.classList.toggle('active', checked);
+      btn.setAttribute('aria-pressed', String(checked));
+      checkEl.textContent = checked ? '✓' : '';
+    });
+  }
+
+  private syncLobbyMapPoolCount() {
+    const rankedBadge = this.container.querySelector<HTMLElement>('#mappool-count-badge');
+    if (rankedBadge) {
+      rankedBadge.textContent = `${this.getRankedPoolMaps(this.rankedMode).length} / ${this.maps.length}`;
+    }
+    const cricketBadge = this.container.querySelector<HTMLElement>('#cricket-mappool-count');
+    if (cricketBadge) {
+      cricketBadge.textContent = `${this.cricket.getMapPoolMetas().length} / ${this.maps.length}`;
+    }
   }
 
   private hasHuman(): boolean {
@@ -957,11 +1048,7 @@ export class LobbyUI {
       </div>
     `).join('');
 
-    const noticeHtml = this.cricketNotice
-      ? `<div class="cricket-notice is-${this.cricketNotice.kind}">${this.cricketNotice.text}</div>`
-      : !ready.ok && ready.reason
-        ? `<div class="cricket-notice is-warn">${ready.reason}</div>`
-        : '';
+    const noticeHtml = this.renderCricketNoticeHtml();
 
     return `
       <div class="cricket-panel">
@@ -978,7 +1065,7 @@ export class LobbyUI {
             <button type="button" class="mappool-trigger-btn cricket-mappool-btn" id="btn-open-cricket-mappool">
               <span class="mpt-icon">🗺️</span>
               <span>图池</span>
-              <span class="mpt-count">${poolCount} / ${this.maps.length}</span>
+              <span class="mpt-count" id="cricket-mappool-count">${poolCount} / ${this.maps.length}</span>
             </button>
           </div>
           <div class="cricket-toolbar-right">
@@ -993,7 +1080,7 @@ export class LobbyUI {
           </div>
         </div>
 
-        ${noticeHtml}
+        <div id="cricket-notice-slot" class="${noticeHtml ? '' : 'hidden'}">${noticeHtml}</div>
 
         <div class="cricket-board">
           <section
@@ -1046,18 +1133,60 @@ export class LobbyUI {
         </div>
 
         <div class="cricket-footer">
-          <span class="cricket-footer-hint">拖拽角色卡在三区自由移动 · 随机抽图并随机站位 · 对局中按 <kbd>${rstKey}</kbd> 按相同规则重抽</span>
-          <div class="cricket-reset-wrap">
-            ${
-              this.cricketConfirmReset
-                ? `<button type="button" class="cricket-reset-btn confirm" id="btn-cricket-reset-confirm">确认重置胜率/KD？</button>
-                   <button type="button" class="cricket-reset-cancel" id="btn-cricket-reset-cancel">取消</button>`
-                : `<button type="button" class="cricket-reset-btn" id="btn-cricket-reset" title="重置所有角色胜率与 KD，保留固定 ELO 分数">↺ 重置数据</button>`
-            }
+          <span class="cricket-footer-hint">拖拽角色卡在三区自由移动 · 随机抽图并随机站位 · 对局中按 <kbd id="cricket-rst-kbd">${rstKey}</kbd> 按相同规则重抽</span>
+          <div class="cricket-reset-wrap" id="cricket-reset-wrap">
+            ${this.renderCricketResetButtonsHtml()}
           </div>
         </div>
       </div>
     `;
+  }
+
+  private renderCricketResetButtonsHtml(): string {
+    return this.cricketConfirmReset
+      ? `<button type="button" class="cricket-reset-btn confirm" id="btn-cricket-reset-confirm">确认重置胜率/KD？</button>
+         <button type="button" class="cricket-reset-cancel" id="btn-cricket-reset-cancel">取消</button>`
+      : `<button type="button" class="cricket-reset-btn" id="btn-cricket-reset" title="重置所有角色胜率与 KD，保留固定 ELO 分数">↺ 重置数据</button>`;
+  }
+
+  private syncCricketResetInPlace() {
+    const wrap = this.container.querySelector<HTMLElement>('#cricket-reset-wrap');
+    if (!wrap) return;
+    wrap.innerHTML = this.renderCricketResetButtonsHtml();
+    this.bindCricketResetButtons();
+  }
+
+  private bindCricketResetButtons() {
+    this.container.querySelector('#btn-cricket-reset')?.addEventListener('click', () => {
+      this.cricketConfirmReset = true;
+      if (this.cricketConfirmTimer !== null) window.clearTimeout(this.cricketConfirmTimer);
+      this.cricketConfirmTimer = window.setTimeout(() => {
+        this.cricketConfirmReset = false;
+        this.cricketConfirmTimer = null;
+        if (this.activeTab === 'cricket') this.syncCricketResetInPlace();
+      }, 5000);
+      this.syncCricketResetInPlace();
+    });
+
+    this.container.querySelector('#btn-cricket-reset-cancel')?.addEventListener('click', () => {
+      this.cricketConfirmReset = false;
+      if (this.cricketConfirmTimer !== null) {
+        window.clearTimeout(this.cricketConfirmTimer);
+        this.cricketConfirmTimer = null;
+      }
+      this.syncCricketResetInPlace();
+    });
+
+    this.container.querySelector('#btn-cricket-reset-confirm')?.addEventListener('click', () => {
+      this.cricketConfirmReset = false;
+      if (this.cricketConfirmTimer !== null) {
+        window.clearTimeout(this.cricketConfirmTimer);
+        this.cricketConfirmTimer = null;
+      }
+      this.cricket.resetStats();
+      this.render();
+      this.showCricketNotice('已重置战绩数据（固定 ELO 分数已保留）', 'ok');
+    });
   }
 
   private bindCricketEvents() {
@@ -1066,11 +1195,10 @@ export class LobbyUI {
         const next = btn.dataset.cricketFormat as CricketFormat;
         if (next === this.cricket.getFormat()) return;
         const demoted = this.cricket.setFormat(next);
+        this.cricketNotice = null;
+        this.render();
         if (demoted > 0) {
           this.showCricketNotice(`切换至 1v1，已将超出的 ${demoted} 名直邀移入抽签池`, 'ok');
-        } else {
-          this.cricketNotice = null;
-          this.render();
         }
       });
     });
@@ -1083,35 +1211,7 @@ export class LobbyUI {
       this.startCricketMatch();
     });
 
-    this.container.querySelector('#btn-cricket-reset')?.addEventListener('click', () => {
-      this.cricketConfirmReset = true;
-      if (this.cricketConfirmTimer !== null) window.clearTimeout(this.cricketConfirmTimer);
-      this.cricketConfirmTimer = window.setTimeout(() => {
-        this.cricketConfirmReset = false;
-        this.cricketConfirmTimer = null;
-        if (this.activeTab === 'cricket') this.render();
-      }, 5000);
-      this.render();
-    });
-
-    this.container.querySelector('#btn-cricket-reset-cancel')?.addEventListener('click', () => {
-      this.cricketConfirmReset = false;
-      if (this.cricketConfirmTimer !== null) {
-        window.clearTimeout(this.cricketConfirmTimer);
-        this.cricketConfirmTimer = null;
-      }
-      this.render();
-    });
-
-    this.container.querySelector('#btn-cricket-reset-confirm')?.addEventListener('click', () => {
-      this.cricketConfirmReset = false;
-      if (this.cricketConfirmTimer !== null) {
-        window.clearTimeout(this.cricketConfirmTimer);
-        this.cricketConfirmTimer = null;
-      }
-      this.cricket.resetStats();
-      this.showCricketNotice('已重置战绩数据（固定 ELO 分数已保留）', 'ok');
-    });
+    this.bindCricketResetButtons();
 
     const clearDragVisuals = () => {
       this.container.querySelectorAll('.cricket-zone').forEach((z) => {
@@ -1190,9 +1290,16 @@ export class LobbyUI {
         const res = this.cricket.moveBot(botId, targetTier, beforeId);
         if (!res.ok && res.reason === 'invited_full') {
           this.cricketShakeInvited = true;
+          const invZone = this.container.querySelector<HTMLElement>('.cricket-zone-invited');
+          if (invZone) {
+            invZone.classList.remove('is-shake');
+            void invZone.offsetWidth;
+            invZone.classList.add('is-shake');
+          }
           this.showCricketNotice(`直邀数量不能超过比赛总人数（当前上限 ${this.cricket.getMaxPlayers()} 人）`, 'warn');
           window.setTimeout(() => {
             this.cricketShakeInvited = false;
+            this.container.querySelector<HTMLElement>('.cricket-zone-invited')?.classList.remove('is-shake');
           }, 420);
           return;
         }
@@ -1226,7 +1333,7 @@ export class LobbyUI {
                 <span class="rand-label">随机地图</span>
               </button>
             </div>
-            <span class="section-hint">${this.randomMap ? `随机 · 共 ${this.maps.length} 张地图` : `${selectedMap.title} · ${selectedMap.nx * 0.5}×${selectedMap.ny * 0.5}m`}</span>
+            <span class="section-hint" id="custom-map-hint">${this.randomMap ? `随机 · 共 ${this.maps.length} 张地图` : `${selectedMap.title} · ${selectedMap.nx * 0.5}×${selectedMap.ny * 0.5}m`}</span>
           </div>
           <div class="map-grid ${this.randomMap ? 'is-random' : ''}" id="map-grid">
             ${this.maps
@@ -1242,7 +1349,7 @@ export class LobbyUI {
               )
               .join('')}
           </div>
-          <div class="map-desc-box">
+          <div class="map-desc-box" id="custom-map-desc">
             ${
               this.randomMap
                 ? `<strong>🎲 随机地图已开启</strong>：每次开局将从全部 ${this.maps.length} 张地图中随机抽取一张（最近 3 场不重复）；点击任意地图自动关闭随机。`
@@ -1379,6 +1486,12 @@ export class LobbyUI {
 
   private render() {
     this.closeDropdown();
+    const viewKey = `${this.activeTab}:${this.showLeaderboard ? 'lb' : 'main'}`;
+    const prevScrollTop =
+      viewKey === this.lastRenderedViewKey
+        ? (this.container.querySelector<HTMLElement>('.lobby-card')?.scrollTop ?? 0)
+        : 0;
+    this.lastRenderedViewKey = viewKey;
     const icpNumber = (import.meta.env.VITE_ICP_NUMBER || '').trim();
     const icpFooterHtml = icpNumber
       ? `<footer class="icp-footer"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">${icpNumber.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] || c)}</a></footer>`
@@ -1425,6 +1538,11 @@ export class LobbyUI {
       </div>
       ${icpFooterHtml}
     `;
+
+    const lobbyCardEl = this.container.querySelector<HTMLElement>('.lobby-card');
+    if (lobbyCardEl && prevScrollTop > 0) {
+      lobbyCardEl.scrollTop = prevScrollTop;
+    }
 
     // Bind top tabs, history & settings buttons
     this.container.querySelector('#btn-open-history')?.addEventListener('click', () => {
@@ -1474,7 +1592,17 @@ export class LobbyUI {
           const next = btn.dataset.rankedMode as RankedMode;
           if (next === this.rankedMode) return;
           this.rankedMode = next;
-          this.render();
+          this.container.querySelectorAll<HTMLButtonElement>('[data-ranked-mode]').forEach((b) => {
+            b.classList.toggle('active', b.dataset.rankedMode === next);
+          });
+          const badge = this.container.querySelector<HTMLElement>('.rh-mode-badge');
+          if (badge) badge.textContent = `${next === 'solo' ? 'SOLO' : '四人混战'} 排位`;
+          const eloEl = this.container.querySelector<HTMLElement>('#ranked-elo-val');
+          if (eloEl) eloEl.textContent = String(this.leaderboard.getHumanRating(next));
+          const rk = this.leaderboard.getHumanRank(next);
+          const rkEl = this.container.querySelector<HTMLElement>('#ranked-rank-val');
+          if (rkEl) rkEl.innerHTML = `#${rk.rank}<span> / ${rk.total}</span>`;
+          this.syncLobbyMapPoolCount();
         });
       });
 
@@ -1487,9 +1615,11 @@ export class LobbyUI {
         this.openMapPoolModal('ranked');
       });
 
-      this.container.querySelector('#btn-toggle-cliff-guard')?.addEventListener('click', () => {
+      const rankedCgBtn = this.container.querySelector<HTMLButtonElement>('#btn-toggle-cliff-guard');
+      rankedCgBtn?.addEventListener('click', () => {
         this.cliffGuard = !this.cliffGuard;
-        this.render();
+        rankedCgBtn.classList.toggle('is-on', this.cliffGuard);
+        rankedCgBtn.setAttribute('aria-checked', String(this.cliffGuard));
       });
 
       this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {
@@ -1510,18 +1640,43 @@ export class LobbyUI {
       if (cvs) drawMiniMap(cvs, m);
     }
 
+    const syncCustomMapSelectionUI = () => {
+      const selectedMap = this.getSelectedMap();
+      const randBtn = this.container.querySelector<HTMLButtonElement>('#btn-toggle-random-map');
+      if (randBtn) {
+        randBtn.classList.toggle('is-on', this.randomMap);
+        randBtn.setAttribute('aria-checked', String(this.randomMap));
+      }
+      this.container.querySelector<HTMLElement>('#map-grid')?.classList.toggle('is-random', this.randomMap);
+      this.container.querySelectorAll<HTMLButtonElement>('#map-grid .map-tile').forEach((tile) => {
+        tile.classList.toggle('active', !this.randomMap && tile.dataset.map === this.selectedMapId);
+      });
+      const hintEl = this.container.querySelector<HTMLElement>('#custom-map-hint');
+      if (hintEl) {
+        hintEl.textContent = this.randomMap
+          ? `随机 · 共 ${this.maps.length} 张地图`
+          : `${selectedMap.title} · ${selectedMap.nx * 0.5}×${selectedMap.ny * 0.5}m`;
+      }
+      const descEl = this.container.querySelector<HTMLElement>('#custom-map-desc');
+      if (descEl) {
+        descEl.innerHTML = this.randomMap
+          ? `<strong>🎲 随机地图已开启</strong>：每次开局将从全部 ${this.maps.length} 张地图中随机抽取一张（最近 3 场不重复）；点击任意地图自动关闭随机。`
+          : `<strong>${selectedMap.title}</strong>：${selectedMap.desc}`;
+      }
+    };
+
     this.container.querySelector('#btn-toggle-random-map')?.addEventListener('click', () => {
       this.randomMap = !this.randomMap;
-      this.render();
+      syncCustomMapSelectionUI();
     });
 
-    this.container.querySelectorAll<HTMLButtonElement>('.map-tile').forEach((btn) => {
+    this.container.querySelectorAll<HTMLButtonElement>('#map-grid .map-tile').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.map!;
         if (!this.randomMap && id === this.selectedMapId) return;
         this.randomMap = false;
         this.selectedMapId = id;
-        this.render();
+        syncCustomMapSelectionUI();
         this.callbacks.onSelectMap(this.getSelectedMap());
       });
     });
@@ -1536,14 +1691,20 @@ export class LobbyUI {
       this.toggleHumanMode();
     });
 
-    this.container.querySelector('#btn-toggle-random')?.addEventListener('click', () => {
+    const randOrderBtn = this.container.querySelector<HTMLButtonElement>('#btn-toggle-random');
+    randOrderBtn?.addEventListener('click', () => {
       this.randomizeOrder = !this.randomizeOrder;
-      this.render();
+      randOrderBtn.classList.toggle('is-on', this.randomizeOrder);
+      randOrderBtn.setAttribute('aria-checked', String(this.randomizeOrder));
     });
 
-    this.container.querySelector('#btn-toggle-cliff-guard')?.addEventListener('click', () => {
+    const customCgBtn = this.container.querySelector<HTMLButtonElement>('#btn-toggle-cliff-guard');
+    customCgBtn?.addEventListener('click', () => {
       this.cliffGuard = !this.cliffGuard;
-      this.render();
+      customCgBtn.classList.toggle('is-on', this.cliffGuard);
+      customCgBtn.setAttribute('aria-checked', String(this.cliffGuard));
+      const lbl = customCgBtn.querySelector<HTMLElement>('.rand-label');
+      if (lbl) lbl.textContent = this.cliffGuard ? '已开启' : '已关闭';
     });
 
     const speedSlider = this.container.querySelector<HTMLInputElement>('#speed-slider');

@@ -178,6 +178,61 @@ export class SettingsModal {
     this.render();
   }
 
+  private syncControlsInPlace() {
+    const s = this.store.get();
+
+    const setSwitch = (selector: string, isOn: boolean, labelText?: string) => {
+      const btn = this.body.querySelector<HTMLButtonElement>(selector);
+      if (!btn) return;
+      btn.classList.toggle('is-on', isOn);
+      btn.setAttribute('aria-checked', String(isOn));
+      if (labelText !== undefined) {
+        const lbl = btn.querySelector<HTMLElement>('.rand-label');
+        if (lbl) lbl.textContent = labelText;
+      }
+    };
+
+    setSwitch('#settings-sound-toggle', s.soundEnabled, s.soundEnabled ? '音效开启' : '已静音');
+    const volWrap = this.body.querySelector<HTMLElement>('.settings-vol-wrap');
+    volWrap?.classList.toggle('is-dim', !s.soundEnabled);
+    const volSlider = this.body.querySelector<HTMLInputElement>('#settings-vol-slider');
+    if (volSlider) {
+      volSlider.disabled = !s.soundEnabled;
+      volSlider.value = String(s.volume);
+      volSlider.style.setProperty('--speed-pct', `${s.volume}%`);
+    }
+    const volVal = this.body.querySelector<HTMLElement>('#settings-vol-val');
+    if (volVal) volVal.textContent = `${s.volume}%`;
+
+    this.body.querySelectorAll<HTMLButtonElement>('[data-graphics-quality]').forEach((btn) => {
+      const active = btn.dataset.graphicsQuality === s.graphicsQuality;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+
+    setSwitch('#settings-lock-fps-toggle', s.lockFps, s.lockFps ? '显示器帧率' : '无上限');
+    setSwitch('#settings-killcam-toggle', s.killCam, s.killCam ? '已开启' : '已关闭');
+    setSwitch('#settings-finishercam-toggle', s.finisherCam, s.finisherCam ? '已开启' : '已关闭');
+    setSwitch('#settings-winnercam-toggle', s.winnerCam, s.winnerCam ? '已开启' : '已关闭');
+    setSwitch('#settings-dash-buffer-toggle', s.dashInputBuffer, s.dashInputBuffer ? '已开启' : '已关闭');
+
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-res]').forEach((btn) => {
+      const active = btn.dataset.exportRes === s.exportResolution;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-bitrate]').forEach((btn) => {
+      const active = Number(btn.dataset.exportBitrate) === s.exportBitrateMbps;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-speed]').forEach((btn) => {
+      const active = Number(btn.dataset.exportSpeed) === s.exportSpeed;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+  }
+
   private render() {
     const s = this.store.get();
 
@@ -425,7 +480,7 @@ export class SettingsModal {
       const next = !this.store.get().soundEnabled;
       this.store.setSoundEnabled(next);
       if (next) this.onTestSound?.();
-      this.render();
+      this.syncControlsInPlace();
     });
 
     // Volume slider
@@ -447,53 +502,53 @@ export class SettingsModal {
     this.body.querySelectorAll<HTMLButtonElement>('[data-graphics-quality]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.store.setGraphicsQuality(btn.dataset.graphicsQuality as GraphicsQualityOption);
-        this.render();
+        this.syncControlsInPlace();
       });
     });
 
     // Lock FPS cap toggle (ON = monitor refresh rate, OFF = uncapped)
     this.body.querySelector('#settings-lock-fps-toggle')?.addEventListener('click', () => {
       this.store.setLockFps(!this.store.get().lockFps);
-      this.render();
+      this.syncControlsInPlace();
     });
 
     // Dash pre-input buffer toggle
     this.body.querySelector('#settings-dash-buffer-toggle')?.addEventListener('click', () => {
       this.store.setDashInputBuffer(!this.store.get().dashInputBuffer);
-      this.render();
+      this.syncControlsInPlace();
     });
 
     // Cinematic camera toggles (non-final kill, finisher kill, winner close-up)
     this.body.querySelector('#settings-killcam-toggle')?.addEventListener('click', () => {
       this.store.setKillCam(!this.store.get().killCam);
-      this.render();
+      this.syncControlsInPlace();
     });
     this.body.querySelector('#settings-finishercam-toggle')?.addEventListener('click', () => {
       this.store.setFinisherCam(!this.store.get().finisherCam);
-      this.render();
+      this.syncControlsInPlace();
     });
     this.body.querySelector('#settings-winnercam-toggle')?.addEventListener('click', () => {
       this.store.setWinnerCam(!this.store.get().winnerCam);
-      this.render();
+      this.syncControlsInPlace();
     });
 
     // Export MP4 option selectors
     this.body.querySelectorAll<HTMLButtonElement>('[data-export-res]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.store.setExportResolution(btn.dataset.exportRes as ExportResolutionOption);
-        this.render();
+        this.syncControlsInPlace();
       });
     });
     this.body.querySelectorAll<HTMLButtonElement>('[data-export-bitrate]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.store.setExportBitrateMbps(Number(btn.dataset.exportBitrate) as ExportBitrateOption);
-        this.render();
+        this.syncControlsInPlace();
       });
     });
     this.body.querySelectorAll<HTMLButtonElement>('[data-export-speed]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.store.setExportSpeed(Number(btn.dataset.exportSpeed) as ExportSpeedOption);
-        this.render();
+        this.syncControlsInPlace();
       });
     });
 

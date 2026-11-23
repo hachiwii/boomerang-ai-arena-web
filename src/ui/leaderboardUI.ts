@@ -21,6 +21,7 @@ function fmtKd(row: LeaderboardRow): string {
 export class LeaderboardPanel {
   private readonly store: LeaderboardStore;
   private readonly tooltip: HTMLDivElement;
+  private activeContainer: HTMLElement | null = null;
   private mode: RankedMode = 'solo';
   private sortBy: SortField = 'rating';
   private confirmReset = false;
@@ -113,7 +114,9 @@ export class LeaderboardPanel {
   }
 
   public renderInto(container: HTMLElement) {
+    this.activeContainer = container;
     this.hideTooltip();
+    const prevScrollTop = container.querySelector<HTMLElement>('.lb-table-scroll')?.scrollTop ?? 0;
     const rows = this.store.getRows(this.mode, this.sortBy);
     const rowById = new Map(rows.map((r) => [r.id, r]));
 
@@ -192,6 +195,11 @@ export class LeaderboardPanel {
       </div>
     `;
 
+    const scrollEl = container.querySelector<HTMLElement>('.lb-table-scroll');
+    if (scrollEl && prevScrollTop > 0) {
+      scrollEl.scrollTop = prevScrollTop;
+    }
+
     container.querySelector('#lb-back-btn')?.addEventListener('click', () => {
       this.hideTooltip();
       this.onClose?.();
@@ -219,7 +227,8 @@ export class LeaderboardPanel {
       if (this.confirmTimer !== null) window.clearTimeout(this.confirmTimer);
       this.confirmTimer = window.setTimeout(() => {
         this.confirmReset = false;
-        this.renderInto(container);
+        this.confirmTimer = null;
+        if (this.activeContainer?.isConnected) this.renderInto(this.activeContainer);
       }, 5000);
       this.renderInto(container);
     });
@@ -238,10 +247,14 @@ export class LeaderboardPanel {
       if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
       this.toastTimer = window.setTimeout(() => {
         this.toastText = null;
-        this.renderInto(container);
+        this.toastTimer = null;
+        if (this.activeContainer?.isConnected) this.renderInto(this.activeContainer);
       }, 3500);
-      this.onChanged?.();
-      this.renderInto(container);
+      if (this.onChanged) {
+        this.onChanged();
+      } else {
+        this.renderInto(container);
+      }
     });
 
     container.querySelectorAll<HTMLTableRowElement>('tr.lb-row').forEach((tr) => {

@@ -64,6 +64,14 @@ export class HistoryModal {
   private readonly callbacks: HistoryModalCallbacks;
   private readonly backdrop: HTMLDivElement;
   private readonly card: HTMLDivElement;
+  private readonly countPillEl: HTMLElement;
+  private readonly clearAllBtn: HTMLButtonElement;
+  private readonly closeBtn: HTMLButtonElement;
+  private readonly exportCfgBtn: HTMLButtonElement;
+  private readonly filterBtns: HTMLButtonElement[];
+  private readonly exportSlotEl: HTMLDivElement;
+  private readonly noticeSlotEl: HTMLDivElement;
+  private readonly bodyEl: HTMLDivElement;
 
   private openState = false;
   private filter: HistoryFilter = 'all';
@@ -89,6 +97,49 @@ export class HistoryModal {
     this.card.className = 'history-card';
     this.card.setAttribute('role', 'dialog');
     this.card.setAttribute('aria-label', '对局历史');
+
+    // Persistent modal shell bound ONCE (header & toolbar never flash or reset focus on interactions)
+    this.card.innerHTML = `
+      <div class="history-head">
+        <div class="history-head-left">
+          <h2>📜 对局历史</h2>
+          <span class="history-count-pill" id="history-count-pill">已保存 0 / ${MAX_HISTORY_RECORDS} 场</span>
+        </div>
+        <div class="history-head-right">
+          <button type="button" class="history-clear-btn hidden" id="history-clear-all">清空历史</button>
+          <button type="button" class="settings-close-btn" id="history-close">完成</button>
+        </div>
+      </div>
+
+      <div class="history-toolbar">
+        <div class="history-filter-tabs" role="tablist">
+          <button type="button" class="history-filter-btn active" data-hfilter="all">全部 <span data-fcount="all">0</span></button>
+          <button type="button" class="history-filter-btn" data-hfilter="ranked">🏆 排位赛 <span data-fcount="ranked">0</span></button>
+          <button type="button" class="history-filter-btn" data-hfilter="cricket">🦗 斗蛐蛐 <span data-fcount="cricket">0</span></button>
+          <button type="button" class="history-filter-btn" data-hfilter="custom">🎛️ 自定义 <span data-fcount="custom">0</span></button>
+        </div>
+        <button
+          type="button"
+          class="history-export-cfg-btn"
+          id="history-open-export-settings"
+          title="在设置中调整 MP4 导出分辨率、码率与播放速度"
+        ></button>
+      </div>
+
+      <div id="history-export-slot" class="hidden"></div>
+      <div id="history-notice-slot" class="hidden"></div>
+      <div class="history-body" id="history-body"></div>
+    `;
+
+    this.countPillEl = this.card.querySelector<HTMLElement>('#history-count-pill')!;
+    this.clearAllBtn = this.card.querySelector<HTMLButtonElement>('#history-clear-all')!;
+    this.closeBtn = this.card.querySelector<HTMLButtonElement>('#history-close')!;
+    this.exportCfgBtn = this.card.querySelector<HTMLButtonElement>('#history-open-export-settings')!;
+    this.filterBtns = Array.from(this.card.querySelectorAll<HTMLButtonElement>('[data-hfilter]'));
+    this.exportSlotEl = this.card.querySelector<HTMLDivElement>('#history-export-slot')!;
+    this.noticeSlotEl = this.card.querySelector<HTMLDivElement>('#history-notice-slot')!;
+    this.bodyEl = this.card.querySelector<HTMLDivElement>('#history-body')!;
+
     this.backdrop.appendChild(this.card);
     document.body.appendChild(this.backdrop);
 
@@ -98,6 +149,41 @@ export class HistoryModal {
       }
     });
 
+    this.closeBtn.addEventListener('click', () => {
+      if (!this.activeExport) this.close();
+    });
+
+    this.exportCfgBtn.addEventListener('click', () => {
+      if (this.activeExport) return;
+      this.callbacks.onOpenSettings();
+    });
+
+    this.clearAllBtn.addEventListener('click', () => {
+      if (this.activeExport) return;
+      if (!this.confirmClear) {
+        this.confirmClear = true;
+        this.syncHeaderControls();
+        this.confirmTimer = window.setTimeout(() => {
+          this.confirmClear = false;
+          this.confirmTimer = null;
+          if (this.openState) this.syncHeaderControls();
+        }, 3500);
+        return;
+      }
+      this.clearConfirmReset();
+      void this.store.clearAll();
+    });
+
+    for (const btn of this.filterBtns) {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.hfilter as HistoryFilter;
+        if (next === this.filter) return;
+        this.filter = next;
+        this.bodyEl.scrollTop = 0;
+        this.render();
+      });
+    }
+
     this.store.onChange(() => {
       if (this.openState) {
         void this.refresh();
@@ -106,7 +192,7 @@ export class HistoryModal {
 
     this.settings.onChange(() => {
       if (this.openState && !this.activeExport) {
-        this.render();
+        this.syncExportPresetInPlace();
       }
     });
 
@@ -134,9 +220,17 @@ export class HistoryModal {
     this.openState = true;
     this.loadingReplayId = null;
     this.clearConfirmReset();
-    this.backdrop.classList.remove('hidden');
     this.callbacks.onOpenChange?.(true);
-    await this.refresh();
+    try {
+      this.summaries = await this.store.listSummaries();
+    } catch {
+      // Keep existing summaries on error
+    }
+    if (!this.openState) return;
+    this.loading = false;
+    this.render();
+    this.bodyEl.scrollTop = 0;
+    this.backdrop.classList.remove('hidden');
   }
 
   public close() {
@@ -168,9 +262,9 @@ export class HistoryModal {
     this.statusTimer = window.setTimeout(() => {
       this.statusNotice = null;
       this.statusTimer = null;
-      if (this.openState) this.render();
+      if (this.openState) this.syncNoticeSlot();
     }, 5000);
-    if (this.openState) this.render();
+    if (this.openState) this.syncNoticeSlot();
   }
 
   private getExportPresetLabel(): string {
@@ -179,9 +273,38 @@ export class HistoryModal {
     return `${s.exportResolution} · ${s.exportBitrateMbps} Mbps · ${spd}`;
   }
 
+  private syncExportPresetInPlace() {
+    const presetLabel = this.getExportPresetLabel();
+    this.exportCfgBtn.textContent = `⚙️ 导出设置：${presetLabel}`;
+    this.bodyEl.querySelectorAll<HTMLButtonElement>('[data-export-id]').forEach((btn) => {
+      btn.title = `将本局观战回放导出下载为 MP4（当前：${presetLabel}）`;
+    });
+  }
+
+  private syncNoticeSlot() {
+    if (this.statusNotice) {
+      this.noticeSlotEl.innerHTML = `<div class="history-notice ${this.statusNotice.kind === 'ok' ? 'is-ok' : 'is-err'}">${escapeHtml(this.statusNotice.text)}</div>`;
+      this.noticeSlotEl.classList.remove('hidden');
+    } else {
+      this.noticeSlotEl.innerHTML = '';
+      this.noticeSlotEl.classList.add('hidden');
+    }
+  }
+
+  private syncHeaderControls() {
+    const totalCount = this.summaries.length;
+    const busy = this.activeExport !== null;
+    this.countPillEl.textContent = `已保存 ${totalCount} / ${MAX_HISTORY_RECORDS} 场`;
+    this.clearAllBtn.classList.toggle('hidden', totalCount === 0);
+    this.clearAllBtn.classList.toggle('confirm', this.confirmClear);
+    this.clearAllBtn.textContent = this.confirmClear ? '确认清空全部？' : '清空历史';
+    this.clearAllBtn.disabled = busy;
+    this.closeBtn.disabled = busy;
+    this.exportCfgBtn.disabled = busy;
+  }
+
   private async refresh() {
     this.loading = true;
-    this.render();
     try {
       this.summaries = await this.store.listSummaries();
     } finally {
@@ -380,8 +503,23 @@ export class HistoryModal {
     const cricketCount = this.summaries.filter((m) => m.matchMode === 'cricket').length;
     const customCount = this.summaries.filter((m) => m.matchMode === 'custom').length;
     const visible = this.filteredSummaries();
-    const busy = this.activeExport !== null;
     const presetLabel = this.getExportPresetLabel();
+
+    this.syncHeaderControls();
+    this.exportCfgBtn.textContent = `⚙️ 导出设置：${presetLabel}`;
+
+    const filterCounts: Record<HistoryFilter, number> = {
+      all: totalCount,
+      ranked: rankedCount,
+      cricket: cricketCount,
+      custom: customCount,
+    };
+    for (const btn of this.filterBtns) {
+      const f = btn.dataset.hfilter as HistoryFilter;
+      btn.classList.toggle('active', f === this.filter);
+      const span = btn.querySelector<HTMLElement>(`[data-fcount="${f}"]`);
+      if (span) span.textContent = String(filterCounts[f]);
+    }
 
     let bodyHtml = '';
     if (this.loading && totalCount === 0) {
@@ -401,7 +539,8 @@ export class HistoryModal {
       bodyHtml = `<div class="history-list">${visible.map((m) => this.renderRow(m)).join('')}</div>`;
     }
 
-    const exportBarHtml = this.activeExport
+    this.exportSlotEl.classList.toggle('hidden', !this.activeExport);
+    this.exportSlotEl.innerHTML = this.activeExport
       ? `
         <div class="history-export-bar">
           <div class="heb-top">
@@ -419,105 +558,17 @@ export class HistoryModal {
           </div>
         </div>`
       : '';
-
-    const noticeHtml = this.statusNotice
-      ? `<div class="history-notice ${this.statusNotice.kind === 'ok' ? 'is-ok' : 'is-err'}">${escapeHtml(this.statusNotice.text)}</div>`
-      : '';
-
-    const prevScrollTop = this.card.querySelector<HTMLElement>('.history-body')?.scrollTop ?? 0;
-    this.card.innerHTML = `
-        <div class="history-head">
-          <div class="history-head-left">
-            <h2>📜 对局历史</h2>
-            <span class="history-count-pill">已保存 ${totalCount} / ${MAX_HISTORY_RECORDS} 场</span>
-          </div>
-          <div class="history-head-right">
-            ${
-              totalCount > 0
-                ? `<button type="button" class="history-clear-btn ${this.confirmClear ? 'confirm' : ''}" id="history-clear-all" ${busy ? 'disabled' : ''}>
-                    ${this.confirmClear ? '确认清空全部？' : '清空历史'}
-                  </button>`
-                : ''
-            }
-            <button type="button" class="settings-close-btn" id="history-close" ${busy ? 'disabled' : ''}>完成</button>
-          </div>
-        </div>
-
-        <div class="history-toolbar">
-          <div class="history-filter-tabs" role="tablist">
-            <button type="button" class="history-filter-btn ${this.filter === 'all' ? 'active' : ''}" data-hfilter="all">
-              全部 <span>${totalCount}</span>
-            </button>
-            <button type="button" class="history-filter-btn ${this.filter === 'ranked' ? 'active' : ''}" data-hfilter="ranked">
-              🏆 排位赛 <span>${rankedCount}</span>
-            </button>
-            <button type="button" class="history-filter-btn ${this.filter === 'cricket' ? 'active' : ''}" data-hfilter="cricket">
-              🦗 斗蛐蛐 <span>${cricketCount}</span>
-            </button>
-            <button type="button" class="history-filter-btn ${this.filter === 'custom' ? 'active' : ''}" data-hfilter="custom">
-              🎛️ 自定义 <span>${customCount}</span>
-            </button>
-          </div>
-          <button
-            type="button"
-            class="history-export-cfg-btn"
-            id="history-open-export-settings"
-            title="在设置中调整 MP4 导出分辨率、码率与播放速度"
-            ${busy ? 'disabled' : ''}
-          >
-            ⚙️ 导出设置：${escapeHtml(presetLabel)}
-          </button>
-        </div>
-
-        ${exportBarHtml}
-        ${noticeHtml}
-
-        <div class="history-body">
-          ${bodyHtml}
-        </div>
-    `;
-    const bodyEl = this.card.querySelector<HTMLElement>('.history-body');
-    if (bodyEl) bodyEl.scrollTop = prevScrollTop;
-
-    this.card.querySelector('#history-close')?.addEventListener('click', () => {
-      if (!this.activeExport) this.close();
-    });
-
-    this.card.querySelector('#history-open-export-settings')?.addEventListener('click', () => {
-      if (this.activeExport) return;
-      this.callbacks.onOpenSettings();
-    });
-
-    this.card.querySelector('#history-export-cancel')?.addEventListener('click', () => {
+    this.exportSlotEl.querySelector('#history-export-cancel')?.addEventListener('click', () => {
       this.activeExport?.controller.abort();
     });
 
-    this.card.querySelector('#history-clear-all')?.addEventListener('click', () => {
-      if (this.activeExport) return;
-      if (!this.confirmClear) {
-        this.confirmClear = true;
-        this.render();
-        this.confirmTimer = window.setTimeout(() => {
-          this.confirmClear = false;
-          this.confirmTimer = null;
-          if (this.openState) this.render();
-        }, 3500);
-        return;
-      }
-      this.clearConfirmReset();
-      void this.store.clearAll();
-    });
+    this.syncNoticeSlot();
 
-    this.card.querySelectorAll<HTMLButtonElement>('[data-hfilter]').forEach((btn) => {
-      btn.addEventListener('click', () => {
-        const next = btn.dataset.hfilter as HistoryFilter;
-        if (next === this.filter) return;
-        this.filter = next;
-        this.render();
-      });
-    });
+    const prevScrollTop = this.bodyEl.scrollTop;
+    this.bodyEl.innerHTML = bodyHtml;
+    this.bodyEl.scrollTop = prevScrollTop;
 
-    this.card.querySelectorAll<HTMLButtonElement>('[data-replay-id]').forEach((btn) => {
+    this.bodyEl.querySelectorAll<HTMLButtonElement>('[data-replay-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.replayId!;
         if (this.loadingReplayId !== null || this.activeExport !== null) return;
@@ -532,7 +583,7 @@ export class HistoryModal {
     });
 
     const summaryById = new Map(this.summaries.map((s) => [s.id, s]));
-    this.card.querySelectorAll<HTMLButtonElement>('[data-export-id]').forEach((btn) => {
+    this.bodyEl.querySelectorAll<HTMLButtonElement>('[data-export-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.exportId!;
         const s = summaryById.get(id);
@@ -541,7 +592,7 @@ export class HistoryModal {
       });
     });
 
-    this.card.querySelectorAll<HTMLButtonElement>('[data-delete-id]').forEach((btn) => {
+    this.bodyEl.querySelectorAll<HTMLButtonElement>('[data-delete-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (this.activeExport) return;
         const id = btn.dataset.deleteId!;
