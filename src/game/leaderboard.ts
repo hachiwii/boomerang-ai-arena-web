@@ -62,7 +62,23 @@ const STORAGE_KEY = 'boomerang_arena_leaderboard_v2';
 const INITIAL_HUMAN_ELO = 500;
 const MIN_HUMAN_ELO = 0;
 const ELO_K = 32;
-const ELO_GAIN_MULTIPLIER = 2;
+const ELO_GAIN_MAX_MULTIPLIER = 2.0;
+const ELO_GAIN_MIN_MULTIPLIER = 1.0;
+const ELO_GAIN_DECAY_START = 900;
+const ELO_GAIN_DECAY_END = 1300;
+
+/**
+ * Positive Elo gain multiplier:
+ * - <= 900: 200% (2.0x)
+ * - 900..1300: linearly decays from 200% down to 100%
+ * - >= 1300: 100% (1.0x)
+ */
+export function getEloGainMultiplier(rating: number): number {
+  if (rating <= ELO_GAIN_DECAY_START) return ELO_GAIN_MAX_MULTIPLIER;
+  if (rating >= ELO_GAIN_DECAY_END) return ELO_GAIN_MIN_MULTIPLIER;
+  const t = (rating - ELO_GAIN_DECAY_START) / (ELO_GAIN_DECAY_END - ELO_GAIN_DECAY_START);
+  return ELO_GAIN_MAX_MULTIPLIER - t * (ELO_GAIN_MAX_MULTIPLIER - ELO_GAIN_MIN_MULTIPLIER);
+}
 
 function emptyStats(): ModeStats {
   return {
@@ -235,7 +251,8 @@ export class LeaderboardStore {
     }
 
     const rawDelta = oppCount > 0 ? (ELO_K / oppCount) * sumDiff : 0;
-    const adjustedDelta = rawDelta > 0 ? rawDelta * ELO_GAIN_MULTIPLIER : rawDelta;
+    const gainMult = getEloGainMultiplier(oldRating);
+    const adjustedDelta = rawDelta > 0 ? rawDelta * gainMult : rawDelta;
     const newRating = clampHumanElo(oldRating + adjustedDelta);
     const delta = newRating - oldRating;
     this.humanRatings[mode] = newRating;
