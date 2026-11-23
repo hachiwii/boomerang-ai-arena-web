@@ -602,9 +602,9 @@ kbd {
 }
 
 .hud-top {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: start;
   gap: 12px;
 }
 
@@ -612,7 +612,8 @@ kbd {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
-  max-width: 48vw;
+  justify-self: start;
+  max-width: 100%;
 }
 
 .hud-pcard {
@@ -701,6 +702,7 @@ kbd {
 }
 
 .hud-center-pill {
+  justify-self: center;
   text-align: center;
   padding: 7px 18px;
   border-radius: 14px;
@@ -740,10 +742,19 @@ kbd {
 
 .hud-actions {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  justify-self: end;
+  pointer-events: none;
+}
+
+.hud-action-btns {
+  display: flex;
   align-items: center;
+  justify-content: flex-end;
   gap: 6px;
   flex-wrap: wrap;
-  justify-content: flex-end;
   pointer-events: auto;
 }
 
@@ -751,11 +762,13 @@ kbd {
   font-size: 11px;
   font-weight: 700;
   font-variant-numeric: tabular-nums;
-  padding: 6px 10px;
+  padding: 5px 10px;
   border-radius: 9px;
   background: var(--bg-glass);
   border: 1px solid rgba(255, 255, 255, 0.12);
   color: #9be8ba;
+  white-space: nowrap;
+  pointer-events: auto;
 }
 
 .hud-btn {

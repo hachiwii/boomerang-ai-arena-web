@@ -227,14 +227,16 @@ export class HudUI {
       </div>
 
       <div class="hud-actions">
+        <div class="hud-action-btns">
+          ${
+            humanSeat >= 0
+              ? `<button class="hud-btn ${this.cliffGuard ? 'active' : ''}" id="hud-cliff-guard" title="跌落防护：开启时不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点">🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}</button>`
+              : ''
+          }
+          <button class="hud-btn" id="hud-settings" title="音效、帧率上限与键位设置">⚙️ 设置</button>
+          <button class="hud-btn hud-exit" id="hud-exit">主界面 (ESC)</button>
+        </div>
         <div class="hud-perf" id="hud-perf">20Hz · --Hz</div>
-        ${
-          humanSeat >= 0
-            ? `<button class="hud-btn ${this.cliffGuard ? 'active' : ''}" id="hud-cliff-guard" title="跌落防护：开启时不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点">🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}</button>`
-            : ''
-        }
-        <button class="hud-btn" id="hud-settings" title="音效、帧率上限与键位设置">⚙️ 设置</button>
-        <button class="hud-btn hud-exit" id="hud-exit">主界面 (ESC)</button>
       </div>
     `;
 
@@ -393,15 +395,17 @@ export class HudUI {
       </div>
 
       <div class="hud-actions">
+        <div class="hud-action-btns">
+          ${
+            this.replayIsLiveAi
+              ? `<button class="hud-btn" id="hud-ai-restart" title="${isCricket ? `按当前规则重新抽图和选手 (${rstKey})` : `使用当前配置重新开局 (${rstKey})`}">${isCricket ? `🎲 重抽 (${rstKey})` : `↺ 重开 (${rstKey})`}</button>`
+              : ''
+          }
+          <button class="hud-btn" id="hud-replay-history" title="返回对局历史列表">📜 对局历史</button>
+          <button class="hud-btn" id="hud-settings" title="音效、特写镜头与导出设置">⚙️ 设置</button>
+          <button class="hud-btn hud-exit" id="hud-exit">${this.replayIsLiveAi ? '主界面 (ESC)' : '退出回放 (ESC)'}</button>
+        </div>
         <div class="hud-perf" id="hud-perf">${this.replayIsLiveAi ? (isCricket ? '斗蛐蛐' : 'AI 观战') : '回放'} ${playback.speed.toFixed(1)}x</div>
-        ${
-          this.replayIsLiveAi
-            ? `<button class="hud-btn" id="hud-ai-restart" title="${isCricket ? `按当前规则重新抽图和选手 (${rstKey})` : `使用当前配置重新开局 (${rstKey})`}">${isCricket ? `🎲 重抽 (${rstKey})` : `↺ 重开 (${rstKey})`}</button>`
-            : ''
-        }
-        <button class="hud-btn" id="hud-replay-history" title="返回对局历史列表">📜 对局历史</button>
-        <button class="hud-btn" id="hud-settings" title="音效、特写镜头与导出设置">⚙️ 设置</button>
-        <button class="hud-btn hud-exit" id="hud-exit">${this.replayIsLiveAi ? '主界面 (ESC)' : '退出回放 (ESC)'}</button>
       </div>
     `;
 
