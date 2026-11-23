@@ -1,0 +1,2206 @@
+import * as THREE from 'three';
+import { CellType, EngineMapData } from '../game/types';
+import {
+  addArenaTree,
+  addBarrel,
+  addBridgePost,
+  addCrate,
+  addDetailExtra,
+  addFacetedRock,
+  addFarBush,
+  addFarPine,
+  addFarProp,
+  addFarRoundTree,
+  addFountain,
+  addHoodoo,
+  addHouse,
+  addLandmarkFeature,
+  addMesa,
+  hexLin,
+  HqMeshBuilder,
+  ICO1,
+  lerpLin,
+  LinRGB,
+  scaleLin,
+  SeededRng,
+  Vec3,
+} from './hqGeomBuilder';
+import { BridgeSpec, PaintedGroundResult, paintHighQualityGround } from './hqGroundPaint';
+import { getHqTheme, HqPalette, HqThemeSpec } from './hqThemes';
+
+export interface ArenaMapUpdateOpts {
+  pauseClouds?: boolean;
+  hideAmbient?: boolean;
+  freezeCollapseAtTick?: number;
+}
+
+export interface IArenaMap {
+  readonly root: THREE.Group;
+  readonly mapData: EngineMapData;
+  readonly widthM: number;
+  readonly heightM: number;
+  update(gt: number, elapsedSec: number, opts?: ArenaMapUpdateOpts): void;
+  updateCloseupOcclusion(
+    camPos: THREE.Vector3,
+    focusPos: THREE.Vector3,
+    blend: number,
+    dt: number,
+  ): void;
+  dispose(): void;
+}
+
+export interface OccluderEntry {
+  materials: THREE.Material[];
+  baseOpacities: number[];
+  box: THREE.Box3;
+  isGrass: boolean;
+  minOpacity: number;
+  curOpacity: number;
+  wave: number;
+}
+
+/** Ray-vs-expanded-AABB slab intersection test for segment P(t) = cam + t*dir, t in [tMin, tMax]. */
+export function segmentIntersectsExpandedBox(
+  cam: THREE.Vector3,
+  dir: THREE.Vector3,
+  tMin: number,
+  tMax: number,
+  box: THREE.Box3,
+  pad: number,
+): boolean {
+  let lo = tMin;
+  let hi = tMax;
+  if (hi <= lo) return false;
+
+  const minX = box.min.x - pad;
+  const maxX = box.max.x + pad;
+  const minY = box.min.y - pad * 0.5;
+  const maxY = box.max.y + pad * 0.65;
+  const minZ = box.min.z - pad;
+  const maxZ = box.max.z + pad;
+
+  const checkAxis = (orig: number, d: number, bMin: number, bMax: number): boolean => {
+    if (Math.abs(d) < 1e-6) {
+      return orig >= bMin && orig <= bMax;
+    }
+    let t1 = (bMin - orig) / d;
+    let t2 = (bMax - orig) / d;
+    if (t1 > t2) {
+      const tmp = t1;
+      t1 = t2;
+      t2 = tmp;
+    }
+    if (t1 > lo) lo = t1;
+    if (t2 < hi) hi = t2;
+    return lo <= hi;
+  };
+
+  return (
+    checkAxis(cam.x, dir.x, minX, maxX) &&
+    checkAxis(cam.y, dir.y, minY, maxY) &&
+    checkAxis(cam.z, dir.z, minZ, maxZ)
+  );
+}
+
+/** Shared occlusion fade updater used by BOTH Low Quality and High Quality arenas! */
+export function applyCloseupOcclusionStep(
+  entries: OccluderEntry[],
+  camPos: THREE.Vector3,
+  focusPos: THREE.Vector3,
+  blend: number,
+  dt: number,
+  _dirScratch: THREE.Vector3,
+) {
+  const active = blend > 0.12;
+  let dist = 0;
+  if (active) {
+    _dirScratch.subVectors(focusPos, camPos);
+    dist = _dirScratch.length();
+    if (dist > 0.3) _dirScratch.divideScalar(dist);
+  }
+  // Smooth blend strength [0..1] as camera glides from overview into close-up
+  const strength = active ? Math.min(1, Math.max(0, (blend - 0.12) / 0.42)) : 0;
+  const smoothK = dt > 0 ? 1 - Math.exp(-Math.min(0.1, dt) * 14) : 1;
+
+  for (let i = 0; i < entries.length; i++) {
+    const e = entries[i];
+    let hit = false;
+    if (strength > 0.01 && dist > 0.6) {
+      const pad = e.isGrass ? 0.24 : 0.46;
+      const stopBefore = e.isGrass ? 0.95 : 0.36;
+      const tMax = dist - stopBefore;
+      if (tMax > 0.15) {
+        hit = segmentIntersectsExpandedBox(camPos, _dirScratch, 0.05, tMax, e.box, pad);
+      }
+    }
+    const targetOp = hit ? 1.0 - (1.0 - e.minOpacity) * strength : 1.0;
+    const prev = e.curOpacity;
+    const next = Math.abs(targetOp - prev) < 0.008 ? targetOp : prev + (targetOp - prev) * smoothK;
+    if (Math.abs(next - prev) < 0.001 && !hit && prev >= 0.999) continue;
+    e.curOpacity = next;
+
+    const isTranslucent = next < 0.985;
+    for (let m = 0; m < e.materials.length; m++) {
+      const mat = e.materials[m];
+      const baseOp = e.baseOpacities[m];
+      const finalOp = baseOp * next;
+      const needTrans = isTranslucent || baseOp < 0.99;
+      if (mat.transparent !== needTrans) {
+        mat.transparent = needTrans;
+        mat.needsUpdate = true;
+      }
+      mat.opacity = finalOp;
+      mat.depthWrite = !isTranslucent && baseOp >= 0.99;
+    }
+  }
+}
+
+interface CollapseChunk {
+  id: number;
+  wave: number;
+  group: THREE.Group;
+  cx: number;
+  cz: number;
+  distFromCenter: number;
+  rnd: [number, number, number, number, number, number];
+  warnMaterials: THREE.MeshLambertMaterial[];
+  modified: boolean;
+}
+
+interface GrassClusterRef {
+  group: THREE.Group;
+  cx: number;
+  cz: number;
+  phase: number;
+}
+
+interface CloudInfo {
+  x: number;
+  y: number;
+  z: number;
+  sx: number;
+  sy: number;
+  sz: number;
+  rotY: number;
+  speed: number;
+}
+
+interface AmbientBit {
+  x: number;
+  y: number;
+  z: number;
+  vx: number;
+  vy: number;
+  vz: number;
+  phase: number;
+  s: number;
+}
+
+function hashSeed(str: string): number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return h >>> 0;
+}
+
+/** Greedy connected wall components (4-connected). */
+function getWallComponents(mapData: EngineMapData): [number, number][][] {
+  const { nx, ny, cells } = mapData;
+  const seen = new Uint8Array(nx * ny);
+  const out: [number, number][][] = [];
+  for (let y = 0; y < ny; y++) {
+    for (let x = 0; x < nx; x++) {
+      const i = y * nx + x;
+      if (cells[i] !== CellType.WALL || seen[i]) continue;
+      const st: [number, number][] = [[x, y]];
+      const comp: [number, number][] = [];
+      seen[i] = 1;
+      while (st.length > 0) {
+        const [cx, cy] = st.pop()!;
+        comp.push([cx, cy]);
+        for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+          const xx = cx + dx, yy = cy + dy;
+          if (xx >= 0 && yy >= 0 && xx < nx && yy < ny) {
+            const ni = yy * nx + xx;
+            if (cells[ni] === CellType.WALL && !seen[ni]) {
+              seen[ni] = 1;
+              st.push([xx, yy]);
+            }
+          }
+        }
+      }
+      out.push(comp);
+    }
+  }
+  return out;
+}
+
+/** Split a set of wall cells greedily into maximal rectangles `(x0, y0, w, h)` within the same wave. */
+function rectsOfCells(
+  cells: [number, number][],
+  mapData: EngineMapData,
+  maxSpan = 99,
+): [number, number, number, number][] {
+  const left = new Set<string>(cells.map(([x, y]) => `${x},${y}`));
+  const waveOf = (x: number, y: number) => mapData.waves[y * mapData.nx + x];
+  const sorted = cells.slice().sort((a, b) => (a[1] !== b[1] ? a[1] - b[1] : a[0] - b[0]));
+  const out: [number, number, number, number][] = [];
+  for (const [x, y] of sorted) {
+    if (!left.has(`${x},${y}`)) continue;
+    const wv = waveOf(x, y);
+    let w = 1;
+    while (w < maxSpan && left.has(`${x + w},${y}`) && waveOf(x + w, y) === wv) w++;
+    let h = 1;
+    while (h < maxSpan) {
+      let ok = true;
+      for (let xx = x; xx < x + w; xx++) {
+        if (!left.has(`${xx},${y + h}`) || waveOf(xx, y + h) !== wv) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok) break;
+      h++;
+    }
+    for (let yy = y; yy < y + h; yy++) {
+      for (let xx = x; xx < x + w; xx++) {
+        left.delete(`${xx},${yy}`);
+      }
+    }
+    out.push([x, y, w, h]);
+  }
+  return out;
+}
+
+/** Build a fluffy multi-puff cloud BufferGeometry (4 merged soft spheres) for instancing. */
+function buildFluffyCloudGeometry(): THREE.BufferGeometry {
+  const puffs: [number, number, number, number, number, number][] = [
+    [0, 0, 0, 1.0, 0.56, 0.85],
+    [-0.72, -0.08, 0.14, 0.68, 0.44, 0.64],
+    [0.74, -0.06, -0.1, 0.66, 0.42, 0.62],
+    [0.14, 0.24, 0.08, 0.62, 0.46, 0.58],
+  ];
+  const pos: number[] = [];
+  const nrm: number[] = [];
+  const sph = ICO1;
+  for (const [ox, oy, oz, rx, ry, rz] of puffs) {
+    for (const [a, b, c] of sph.tris) {
+      const va = sph.verts[a];
+      const vb = sph.verts[b];
+      const vc = sph.verts[c];
+      pos.push(
+        ox + va[0] * rx, oy + va[1] * ry, oz + va[2] * rz,
+        ox + vb[0] * rx, oy + vb[1] * ry, oz + vb[2] * rz,
+        ox + vc[0] * rx, oy + vc[1] * ry, oz + vc[2] * rz,
+      );
+      nrm.push(va[0], va[1], va[2], vb[0], vb[1], vb[2], vc[0], vc[1], vc[2]);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nrm, 3));
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+/**
+ * High-Quality Arena Builder faithfully porting the open-source
+ * `chen-006/meow-ai-arena` Blender look into real-time WebGL2!
+ */
+export class HqArenaMap3D implements IArenaMap {
+  public readonly root = new THREE.Group();
+  public readonly mapData: EngineMapData;
+  public readonly hqTheme: HqThemeSpec;
+  public readonly widthM: number;
+  public readonly heightM: number;
+
+  private readonly chunks: CollapseChunk[] = [];
+  private readonly cellChunkId: Int32Array;
+  private readonly occluders: OccluderEntry[] = [];
+  private readonly grassClusters: GrassClusterRef[] = [];
+  private readonly groundResult: PaintedGroundResult;
+
+  private cloudMesh!: THREE.InstancedMesh;
+  private cloudData: CloudInfo[] = [];
+  private ambientMesh: THREE.InstancedMesh | null = null;
+  private ambientData: AmbientBit[] = [];
+  private waterfallGroup: THREE.Group | null = null;
+  private waterfallStreaks: THREE.Mesh[] = [];
+  private waterfallMist: THREE.Mesh[] = [];
+
+  private readonly _dummy = new THREE.Object3D();
+  private readonly _dirScratch = new THREE.Vector3();
+  private readonly _warnCol = new THREE.Color('#ff5d1f');
+  private readonly _black = new THREE.Color(0x000000);
+  private readonly waveMaxDist = new Map<number, number>();
+
+  constructor(mapData: EngineMapData, themeName: string) {
+    this.mapData = mapData;
+    this.hqTheme = getHqTheme(themeName);
+    const cs = mapData.cell / 1000;
+    this.widthM = mapData.nx * cs;
+    this.heightM = mapData.ny * cs;
+    this.cellChunkId = new Int32Array(mapData.nx * mapData.ny).fill(-1);
+
+    const seed = hashSeed(`${mapData.name}_${themeName}_hq`);
+    const rng = new SeededRng(seed);
+
+    // 1. Paint procedural ground Canvas2D texture + dirt/quiet masks + bridges
+    this.groundResult = paintHighQualityGround(mapData, this.hqTheme, seed + 13);
+
+    // 2. Partition cells into permanent core + per-wave collapse chunks & build rounded islands + stratified cliffs
+    this.buildTerrainChunks(rng);
+
+    // 3. Build detailed themed obstacles/structures (each individually occludable in close-up!)
+    this.buildObstacles(rng);
+
+    // 4. Build lush multi-segment curved tall grass + tip flowers
+    this.buildTallGrass(rng);
+
+    // 5. Build field features (oldtown fountain, sunset/canyon bridge posts & ropes) & ground details
+    this.buildFieldAndDetails(rng);
+
+    // 6. Build surrounding scenic floating background islands + landmarks + animated waterfall
+    this.buildOuterDecor(rng);
+
+    // 7. Build fluffy multi-puff cloud sea & ambient floating petals/snow/leaves
+    this.buildClouds(rng);
+    this.buildAmbientParticles(rng);
+  }
+
+  private getChunkForCell(gx: number, gy: number): CollapseChunk {
+    const { nx, ny } = this.mapData;
+    const cx = Math.max(0, Math.min(nx - 1, gx));
+    const cy = Math.max(0, Math.min(ny - 1, gy));
+    const cid = this.cellChunkId[cy * nx + cx];
+    if (cid >= 0 && cid < this.chunks.length) return this.chunks[cid];
+    return this.chunks[0];
+  }
+
+  private getChunkForWorld(mx: number, my: number): CollapseChunk {
+    const cs = this.mapData.cell / 1000;
+    return this.getChunkForCell(Math.floor(mx / cs), Math.floor(my / cs));
+  }
+
+  private registerOccluder(meshes: THREE.Mesh[], materials: THREE.Material[], wave: number, isGrass = false) {
+    const box = new THREE.Box3();
+    for (const m of meshes) {
+      m.updateMatrixWorld(true);
+      m.geometry.computeBoundingBox();
+      if (m.geometry.boundingBox) {
+        const mb = m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld);
+        box.union(mb);
+      }
+    }
+    if (box.isEmpty()) return;
+    this.occluders.push({
+      materials,
+      baseOpacities: materials.map((m) => m.opacity),
+      box,
+      isGrass,
+      minOpacity: isGrass ? 0.34 : 0.24,
+      curOpacity: 1.0,
+      wave,
+    });
+  }
+
+  private buildTerrainChunks(rng: SeededRng) {
+    const { nx, ny, cells, waves, cell } = this.mapData;
+    const cs = cell / 1000;
+    const P = this.hqTheme.pal;
+    const { texture, mg } = this.groundResult;
+    const Wm = this.widthM;
+    const Hm = this.heightM;
+
+    // Group solid cells into chunks: wave === -1 -> chunk 0; wave >= 0 -> 2x2 cell blocks per wave
+    const chunkCellsMap = new Map<string, { wave: number; cells: [number, number][] }>();
+    chunkCellsMap.set('perm', { wave: -1, cells: [] });
+
+    for (let gy = 0; gy < ny; gy++) {
+      for (let gx = 0; gx < nx; gx++) {
+        const idx = gy * nx + gx;
+        if (cells[idx] === CellType.PIT) continue;
+        const w = waves[idx];
+        const key = w < 0 ? 'perm' : `w${w}_${Math.floor(gx / 2)}_${Math.floor(gy / 2)}`;
+        let entry = chunkCellsMap.get(key);
+        if (!entry) {
+          entry = { wave: w, cells: [] };
+          chunkCellsMap.set(key, entry);
+        }
+        entry.cells.push([gx, gy]);
+      }
+    }
+
+    const isSolid = (gx: number, gy: number) =>
+      gx >= 0 && gy >= 0 && gx < nx && gy < ny && cells[gy * nx + gx] !== CellType.PIT;
+    const waveAt = (gx: number, gy: number) =>
+      gx >= 0 && gy >= 0 && gx < nx && gy < ny ? waves[gy * nx + gx] : -99;
+
+    const cLip = hexLin(P.lip);
+    const cSoil = hexLin(P.soil);
+    const cRockA = hexLin(P.rock_a);
+    const cRockB = hexLin(P.rock_b);
+    const cRockC = hexLin(P.rock_c);
+    const cRockDeep = hexLin(P.rock_deep);
+    const cRockUnder = hexLin(P.rock_under);
+    const cLedge = hexLin(P.ledge_hi);
+
+    const uvU = (wx: number) => (wx + mg) / (Wm + 2 * mg);
+    const uvV = (wz: number) => 1.0 - (wz + mg) / (Hm + 2 * mg);
+
+    // Deterministic smooth spatial hash keyed purely by vertex (wx, wz) so adjacent cliff faces
+    // share EXACT 3D corner positions -> 100% watertight with zero gaps or vertical slits!
+    const vertNoise = (wx: number, wz: number): number => {
+      const qx = Math.round(wx * 20) * 0.05;
+      const qz = Math.round(wz * 20) * 0.05;
+      const h = Math.sin(qx * 3.71 + qz * 5.23) * 43758.5453;
+      return h - Math.floor(h);
+    };
+
+    // Pre-populate cellChunkId for ALL chunks before building geometry so cross-chunk edges are exact
+    const chunkList = Array.from(chunkCellsMap.values());
+    chunkList.forEach((info, cid) => {
+      for (const [gx, gy] of info.cells) {
+        this.cellChunkId[gy * nx + gx] = cid;
+      }
+    });
+
+    // Compute a GLOBAL outer-pit outward normal at every perimeter vertex `(wx, wz)` across the entire map.
+    // Because adjacent collapse chunks read the EXACT same global normal at shared outer corners (and ignore
+    // internal fracture edges), adjacent cliff faces meet 100% seamlessly with ZERO V-notches or slits!
+    const globalOuterOut = new Map<string, [number, number]>();
+    const vKey = (wx: number, wz: number) => `${Math.round(wx * 40)}_${Math.round(wz * 40)}`;
+    const accumGlobalOut = (wx: number, wz: number, ox: number, oz: number) => {
+      const k = vKey(wx, wz);
+      let cur = globalOuterOut.get(k);
+      if (!cur) {
+        cur = [0, 0];
+        globalOuterOut.set(k, cur);
+      }
+      cur[0] += ox;
+      cur[1] += oz;
+    };
+
+    const rBevel = cs * 0.32;
+    for (let gy = 0; gy < ny; gy++) {
+      for (let gx = 0; gx < nx; gx++) {
+        if (!isSolid(gx, gy)) continue;
+        const x0 = gx * cs, x1 = (gx + 1) * cs, z0 = gy * cs, z1 = (gy + 1) * cs;
+        const pitN = !isSolid(gx, gy - 1);
+        const pitS = !isSolid(gx, gy + 1);
+        const pitW = !isSolid(gx - 1, gy);
+        const pitE = !isSolid(gx + 1, gy);
+        const bevelNW = pitN && pitW;
+        const bevelNE = pitN && pitE;
+        const bevelSE = pitS && pitE;
+        const bevelSW = pitS && pitW;
+
+        if (pitN) {
+          accumGlobalOut(bevelNW ? x0 + rBevel : x0, z0, 0, -1);
+          accumGlobalOut(bevelNE ? x1 - rBevel : x1, z0, 0, -1);
+        }
+        if (bevelNE) {
+          accumGlobalOut(x1 - rBevel, z0, 0.7071, -0.7071);
+          accumGlobalOut(x1, z0 + rBevel, 0.7071, -0.7071);
+        }
+        if (pitE) {
+          accumGlobalOut(x1, bevelNE ? z0 + rBevel : z0, 1, 0);
+          accumGlobalOut(x1, bevelSE ? z1 - rBevel : z1, 1, 0);
+        }
+        if (bevelSE) {
+          accumGlobalOut(x1, z1 - rBevel, 0.7071, 0.7071);
+          accumGlobalOut(x1 - rBevel, z1, 0.7071, 0.7071);
+        }
+        if (pitS) {
+          accumGlobalOut(bevelSE ? x1 - rBevel : x1, z1, 0, 1);
+          accumGlobalOut(bevelSW ? x0 + rBevel : x0, z1, 0, 1);
+        }
+        if (bevelSW) {
+          accumGlobalOut(x0 + rBevel, z1, -0.7071, 0.7071);
+          accumGlobalOut(x0, z1 - rBevel, -0.7071, 0.7071);
+        }
+        if (pitW) {
+          accumGlobalOut(x0, bevelSW ? z1 - rBevel : z1, -1, 0);
+          accumGlobalOut(x0, bevelNW ? z0 + rBevel : z0, -1, 0);
+        }
+        if (bevelNW) {
+          accumGlobalOut(x0, z0 + rBevel, -0.7071, -0.7071);
+          accumGlobalOut(x0 + rBevel, z0, -0.7071, -0.7071);
+        }
+      }
+    }
+
+    const globalCornerPos = (wx: number, wz: number, inset: number, y: number): Vec3 => {
+      if (inset === 0) return [wx, y, wz];
+      const v = globalOuterOut.get(vKey(wx, wz));
+      if (!v) return [wx, y, wz];
+      const len = Math.hypot(v[0], v[1]) || 1;
+      return [wx - (v[0] / len) * inset, y, wz - (v[1] / len) * inset];
+    };
+
+    chunkList.forEach((info, chunkIdx) => {
+      const grp = new THREE.Group();
+      let sx = 0, sz = 0;
+      for (const [gx, gy] of info.cells) {
+        sx += (gx + 0.5) * cs;
+        sz += (gy + 0.5) * cs;
+      }
+      const nCells = Math.max(1, info.cells.length);
+      const cx = info.wave < 0 ? 0 : sx / nCells;
+      const cz = info.wave < 0 ? 0 : sz / nCells;
+      grp.position.set(cx, 0, cz);
+      this.root.add(grp);
+
+      const distFromCenter = Math.hypot(cx - Wm * 0.5, cz - Hm * 0.5);
+      if (info.wave >= 0) {
+        this.waveMaxDist.set(info.wave, Math.max(this.waveMaxDist.get(info.wave) ?? 0.1, distFromCenter));
+      }
+
+      // Build top surface geometry (textured) + watertight stratified faceted cliff geometry (vertex colors)
+      const topPos: number[] = [];
+      const topNrm: number[] = [];
+      const topUv: number[] = [];
+      const cliffPos: number[] = [];
+      const cliffNrm: number[] = [];
+      const cliffCol: number[] = [];
+
+      const pushTopTri = (ax: number, az: number, bx: number, bz: number, dx: number, dz: number) => {
+        topPos.push(ax - cx, 0, az - cz, bx - cx, 0, bz - cz, dx - cx, 0, dz - cz);
+        topNrm.push(0, 1, 0, 0, 1, 0, 0, 1, 0);
+        topUv.push(uvU(ax), uvV(az), uvU(bx), uvV(bz), uvU(dx), uvV(dz));
+      };
+
+      const pushCliffQuad = (
+        p0: Vec3,
+        p1: Vec3,
+        p2: Vec3,
+        p3: Vec3,
+        col: LinRGB,
+      ) => {
+        const ax = p0[0] - cx, ay = p0[1], az = p0[2] - cz;
+        const bx = p1[0] - cx, by = p1[1], bz = p1[2] - cz;
+        const ex = p2[0] - cx, ey = p2[1], ez = p2[2] - cz;
+        const fx = p3[0] - cx, fy = p3[1], fz = p3[2] - cz;
+        const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+        const e2x = ex - ax, e2y = ey - ay, e2z = ez - az;
+        let nx_ = e1y * e2z - e1z * e2y;
+        let ny_ = e1z * e2x - e1x * e2z;
+        let nz_ = e1x * e2y - e1y * e2x;
+        const nl = Math.hypot(nx_, ny_, nz_) || 1;
+        nx_ /= nl;
+        ny_ /= nl;
+        nz_ /= nl;
+
+        cliffPos.push(ax, ay, az, bx, by, bz, ex, ey, ez, ax, ay, az, ex, ey, ez, fx, fy, fz);
+        for (let k = 0; k < 6; k++) {
+          cliffNrm.push(nx_, ny_, nz_);
+          cliffCol.push(col[0], col[1], col[2]);
+        }
+      };
+
+      interface ExposedSeg {
+        ax: number;
+        az: number;
+        bx: number;
+        bz: number;
+        outerPit: boolean;
+        seed: number;
+      }
+      const exposedSegs: ExposedSeg[] = [];
+
+      for (const [gx, gy] of info.cells) {
+        const x0 = gx * cs;
+        const x1 = (gx + 1) * cs;
+        const z0 = gy * cs;
+        const z1 = (gy + 1) * cs;
+        const mx = (x0 + x1) * 0.5;
+        const mz = (z0 + z1) * 0.5;
+
+        const pitN = !isSolid(gx, gy - 1);
+        const pitS = !isSolid(gx, gy + 1);
+        const pitW = !isSolid(gx - 1, gy);
+        const pitE = !isSolid(gx + 1, gy);
+
+        const bevelNW = pitN && pitW;
+        const bevelNE = pitN && pitE;
+        const bevelSE = pitS && pitE;
+        const bevelSW = pitS && pitW;
+
+        interface PerimSeg {
+          ax: number;
+          az: number;
+          bx: number;
+          bz: number;
+          ox: number;
+          oz: number;
+          outerPit: boolean;
+          exposed: boolean;
+          seed: number;
+        }
+        const segs: PerimSeg[] = [];
+        const addDiff = (nx_: number, ny_: number) => {
+          if (!isSolid(nx_, ny_)) return { exposed: true, outerPit: true };
+          const nw = waveAt(nx_, ny_);
+          if (nw !== info.wave) return { exposed: true, outerPit: false };
+          if (info.wave >= 0) {
+            const otherCid = this.cellChunkId[ny_ * nx + nx_];
+            if (otherCid !== chunkIdx) return { exposed: true, outerPit: false };
+          }
+          return { exposed: false, outerPit: false };
+        };
+
+        const dN = addDiff(gx, gy - 1);
+        const dE = addDiff(gx + 1, gy);
+        const dS = addDiff(gx, gy + 1);
+        const dW = addDiff(gx - 1, gy);
+
+        segs.push({
+          ax: bevelNW ? x0 + rBevel : x0,
+          az: z0,
+          bx: bevelNE ? x1 - rBevel : x1,
+          bz: z0,
+          ox: 0,
+          oz: -1,
+          outerPit: dN.outerPit,
+          exposed: dN.exposed,
+          seed: gx * 13 + gy * 31 + 1,
+        });
+        if (bevelNE) {
+          segs.push({
+            ax: x1 - rBevel,
+            az: z0,
+            bx: x1,
+            bz: z0 + rBevel,
+            ox: 0.7071,
+            oz: -0.7071,
+            outerPit: true,
+            exposed: true,
+            seed: gx * 17 + gy * 29 + 2,
+          });
+        }
+        segs.push({
+          ax: x1,
+          az: bevelNE ? z0 + rBevel : z0,
+          bx: x1,
+          bz: bevelSE ? z1 - rBevel : z1,
+          ox: 1,
+          oz: 0,
+          outerPit: dE.outerPit,
+          exposed: dE.exposed,
+          seed: gx * 19 + gy * 37 + 3,
+        });
+        if (bevelSE) {
+          segs.push({
+            ax: x1,
+            az: z1 - rBevel,
+            bx: x1 - rBevel,
+            bz: z1,
+            ox: 0.7071,
+            oz: 0.7071,
+            outerPit: true,
+            exposed: true,
+            seed: gx * 23 + gy * 41 + 4,
+          });
+        }
+        segs.push({
+          ax: bevelSE ? x1 - rBevel : x1,
+          az: z1,
+          bx: bevelSW ? x0 + rBevel : x0,
+          bz: z1,
+          ox: 0,
+          oz: 1,
+          outerPit: dS.outerPit,
+          exposed: dS.exposed,
+          seed: gx * 29 + gy * 43 + 5,
+        });
+        if (bevelSW) {
+          segs.push({
+            ax: x0 + rBevel,
+            az: z1,
+            bx: x0,
+            bz: z1 - rBevel,
+            ox: -0.7071,
+            oz: 0.7071,
+            outerPit: true,
+            exposed: true,
+            seed: gx * 31 + gy * 47 + 6,
+          });
+        }
+        segs.push({
+          ax: x0,
+          az: bevelSW ? z1 - rBevel : z1,
+          bx: x0,
+          bz: bevelNW ? z0 + rBevel : z0,
+          ox: -1,
+          oz: 0,
+          outerPit: dW.outerPit,
+          exposed: dW.exposed,
+          seed: gx * 37 + gy * 53 + 7,
+        });
+        if (bevelNW) {
+          segs.push({
+            ax: x0,
+            az: z0 + rBevel,
+            bx: x0 + rBevel,
+            bz: z0,
+            ox: -0.7071,
+            oz: -0.7071,
+            outerPit: true,
+            exposed: true,
+            seed: gx * 41 + gy * 59 + 8,
+          });
+        }
+
+        for (const s of segs) {
+          pushTopTri(mx, mz, s.bx, s.bz, s.ax, s.az);
+          if (s.exposed) {
+            exposedSegs.push({ ax: s.ax, az: s.az, bx: s.bx, bz: s.bz, outerPit: s.outerPit, seed: s.seed });
+          }
+        }
+      }
+
+      for (const es of exposedSegs) {
+        const { ax, az, bx, bz, outerPit, seed: facetSeed } = es;
+        const fNoise = Math.sin(facetSeed * 12.9898) * 43758.5453;
+        const fv = fNoise - Math.floor(fNoise);
+        const shade = 0.94 + fv * 0.12;
+        const va = vertNoise(ax, az);
+        const vb = vertNoise(bx, bz);
+        const depthA = outerPit ? 1.75 + va * 0.38 : 1.18;
+        const depthB = outerPit ? 1.75 + vb * 0.38 : 1.18;
+        const yStart = outerPit ? 0.0 : -0.012;
+
+        // Outer cliff tapers seamlessly using shared global outward normals; internal fracture walls stay
+        // crisp & vertical so neighboring chunks meet flush with zero triangular notches!
+        const bands: [number, number, number, number, LinRGB][] = outerPit
+          ? [
+              [yStart, yStart, 0.0, 0.0, scaleLin(cLip, shade)],
+              [-0.12, -0.12, 0.0, 0.0, scaleLin(cSoil, shade)],
+              [-0.28, -0.28, 0.015, 0.015, scaleLin(cRockA, shade)],
+              [-0.76, -0.76, 0.06 + va * 0.02, 0.06 + vb * 0.02, scaleLin(cRockB, shade)],
+              [-1.28, -1.28, 0.14 + va * 0.035, 0.14 + vb * 0.035, scaleLin(cRockC, shade * 0.97)],
+              [-depthA, -depthB, 0.28 + va * 0.05, 0.28 + vb * 0.05, scaleLin(cRockDeep, shade * 0.94)],
+              [-depthA - 0.32, -depthB - 0.32, 0.52, 0.52, scaleLin(cRockUnder, shade * 0.94)],
+            ]
+          : [
+              [yStart, yStart, 0.0, 0.0, scaleLin(cLip, shade)],
+              [-0.12, -0.12, 0.0, 0.0, scaleLin(cSoil, shade)],
+              [-0.3, -0.3, 0.0, 0.0, scaleLin(cRockA, shade)],
+              [-0.78, -0.78, 0.0, 0.0, scaleLin(cRockB, shade)],
+              [-depthA, -depthB, 0.0, 0.0, scaleLin(cRockC, shade * 0.96)],
+            ];
+
+        for (let k = 0; k < bands.length - 1; k++) {
+          const [ya0, yb0, inA0, inB0, col] = bands[k];
+          const [ya1, yb1, inA1, inB1] = bands[k + 1];
+          const p0 = outerPit ? globalCornerPos(ax, az, inA0, ya0) : ([ax, ya0, az] as Vec3);
+          const p1 = outerPit ? globalCornerPos(bx, bz, inB0, yb0) : ([bx, yb0, bz] as Vec3);
+          const p2 = outerPit ? globalCornerPos(bx, bz, inB1, yb1) : ([bx, yb1, bz] as Vec3);
+          const p3 = outerPit ? globalCornerPos(ax, az, inA1, ya1) : ([ax, ya1, az] as Vec3);
+          pushCliffQuad(p0, p1, p2, p3, col);
+        }
+      }
+
+      const warnMaterials: THREE.MeshLambertMaterial[] = [];
+
+      if (topPos.length > 0) {
+        const topGeo = new THREE.BufferGeometry();
+        topGeo.setAttribute('position', new THREE.Float32BufferAttribute(topPos, 3));
+        topGeo.setAttribute('normal', new THREE.Float32BufferAttribute(topNrm, 3));
+        topGeo.setAttribute('uv', new THREE.Float32BufferAttribute(topUv, 2));
+        topGeo.computeBoundingSphere();
+        const topMat = new THREE.MeshLambertMaterial({ map: texture });
+        const topMesh = new THREE.Mesh(topGeo, topMat);
+        topMesh.receiveShadow = true;
+        grp.add(topMesh);
+        warnMaterials.push(topMat);
+      }
+
+      if (cliffPos.length > 0) {
+        const cliffGeo = new THREE.BufferGeometry();
+        cliffGeo.setAttribute('position', new THREE.Float32BufferAttribute(cliffPos, 3));
+        cliffGeo.setAttribute('normal', new THREE.Float32BufferAttribute(cliffNrm, 3));
+        cliffGeo.setAttribute('color', new THREE.Float32BufferAttribute(cliffCol, 3));
+        cliffGeo.computeBoundingSphere();
+        const cliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+        const cliffMesh = new THREE.Mesh(cliffGeo, cliffMat);
+        cliffMesh.castShadow = false;
+        cliffMesh.receiveShadow = false;
+        grp.add(cliffMesh);
+        warnMaterials.push(cliffMat);
+      }
+
+      this.chunks.push({
+        id: chunkIdx,
+        wave: info.wave,
+        group: grp,
+        cx,
+        cz,
+        distFromCenter,
+        rnd: [rng.next(), rng.next(), rng.next(), rng.next(), rng.next(), rng.next()],
+        warnMaterials,
+        modified: false,
+      });
+    });
+  }
+
+  private buildObstacles(rng: SeededRng) {
+    const cs = this.mapData.cell / 1000;
+    const P = this.hqTheme.pal;
+    const R = this.hqTheme.rock;
+    const used = new Set<string>();
+
+    // Helper: attach an HqMeshBuilder to its chunk (shifting coords into chunk-local space) & register occluder
+    const commitObstacle = (mb: HqMeshBuilder, worldX: number, worldZ: number) => {
+      if (!mb.hasAny()) return;
+      const chunk = this.getChunkForWorld(worldX, worldZ);
+      const { meshes, ownedMaterials } = mb.buildMeshes({ castShadow: true, receiveShadow: true });
+      const localGrp = new THREE.Group();
+      localGrp.position.set(-chunk.cx, 0, -chunk.cz);
+      for (const m of meshes) localGrp.add(m);
+      chunk.group.add(localGrp);
+      this.registerOccluder(meshes, ownedMaterials, chunk.wave, false);
+    };
+
+    const components = getWallComponents(this.mapData);
+
+    // 1. Structure-level themed obstacles (`garden`, `houses`, `trees`, `masonry`)
+    if (R.kind === 'garden') {
+      const k1 = Math.max(1, Math.round(1.0 / cs));
+      const midX = this.widthM * 0.5 / cs;
+      const midY = this.heightM * 0.5 / cs;
+      for (const comp of components) {
+        const cset = new Set(comp.map(([x, y]) => `${x},${y}`));
+        const cands: [number, number][] = [];
+        for (const [x, y] of comp) {
+          let ok = true;
+          for (let i = 0; i < k1 && ok; i++) {
+            for (let j = 0; j < k1 && ok; j++) {
+              if (!cset.has(`${x + i},${y + j}`)) ok = false;
+            }
+          }
+          if (ok) cands.push([x, y]);
+        }
+        if (cands.length === 0) continue;
+        cands.sort((a, b) => (b[0] - midX) ** 2 + (b[1] - midY) ** 2 - ((a[0] - midX) ** 2 + (a[1] - midY) ** 2));
+        const [x0, y0] = cands[0];
+        const tx = (x0 + k1 * 0.5) * cs;
+        const ty = -(y0 + k1 * 0.5) * cs;
+        const a = (k1 * cs) * 0.5;
+        const mb = new HqMeshBuilder();
+        mb.stack(
+          tx,
+          ty,
+          [[a * 1.08, -0.05], [a * 1.04, 0.24], [a * 0.86, 0.36]],
+          [hexLin(P.stone_side), hexLin(P.stone_lit)],
+          { n: 7, jitter: 0.08, rng, cap: hexLin(P.moss) },
+        );
+        addArenaTree(mb, tx, ty, a * 0.6, rng, {
+          trunk: ['#6E4A48', '#553838'],
+          crown: ['#E06C98', '#F7A6C0', '#FFE2EC'],
+          h: 1.2,
+          cr: 2.3,
+          z: 0.32,
+          knot: false,
+          blobs: 6,
+        });
+        commitObstacle(mb, tx, -ty);
+        for (let i = 0; i < k1; i++) {
+          for (let j = 0; j < k1; j++) {
+            used.add(`${x0 + i},${y0 + j}`);
+          }
+        }
+      }
+    } else if (R.kind === 'houses') {
+      let hIdx = 1;
+      for (const comp of components) {
+        for (const [x0, y0, w, h] of rectsOfCells(comp, this.mapData, 4)) {
+          const mb = new HqMeshBuilder();
+          const X0 = x0 * cs;
+          const Y0 = -(y0 + h) * cs;
+          addHouse(mb, X0, Y0, w * cs, h * cs, rng, hIdx++);
+          commitObstacle(mb, X0 + w * cs * 0.5, (y0 + h * 0.5) * cs);
+        }
+        for (const [x, y] of comp) used.add(`${x},${y}`);
+      }
+    } else if (R.kind === 'trees') {
+      const k1 = Math.max(1, Math.round(1.0 / cs));
+      const crownChoices: [string, string, string][] = [
+        P.crown_pal ?? ['#2F8050', '#4FA65C', '#9AD476'],
+        ['#2F8050', '#5CB058', '#BCE070'],
+        ['#22705A', '#3C9670', '#86CCA0'],
+      ];
+      for (const comp of components) {
+        for (const [x0, y0, w, h] of rectsOfCells(comp, this.mapData, 4)) {
+          const nx = Math.max(1, Math.floor(w / k1));
+          const ny = Math.max(1, Math.floor(h / k1));
+          const sw = (w * cs) / nx;
+          const sh = (h * cs) / ny;
+          for (let jy = 0; jy < ny; jy++) {
+            for (let jx = 0; jx < nx; jx++) {
+              const tx = x0 * cs + (jx + 0.5) * sw;
+              const tz = y0 * cs + (jy + 0.5) * sh;
+              const mb = new HqMeshBuilder();
+              addArenaTree(mb, tx, -tz, Math.min(sw, sh) * 0.5, rng, {
+                crown: rng.choice(crownChoices),
+                h: rng.uniform(1.2, 1.4),
+                cr: rng.uniform(1.6, 1.85),
+                mush: rng.next() < 0.6,
+              });
+              commitObstacle(mb, tx, tz);
+            }
+          }
+        }
+        for (const [x, y] of comp) used.add(`${x},${y}`);
+      }
+    } else if (R.kind === 'masonry') {
+      const isW = (x: number, y: number) =>
+        x >= 0 && y >= 0 && x < this.mapData.nx && y < this.mapData.ny && this.mapData.cells[y * this.mapData.nx + x] === CellType.WALL;
+      const stones = [hexLin(P.stone_lit), hexLin(P.stone_top), hexLin(P.stone_side), hexLin(P.stone_lit, 1.06)];
+      const dark = hexLin(P.stone_base);
+      const moss = hexLin(P.moss);
+      const ch = 0.29;
+
+      for (const comp of components) {
+        for (const [rx, ry, rw, rh] of rectsOfCells(comp, this.mapData, 3)) {
+          const mb = new HqMeshBuilder();
+          for (let y = ry; y < ry + rh; y++) {
+            for (let x = rx; x < rx + rw; x++) {
+              const nb =
+                (isW(x + 1, y) ? 1 : 0) + (isW(x - 1, y) ? 1 : 0) + (isW(x, y + 1) ? 1 : 0) + (isW(x, y - 1) ? 1 : 0);
+              const f = 0.5 + 0.5 * Math.sin(x * 0.83 + 1.3) * Math.cos(y * 0.97 + 0.4);
+              const nc = Math.min(5, Math.max(2, 3 + Math.round(1.7 * f) + (nb >= 3 ? 1 : 0) - (nb <= 1 ? 1 : 0)));
+              const X0 = x * cs;
+              const Y0 = -(y + 1) * cs;
+              const horiz = isW(x - 1, y) || isW(x + 1, y);
+              mb.box(X0 + 0.03, X0 + cs - 0.03, Y0 + 0.03, Y0 + cs - 0.03, -0.03, nc * ch - 0.03, dark);
+              for (let k = 0; k < nc; k++) {
+                const z0 = k * ch + 0.008;
+                const z1 = (k + 1) * ch - 0.008;
+                const last = k === nc - 1;
+                const j = 0.006;
+                const blk = (xa: number, xb: number, ya: number, yb: number) => {
+                  const col = scaleLin(rng.choice(stones), rng.uniform(0.93, 1.05) * (k === 0 ? 0.92 : 1.0));
+                  const topc = last && rng.next() < R.mossy ? moss : scaleLin(col, 1.1);
+                  mb.box(xa + j, xb - j, ya + j, yb - j, z0, z1, col, {
+                    top: topc,
+                    rz: last ? rng.uniform(-0.07, 0.07) : 0,
+                  });
+                };
+                if ((k + x + y) % 2 === 0) blk(X0, X0 + cs, Y0, Y0 + cs);
+                else if (horiz) {
+                  blk(X0, X0 + cs * 0.5, Y0, Y0 + cs);
+                  blk(X0 + cs * 0.5, X0 + cs, Y0, Y0 + cs);
+                } else {
+                  blk(X0, X0 + cs, Y0, Y0 + cs * 0.5);
+                  blk(X0, X0 + cs, Y0 + cs * 0.5, Y0 + cs);
+                }
+              }
+            }
+          }
+          commitObstacle(mb, (rx + rw * 0.5) * cs, (ry + rh * 0.5) * cs);
+        }
+        for (const [x, y] of comp) used.add(`${x},${y}`);
+      }
+    }
+
+    // 2. Remaining wall cells -> `obstacle_rect` (`hoodoo`, `crates`, `menhir`, or faceted `rock_cluster`)
+    const remCells: [number, number][] = [];
+    for (let y = 0; y < this.mapData.ny; y++) {
+      for (let x = 0; x < this.mapData.nx; x++) {
+        if (this.mapData.cells[y * this.mapData.nx + x] === CellType.WALL && !used.has(`${x},${y}`)) {
+          remCells.push([x, y]);
+        }
+      }
+    }
+
+    const maxc = Math.max(1, Math.round(2.0 / cs));
+    for (const [x0, y0, w, h] of rectsOfCells(remCells, this.mapData, maxc)) {
+      const X0 = x0 * cs;
+      const Y0 = -(y0 + h) * cs;
+      const Wd = w * cs;
+      const Hd = h * cs;
+      const cx = X0 + Wd * 0.5;
+      const cy = Y0 + Hd * 0.5;
+      const Lg = Math.max(Wd, Hd);
+      const Sh = Math.min(Wd, Hd);
+      const hk = R.h;
+      const mb = new HqMeshBuilder();
+
+      if (R.kind === 'hoodoo') {
+        const bands = R.bands ?? ['#FFE2A8', '#F2B470', '#E0905A', '#FBD08C'];
+        if (Sh >= 1.9) {
+          addMesa(mb, cx, cy, Wd * 0.5 - 0.04, Hd * 0.5 - 0.04, 1.3 * hk, rng, bands);
+          const sx = rng.choice([-1, 1]);
+          const sy = rng.choice([-1, 1]);
+          addHoodoo(mb, cx + sx * Wd * 0.14, cy + sy * Hd * 0.12, Wd * 0.2, Hd * 0.2, 0.75 * hk, rng, bands, { z: 1.25 * hk });
+        } else if (Lg / Math.max(0.01, Sh) >= 1.6) {
+          const big = rng.next() < 0.5;
+          const defs: [number, number, number][] = [[0.28, 0.27, 1.75], [0.76, 0.22, 1.15]];
+          defs.forEach(([t0, sc, hh], k) => {
+            const t = big ? t0 : 1 - t0;
+            if (Wd > Hd) {
+              addHoodoo(mb, X0 + Wd * t, cy, Wd * sc, Hd * 0.46, hh * hk * (0.7 + 0.3 * Math.min(1, Sh)), rng, bands, { cap: k === 0 });
+            } else {
+              addHoodoo(mb, cx, Y0 + Hd * t, Wd * 0.46, Hd * sc, hh * hk * (0.7 + 0.3 * Math.min(1, Sh)), rng, bands, { cap: k === 0 });
+            }
+          });
+        } else {
+          addHoodoo(mb, cx, cy, Wd * 0.5 - 0.03, Hd * 0.5 - 0.03, (1.05 + 0.75 * Math.min(1, Sh)) * hk * rng.uniform(0.92, 1.08), rng, bands);
+        }
+      } else if (R.kind === 'crates') {
+        const cnx = Math.max(1, Math.round(Wd / 1.0));
+        const cny = Math.max(1, Math.round(Hd / 1.0));
+        const sx = Wd / cnx;
+        const sy = Hd / cny;
+        for (let j = 0; j < cny; j++) {
+          for (let i = 0; i < cnx; i++) {
+            const px = X0 + (i + 0.5) * sx;
+            const py = Y0 + (j + 0.5) * sy;
+            const s = Math.min(sx, sy) - 0.1;
+            if (s >= 0.8 && rng.next() < 0.3) {
+              const br = s * 0.24;
+              for (const [ox, oy] of [[-0.24, -0.2], [0.24, -0.16], [0.0, 0.24]]) {
+                addBarrel(mb, px + ox * s, py + oy * s, br, s * 0.62, 0);
+              }
+              addBarrel(mb, px, py - 0.04 * s, br * 0.92, s * 0.55, s * 0.62);
+            } else {
+              addCrate(mb, px, py, s, 0, rng, rng.uniform(-0.06, 0.06));
+              const s2 = s * rng.uniform(0.5, 0.6);
+              addCrate(mb, px + rng.uniform(-0.1, 0.1) * s, py + rng.uniform(-0.1, 0.1) * s, s2, s + 0.012, rng, rng.uniform(0.2, 0.7));
+            }
+          }
+        }
+      } else if (R.kind === 'menhir') {
+        const mr = { ...R, n: [4, 6] as [number, number], p: 4.5, top: [0.5, 0.68] as [number, number] };
+        if (Sh >= 0.9) {
+          addFacetedRock(mb, cx, cy, Wd * 0.4, Hd * 0.38, rng.uniform(1.9, 2.25) * hk, rng, P, mr, { rot: rng.uniform(-0.3, 0.3) });
+          for (let k = 0; k < 2; k++) {
+            const sx = rng.choice([-1, 1]);
+            const sy = rng.choice([-1, 1]);
+            addFacetedRock(mb, cx + sx * Wd * 0.33, cy + sy * Hd * 0.33, 0.15, 0.13, rng.uniform(0.35, 0.6), rng, P, mr);
+          }
+        } else if (Lg >= 1.4) {
+          const Hh = rng.uniform(1.45, 1.6) * hk;
+          for (const sg of [-1, 1]) {
+            if (Wd > Hd) {
+              addFacetedRock(mb, cx + sg * (Wd * 0.5 - 0.3), cy, 0.27, Hd * 0.42, Hh, rng, P, mr, { rot: rng.uniform(-0.1, 0.1) });
+            } else {
+              addFacetedRock(mb, cx, cy + sg * (Hd * 0.5 - 0.3), Wd * 0.42, 0.27, Hh, rng, P, mr, { rot: rng.uniform(-0.1, 0.1) });
+            }
+          }
+          if (Lg >= 1.9) {
+            addFacetedRock(mb, cx, cy, Wd > Hd ? Wd * 0.2 : Wd * 0.38, Wd > Hd ? Hd * 0.38 : Hd * 0.2, Hh * 0.8, rng, P, mr);
+          }
+          const lintelStyle = { ...mr, top: [0.92, 0.98] as [number, number], n: [4, 5] as [number, number], p: 6.0 };
+          addFacetedRock(
+            mb,
+            cx,
+            cy,
+            Wd > Hd ? Wd * 0.5 - 0.02 : Wd * 0.46,
+            Wd > Hd ? Hd * 0.46 : Hd * 0.5 - 0.02,
+            0.32,
+            rng,
+            P,
+            lintelStyle,
+            { rot: 0, z0: Hh - 0.04 },
+          );
+        } else if (Lg >= 0.9) {
+          [-1, 1].forEach((sg, k) => {
+            const hh = (k === 0 ? 1.7 : 1.15) * hk * rng.uniform(0.92, 1.08);
+            if (Wd > Hd) addFacetedRock(mb, cx + sg * Wd * 0.25, cy, Wd * 0.23, Hd * 0.42, hh, rng, P, mr, { rot: rng.uniform(-0.15, 0.15) });
+            else addFacetedRock(mb, cx, cy + sg * Hd * 0.25, Wd * 0.42, Hd * 0.23, hh, rng, P, mr, { rot: rng.uniform(-0.15, 0.15) });
+          });
+        } else {
+          addFacetedRock(mb, cx, cy, Wd * 0.44, Hd * 0.4, rng.uniform(1.0, 1.4) * hk, rng, P, mr, { rot: rng.uniform(-0.2, 0.2) });
+        }
+      } else {
+        // Faceted rock cluster (`meadow`, `glacier`, remaining `blossom` walls)
+        const hkEff = (0.55 + 0.45 * Math.min(1, Sh)) * hk;
+        const parts: [number, number, number, number, number, boolean][] = [];
+        const ratio = Lg / Math.max(1e-5, Sh);
+        if (ratio >= 1.6) {
+          if (Wd > Hd) {
+            parts.push([X0 + Wd * 0.28, cy, Wd * 0.27, Hd * 0.47, rng.uniform(1.05, 1.3) * hkEff, true]);
+            parts.push([X0 + Wd * 0.76, cy + rng.uniform(-0.03, 0.03), Wd * 0.23, Hd * 0.44, rng.uniform(0.6, 0.8) * hkEff, false]);
+          } else {
+            parts.push([cx, Y0 + Hd * 0.28, Wd * 0.47, Hd * 0.27, rng.uniform(1.05, 1.3) * hkEff, true]);
+            parts.push([cx + rng.uniform(-0.03, 0.03), Y0 + Hd * 0.76, Wd * 0.44, Hd * 0.23, rng.uniform(0.6, 0.8) * hkEff, false]);
+          }
+          if (rng.next() < 0.5) {
+            for (const p of parts) {
+              p[0] = 2 * cx - p[0];
+              p[1] = 2 * cy - p[1];
+            }
+          }
+        } else if (Wd * Hd <= 1.3) {
+          parts.push([cx, cy, Wd * 0.47, Hd * 0.47, rng.uniform(0.95, 1.2) * hkEff, true]);
+        } else {
+          const sx = rng.choice([-1, 1]);
+          const sy = rng.choice([-1, 1]);
+          const A = Wd * 0.5 - 0.03;
+          const B = Hd * 0.5 - 0.03;
+          const bw = A * 0.62, bh = B * 0.62;
+          parts.push([cx + sx * (A - bw), cy + sy * (B - bh), bw, bh, rng.uniform(1.15, 1.4) * hkEff, true]);
+          const mw = A * 0.46, mh = B * 0.46;
+          parts.push([cx - sx * (A - mw), cy - sy * (B - mh), mw, mh, rng.uniform(0.75, 0.95) * hkEff, false]);
+          parts.push([cx - sx * (A - mw * 0.82), cy + sy * (B - mh * 0.82), mw * 0.82, mh * 0.82, rng.uniform(0.5, 0.68) * hkEff, false]);
+          parts.push([cx + sx * (A - mw * 0.8), cy - sy * (B - mh * 0.8), mw * 0.8, mh * 0.8, rng.uniform(0.55, 0.75) * hkEff, false]);
+        }
+        for (const [px, py, a, b, hh, main] of parts) {
+          addFacetedRock(mb, px, py, a, b, hh, rng, P, R, {
+            mossy: main && rng.next() < R.mossy,
+            rot: rng.uniform(-0.25, 0.25),
+          });
+        }
+        if (Sh >= 0.7) {
+          const smCount = rng.int(1, 3);
+          for (let k = 0; k < smCount; k++) {
+            const sx = rng.choice([-1, 1]);
+            const sy = rng.choice([-1, 1]);
+            const r = rng.uniform(0.1, 0.16);
+            addFacetedRock(mb, cx + sx * (Wd * 0.5 - r), cy + sy * (Hd * 0.5 - r), r, r * rng.uniform(0.8, 1.0), rng.uniform(0.16, 0.3), rng, P, R);
+          }
+        }
+      }
+
+      commitObstacle(mb, cx, -cy);
+    }
+  }
+
+  private buildTallGrass(rng: SeededRng) {
+    const { nx, ny, cells, cell } = this.mapData;
+    const cs = cell / 1000;
+    const P = this.hqTheme.pal;
+
+    const grassSet = new Set<string>();
+    const grassCells: [number, number][] = [];
+    for (let y = 0; y < ny; y++) {
+      for (let x = 0; x < nx; x++) {
+        if (cells[y * nx + x] === CellType.GRASS) {
+          grassSet.add(`${x},${y}`);
+          grassCells.push([x, y]);
+        }
+      }
+    }
+    if (grassCells.length === 0) return;
+
+    const baseCol = hexLin(P.tall_base);
+    const midCol = hexLin(P.tall_mid);
+    const tipCol = hexLin(P.tall_tip);
+    const flowerCols = P.tall_flower.map((h) => hexLin(h));
+
+    const openDist = (x: number, y: number, fx: number, fy: number): number => {
+      let d = 1.0;
+      if (!grassSet.has(`${x - 1},${y}`)) d = Math.min(d, fx);
+      if (!grassSet.has(`${x + 1},${y}`)) d = Math.min(d, 1 - fx);
+      if (!grassSet.has(`${x},${y - 1}`)) d = Math.min(d, fy);
+      if (!grassSet.has(`${x},${y + 1}`)) d = Math.min(d, 1 - fy);
+      const cxOpen = (!grassSet.has(`${x - 1},${y}`) && fx < 0.3) || (!grassSet.has(`${x + 1},${y}`) && fx > 0.7);
+      const cyOpen = (!grassSet.has(`${x},${y - 1}`) && fy < 0.3) || (!grassSet.has(`${x},${y + 1}`) && fy > 0.7);
+      if (cxOpen && cyOpen) {
+        const ex = fx < 0.5 ? fx : 1 - fx;
+        const ey = fy < 0.5 ? fy : 1 - fy;
+        d = Math.min(d, 0.3 - Math.hypot(0.3 - ex, 0.3 - ey));
+      }
+      return d * cs;
+    };
+
+    // Group grass cells into 2x2 clusters per chunk so draw calls stay ultra-low while supporting sway & foreground occlusion
+    const clusters = new Map<string, [number, number][]>();
+    for (const [x, y] of grassCells) {
+      const cid = this.getChunkForCell(x, y).id;
+      const key = `${cid}_${Math.floor(x / 2)}_${Math.floor(y / 2)}`;
+      let arr = clusters.get(key);
+      if (!arr) {
+        arr = [];
+        clusters.set(key, arr);
+      }
+      arr.push([x, y]);
+    }
+
+    const bladesPerCell = Math.max(10, Math.round(115 * cs * cs)); // lush & dense, ~28 blades per 0.5m cell!
+
+    for (const [, list] of clusters) {
+      let avgX = 0, avgZ = 0;
+      for (const [x, y] of list) {
+        avgX += (x + 0.5) * cs;
+        avgZ += (y + 0.5) * cs;
+      }
+      avgX /= list.length;
+      avgZ /= list.length;
+
+      const chunk = this.getChunkForCell(list[0][0], list[0][1]);
+      const mb = new HqMeshBuilder();
+
+      for (const [x, y] of list) {
+        for (let i = 0; i < bladesPerCell; i++) {
+          const fx = rng.uniform(-0.03, 1.03);
+          const fy = rng.uniform(-0.03, 1.03);
+          const ed = openDist(x, y, fx, fy);
+          if (ed < -0.02 || (ed < 0.1 && rng.next() < 0.35)) continue;
+
+          const kEdge = Math.min(1, Math.max(0, ed) / 0.28);
+          const hgt = rng.uniform(0.38, 0.66) * (0.6 + 0.4 * kEdge);
+          const wid = rng.uniform(0.048, 0.085);
+          const ang = rng.uniform(0, Math.PI * 2);
+          const ox = fx - 0.5;
+          const oy = fy - 0.5;
+          const lean = hgt * (rng.uniform(0.08, 0.2) + (1 - kEdge) * 0.35);
+          const la = Math.atan2(-oy, ox) + rng.normal(0, 0.6);
+
+          // Local Blender coords centered at cluster center `(avgX, -avgZ)`
+          const bx = (x + fx) * cs - avgX;
+          const by = -((y + fy) * cs - avgZ);
+          const ca = Math.cos(ang);
+          const sa = Math.sin(ang);
+          const lx = Math.cos(la) * lean;
+          const ly = Math.sin(la) * lean;
+
+          const v0: Vec3 = [bx - ca * wid, by - sa * wid, -0.02];
+          const v1: Vec3 = [bx + ca * wid, by + sa * wid, -0.02];
+          const v2: Vec3 = [bx + lx * 0.3 - ca * wid * 0.75, by + ly * 0.3 - sa * wid * 0.75, hgt * 0.45];
+          const v3: Vec3 = [bx + lx * 0.3 + ca * wid * 0.75, by + ly * 0.3 + sa * wid * 0.75, hgt * 0.45];
+          const v4: Vec3 = [bx + lx * 0.75 - ca * wid * 0.35, by + ly * 0.75 - sa * wid * 0.35, hgt * 0.82];
+          const v5: Vec3 = [bx + lx * 0.75 + ca * wid * 0.35, by + ly * 0.75 + sa * wid * 0.35, hgt * 0.82];
+          const v6: Vec3 = [bx + lx, by + ly, hgt];
+
+          const sh = 1 + rng.uniform(-0.07, 0.07);
+          const m2 = scaleLin(midCol, sh);
+          const t2 = scaleLin(tipCol, sh);
+          const mt = lerpLin(m2, t2, 0.5);
+
+          mb.quad(v0, v1, v3, v2, baseCol, 'foliage', baseCol, m2, m2);
+          mb.quad(v2, v3, v5, v4, m2, 'foliage', m2, mt, mt);
+          mb.tri(v4, v5, v6, mt, mt, t2, 'foliage');
+
+          // Little sakura / wildflower buds on blade tips (e.g. blossom theme!)
+          if (flowerCols.length > 0 && kEdge > 0.28 && rng.next() < 0.088) {
+            const fc = rng.choice(flowerCols);
+            const r = rng.uniform(0.04, 0.058);
+            mb.blob(bx + lx, by + ly, hgt + 0.012, r, r, r * 0.75, fc, scaleLin(fc, 1.12), {
+              sub: 0,
+              smooth: false,
+            });
+          }
+        }
+      }
+
+      if (!mb.hasAny()) continue;
+      const { meshes, ownedMaterials } = mb.buildMeshes({ castShadow: false, receiveShadow: true });
+      const gGrp = new THREE.Group();
+      gGrp.position.set(avgX - chunk.cx, 0, avgZ - chunk.cz);
+      for (const m of meshes) gGrp.add(m);
+      chunk.group.add(gGrp);
+
+      this.grassClusters.push({
+        group: gGrp,
+        cx: avgX,
+        cz: avgZ,
+        phase: rng.uniform(0, Math.PI * 2),
+      });
+      this.registerOccluder(meshes, ownedMaterials, chunk.wave, true);
+    }
+  }
+
+  private buildFieldAndDetails(rng: SeededRng) {
+    const { nx, ny, cells, cell } = this.mapData;
+    const cs = cell / 1000;
+    const P = this.hqTheme.pal;
+    const det = this.hqTheme.detail;
+    const { dirt, quiet, ppm, mg, widthPx, heightPx, bridges } = this.groundResult;
+
+    const builders = new Map<number, HqMeshBuilder>();
+    const getB = (chunkId: number) => {
+      let b = builders.get(chunkId);
+      if (!b) {
+        b = new HqMeshBuilder();
+        builders.set(chunkId, b);
+      }
+      return b;
+    };
+
+    const sampleAux = (arr: Float32Array, mx: number, my: number): number => {
+      const ix = Math.round((mx + mg) * ppm);
+      const iy = Math.round((my + mg) * ppm);
+      if (ix < 0 || iy < 0 || ix >= widthPx || iy >= heightPx) return 0;
+      return arr[iy * widthPx + ix];
+    };
+
+    const cellAt = (mx: number, my: number): number => {
+      const gx = Math.floor(mx / cs);
+      const gy = Math.floor(my / cs);
+      if (gx < 0 || gy < 0 || gx >= nx || gy >= ny) return CellType.PIT;
+      return cells[gy * nx + gx];
+    };
+
+    const okFloor = (mx: number, my: number, margin = 0.2): boolean => {
+      if (cellAt(mx, my) !== CellType.FLOOR) return false;
+      for (const [dx, dy] of [[-margin, 0], [margin, 0], [0, -margin], [0, margin]]) {
+        const ct = cellAt(mx + dx, my + dy);
+        if (ct === CellType.WALL || ct === CellType.PIT) return false;
+      }
+      return true;
+    };
+
+    // ---- Field Features: Fountain (oldtown) & Bridges (sunset, canyon) ----
+    if (this.hqTheme.field.includes('fountain')) {
+      const seen = new Uint8Array(nx * ny);
+      for (let y = 0; y < ny; y++) {
+        for (let x = 0; x < nx; x++) {
+          const i = y * nx + x;
+          if (cells[i] !== CellType.PIT || seen[i]) continue;
+          const st: [number, number][] = [[x, y]];
+          const comp: [number, number][] = [];
+          let border = false;
+          seen[i] = 1;
+          while (st.length > 0) {
+            const [cx, cy] = st.pop()!;
+            comp.push([cx, cy]);
+            for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+              const xx = cx + dx, yy = cy + dy;
+              if (xx < 0 || yy < 0 || xx >= nx || yy >= ny) border = true;
+              else {
+                const ni = yy * nx + xx;
+                if (cells[ni] === CellType.PIT && !seen[ni]) {
+                  seen[ni] = 1;
+                  st.push([xx, yy]);
+                }
+              }
+            }
+          }
+          if (border || comp.length < 6 || comp.length > 80) continue;
+          let minX = nx, maxX = 0, minY = ny, maxY = 0;
+          for (const [cx, cy] of comp) {
+            if (cx < minX) minX = cx;
+            if (cx > maxX) maxX = cx;
+            if (cy < minY) minY = cy;
+            if (cy > maxY) maxY = cy;
+          }
+          const rx = ((maxX - minX + 1) * cs) * 0.5;
+          const ry = ((maxY - minY + 1) * cs) * 0.5;
+          const fx = ((minX + maxX + 1) * cs) * 0.5;
+          const fy = -((minY + maxY + 1) * cs) * 0.5;
+          addFountain(getB(0), fx, fy, rx, ry);
+        }
+      }
+    }
+
+    if (this.hqTheme.field.includes('bridges')) {
+      const ropeCol = hexLin('#E8D2A0');
+      for (const br of bridges as BridgeSpec[]) {
+        const px = -br.ay;
+        const py = br.ax;
+        const hl2 = Math.max(0.2, br.hl - 0.12);
+        for (const sa of [-1, 1]) {
+          for (const sp of [-1, 1]) {
+            const mx = br.bx + br.ax * hl2 * sa + px * (br.hw - 0.03) * sp;
+            const my = br.by + br.ay * hl2 * sa + py * (br.hw - 0.03) * sp;
+            const chunk = this.getChunkForWorld(mx - px * 0.15 * sp, my - py * 0.15 * sp);
+            addBridgePost(getB(chunk.id), mx - chunk.cx, -(my - chunk.cz));
+          }
+        }
+        const bChunk = this.getChunkForWorld(br.bx, br.by);
+        const mb = getB(bChunk.id);
+        for (const sp of [-1, 1]) {
+          const pts: Vec3[] = [];
+          for (let i = 0; i < 9; i++) {
+            const t = i / 8;
+            const u = (t * 2 - 1) * hl2;
+            const sag = 0.46 - 0.62 * Math.pow(Math.max(0, 1 - (2 * t - 1) ** 2), 0.8);
+            const off = br.hw + 0.03 + 0.05 * (1 - (2 * t - 1) ** 2);
+            const mx = br.bx + br.ax * u + px * off * sp;
+            const my = br.by + br.ay * u + py * off * sp;
+            pts.push([mx - bChunk.cx, -(my - bChunk.cz), sag]);
+          }
+          mb.tube(pts, 0.022, ropeCol, { seg: 5 });
+        }
+      }
+    }
+
+    // ---- Surface Details (tufts, wildflowers, pebbles, fallen leaves, obstacle base foliage, cliff overhangs, theme extras) ----
+    const gDark = hexLin(P.tuft_dark);
+    const gLight = hexLin(P.tuft_light);
+    const flMain = P.flower_main.map((h) => hexLin(h));
+    const flAcc = P.flower_acc.map((h) => hexLin(h));
+    const flCore = hexLin(P.flower_core);
+    const leafCols = P.leaf_fall.map((h) => hexLin(h));
+    const p0Col = hexLin(P.plant0);
+    const p1Col = hexLin(P.plant1);
+    const pebbleBase = hexLin(P.stone_lit);
+
+    const addTuft = (mx: number, my: number, s = 1.0, lean?: [number, number], nOpt?: number) => {
+      const chunk = this.getChunkForWorld(mx, my);
+      const mb = getB(chunk.id);
+      const cnt = nOpt ?? rng.int(4, 7);
+      for (let k = 0; k < cnt; k++) {
+        const a = rng.uniform(0, Math.PI * 2);
+        const h = rng.uniform(0.08, 0.16) * s;
+        const w = 0.02 * s;
+        const ox = rng.normal(0, 0.03 * s);
+        const oy = rng.normal(0, 0.03 * s);
+        let lx = Math.cos(a) * h * 0.45;
+        let ly = Math.sin(a) * h * 0.45;
+        if (lean) {
+          lx += lean[0] * h * 0.7;
+          ly += lean[1] * h * 0.7;
+        }
+        const bx = mx + ox - chunk.cx;
+        const by = -(my + oy - chunk.cz);
+        const tipC = lerpLin(gDark, gLight, rng.uniform(0.2, 1.0));
+        mb.tri(
+          [bx - w * Math.sin(a), by + w * Math.cos(a), -0.01],
+          [bx + w * Math.sin(a), by - w * Math.cos(a), -0.01],
+          [bx + lx, by - ly, h],
+          gDark,
+          gDark,
+          tipC,
+          'foliage',
+        );
+      }
+    };
+
+    let floorCells = 0;
+    for (let i = 0; i < cells.length; i++) if (cells[i] === CellType.FLOOR) floorCells++;
+    const area = floorCells * cs * cs;
+
+    const wallRects = rectsOfCells(
+      getWallComponents(this.mapData).flat(),
+      this.mapData,
+      Math.max(1, Math.round(2.0 / cs)),
+    );
+
+    // Theme extras (mushroom, fern, cactus, dryshrub, heather, pots, rubble)
+    for (const ex of det.extras) {
+      if (ex === 'pots' || ex === 'rubble') {
+        for (const [x0, y0, w, h] of wallRects) {
+          const reps = 1 + Math.floor(w * cs);
+          for (let k = 0; k < reps; k++) {
+            let mx: number, my: number;
+            if (ex === 'pots') {
+              if (rng.next() < 0.45) continue;
+              mx = (x0 + rng.uniform(0.1, 0.9) * w) * cs;
+              my = (y0 + h) * cs + 0.13;
+            } else {
+              if (rng.next() < 0.5) continue;
+              const side = rng.int(0, 4);
+              const t = rng.uniform(0.05, 0.95);
+              if (side === 0) { mx = (x0 + t * w) * cs; my = y0 * cs - 0.2; }
+              else if (side === 1) { mx = (x0 + t * w) * cs; my = (y0 + h) * cs + 0.2; }
+              else if (side === 2) { mx = x0 * cs - 0.2; my = (y0 + t * h) * cs; }
+              else { mx = (x0 + w) * cs + 0.2; my = (y0 + t * h) * cs; }
+            }
+            if (okFloor(mx, my, 0.1)) {
+              const chunk = this.getChunkForWorld(mx, my);
+              addDetailExtra(getB(chunk.id), ex, mx - chunk.cx, -(my - chunk.cz), rng);
+            }
+          }
+        }
+      } else {
+        const densMap: Record<string, number> = { cactus: 0.06, dryshrub: 0.14, mushroom: 0.16, fern: 0.16, heather: 0.14 };
+        const nTries = Math.round(area * (densMap[ex] ?? 0.1) * 3);
+        for (let t = 0; t < nTries; t++) {
+          const mx = rng.uniform(0, this.widthM);
+          const my = rng.uniform(0, this.heightM);
+          if (!okFloor(mx, my, 0.22) || sampleAux(dirt, mx, my) > 0.15) continue;
+          if (rng.next() > 0.15 + 0.85 * sampleAux(quiet, mx, my)) continue;
+          if (rng.next() < 0.65) continue;
+          const chunk = this.getChunkForWorld(mx, my);
+          addDetailExtra(getB(chunk.id), ex, mx - chunk.cx, -(my - chunk.cz), rng);
+        }
+      }
+    }
+
+    // Scattered grass tufts
+    const nTuft = Math.round(area * det.tuft * 0.75);
+    for (let t = 0; t < nTuft; t++) {
+      const mx = rng.uniform(0, this.widthM);
+      const my = rng.uniform(0, this.heightM);
+      if (okFloor(mx, my, 0.12) && rng.next() > sampleAux(dirt, mx, my) * 0.9) {
+        addTuft(mx, my, rng.uniform(0.8, 1.3));
+      }
+    }
+
+    // Wildflower clusters
+    const nFl = Math.round(area * det.flower);
+    for (let t = 0; t < nFl; t++) {
+      const mx = rng.uniform(0, this.widthM);
+      const my = rng.uniform(0, this.heightM);
+      if (!okFloor(mx, my, 0.25) || sampleAux(dirt, mx, my) > 0.2) continue;
+      if (rng.next() > 0.25 + 0.75 * sampleAux(quiet, mx, my)) continue;
+      const col = rng.next() < 0.8 ? rng.choice(flMain) : rng.choice(flAcc);
+      const spread = rng.uniform(0.14, 0.3);
+      const cnt = rng.int(5, 13);
+      for (let j = 0; j < cnt; j++) {
+        const fx = mx + rng.normal(0, spread);
+        const fy = my + rng.normal(0, spread);
+        if (!okFloor(fx, fy, 0.1)) continue;
+        const r = rng.uniform(0.032, 0.048);
+        const z = rng.uniform(0.05, 0.12);
+        const chunk = this.getChunkForWorld(fx, fy);
+        const mb = getB(chunk.id);
+        mb.blob(fx - chunk.cx, -(fy - chunk.cz), z, r, r, r * 0.6, col, col, { sub: 0, smooth: false });
+        mb.blob(fx - chunk.cx, -(fy - chunk.cz), z + r * 0.35, r * 0.4, r * 0.4, r * 0.5, flCore, flCore, { sub: 0, smooth: false });
+        addTuft(fx, fy, 0.55, undefined, 2);
+      }
+    }
+
+    // Road-edge 3D pebbles
+    const nPeb = Math.round(area * det.pebble);
+    for (let t = 0; t < nPeb; t++) {
+      const mx = rng.uniform(0, this.widthM);
+      const my = rng.uniform(0, this.heightM);
+      const d = sampleAux(dirt, mx, my);
+      if (!okFloor(mx, my, 0.15) || d <= 0.15 || d >= 0.9 || rng.next() < 0.5) continue;
+      const chunk = this.getChunkForWorld(mx, my);
+      const mb = getB(chunk.id);
+      const cnt = rng.int(1, 4);
+      for (let j = 0; j < cnt; j++) {
+        const ox = rng.normal(0, 0.08);
+        const oy = rng.normal(0, 0.08);
+        const r = rng.uniform(0.03, 0.065);
+        const c = scaleLin(pebbleBase, rng.uniform(0.85, 1.08));
+        mb.blob(mx + ox - chunk.cx, -(my + oy - chunk.cz), 0.006, r * 1.25, r, r * 0.55, c, c, {
+          sub: 0,
+          smooth: false,
+          rotZ: rng.uniform(0, 6.28),
+        });
+      }
+    }
+
+    // 3D fallen leaves / petals
+    const nLeaf = Math.round(area * det.leaf);
+    for (let t = 0; t < nLeaf; t++) {
+      const mx = rng.uniform(0, this.widthM);
+      const my = rng.uniform(0, this.heightM);
+      if (!okFloor(mx, my, 0.1)) continue;
+      const chunk = this.getChunkForWorld(mx, my);
+      const mb = getB(chunk.id);
+      const a = rng.uniform(0, 6.28);
+      const L = rng.uniform(0.07, 0.11);
+      const w = rng.uniform(0.03, 0.045);
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const lx = mx - chunk.cx;
+      const ly = -(my - chunk.cz);
+      mb.quad(
+        [lx - ca * L, ly - sa * L, 0.014],
+        [lx - sa * w, ly + ca * w, 0.022],
+        [lx + ca * L, ly + sa * L, 0.014],
+        [lx + sa * w, ly - ca * w, 0.022],
+        rng.choice(leafCols),
+        'foliage',
+      );
+    }
+
+    // Base foliage around obstacles
+    for (const [x0, y0, w, h] of wallRects) {
+      const reps = 2 + Math.floor((w + h) * cs * 0.9);
+      for (let k = 0; k < reps; k++) {
+        const side = rng.int(0, 4);
+        const t = rng.uniform(0.08, 0.92);
+        let mx: number, my: number;
+        if (side === 0) { mx = (x0 + t * w) * cs; my = y0 * cs - 0.04; }
+        else if (side === 1) { mx = (x0 + t * w) * cs; my = (y0 + h) * cs + 0.04; }
+        else if (side === 2) { mx = x0 * cs - 0.04; my = (y0 + t * h) * cs; }
+        else { mx = (x0 + w) * cs + 0.04; my = (y0 + t * h) * cs; }
+        if (cellAt(mx, my) !== CellType.FLOOR) continue;
+        const chunk = this.getChunkForWorld(mx, my);
+        const mb = getB(chunk.id);
+        const size = rng.uniform(0.16, 0.25);
+        const bx = mx - chunk.cx;
+        const by = -(my - chunk.cz);
+        const blades = rng.int(5, 8);
+        for (let j = 0; j < blades; j++) {
+          const a = rng.uniform(0, Math.PI * 2);
+          const L = size * rng.uniform(0.7, 1.1);
+          const wd = L * 0.22;
+          const ca = Math.cos(a), sa = Math.sin(a);
+          const cm = lerpLin(p0Col, p1Col, rng.uniform(0.3, 1.0));
+          mb.quad(
+            [bx, by, 0.01],
+            [bx + ca * L * 0.5 - sa * wd, by + sa * L * 0.5 + ca * wd, L * 0.55],
+            [bx + ca * L, by + sa * L, L * 0.32],
+            [bx + ca * L * 0.5 + sa * wd, by + sa * L * 0.5 - ca * wd, L * 0.55],
+            p0Col,
+            'foliage',
+            cm,
+            p1Col,
+            cm,
+          );
+        }
+      }
+    }
+
+    // Overhanging cliff-edge grass tufts
+    const edgeProb = Math.min(1, det.tuft / 1.3);
+    for (let y = 0; y < ny; y++) {
+      for (let x = 0; x < nx; x++) {
+        const ct = cells[y * nx + x];
+        if (ct === CellType.WALL || ct === CellType.PIT) continue;
+        for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]] as [number, number][]) {
+          const xx = x + dx, yy = y + dy;
+          if (xx >= 0 && yy >= 0 && xx < nx && yy < ny && cells[yy * nx + xx] !== CellType.PIT) continue;
+          if (rng.next() > edgeProb) continue;
+          const cnt = Math.max(1, Math.round(rng.uniform(0.9, 2.0) * cs));
+          for (let k = 0; k < cnt; k++) {
+            const t = rng.uniform(0.14, 0.86);
+            const mx = dx !== 0 ? (x + 0.5 + dx * 0.5) * cs - dx * 0.05 : (x + t) * cs;
+            const my = dy !== 0 ? (y + 0.5 + dy * 0.5) * cs - dy * 0.05 : (y + t) * cs;
+            addTuft(mx, my, rng.uniform(1.0, 1.45), [dx, dy], 4);
+          }
+        }
+      }
+    }
+
+    // Commit per-chunk detail meshes (zero extra draw calls per detail!)
+    for (const [cid, mb] of builders) {
+      if (!mb.hasAny()) continue;
+      const chunk = this.chunks[cid];
+      const { meshes } = mb.buildMeshes({ castShadow: false, receiveShadow: true });
+      for (const m of meshes) chunk.group.add(m);
+    }
+  }
+
+  private buildOuterDecor(rng: SeededRng) {
+    const Wm = this.widthM;
+    const Hm = this.heightM;
+    const D = this.hqTheme.decor;
+    const P = this.hqTheme.pal;
+
+    // Placements directly from `env.auto_decor(Wm, Hm)` (Blender coords: Y = -mapY, Z = up)
+    interface DecorSlot {
+      nm: string;
+      x: number;
+      y: number;
+      z: number;
+      rx: number;
+      ry: number;
+      kind: 'mixed' | 'trees' | 'bushes' | 'none';
+      pri: number;
+    }
+    const slots: DecorSlot[] = [
+      { nm: 'm06', x: -4.4, y: -Hm * 0.5 + 0.3, z: 1.4 + D.dz, rx: 2.9, ry: 4.5, kind: 'mixed', pri: 3 },
+      { nm: 'm07', x: Wm + 4.3, y: -Hm * 0.5 - 0.3, z: 1.1 + D.dz, rx: 2.9, ry: 4.4, kind: 'trees', pri: 2 },
+      { nm: 'm00', x: 1.0 + Wm * 0.05, y: 4.6, z: -1.8, rx: 3.4, ry: 2.3, kind: 'trees', pri: 1 },
+      { nm: 'm01', x: Wm - 1.0 - Wm * 0.05, y: 4.8, z: -2.2, rx: 3.4, ry: 2.3, kind: 'mixed', pri: 0 },
+      { nm: 'm03', x: -2.2, y: -(Hm + 2.8), z: -0.3, rx: 2.2, ry: 1.7, kind: 'bushes', pri: 6 },
+      { nm: 'm04', x: Wm + 2.4, y: -(Hm + 3.0), z: -0.5, rx: 2.2, ry: 1.7, kind: 'bushes', pri: 7 },
+      { nm: 's01', x: -1.0, y: 1.4, z: -3.0, rx: 1.35, ry: 1.15, kind: 'none', pri: 9 },
+      { nm: 's03', x: Wm + 1.0, y: 1.1, z: -2.5, rx: 1.4, ry: 1.15, kind: 'none', pri: 9 },
+      { nm: 's00', x: Wm * 0.3, y: -(Hm + 3.4), z: -2.2, rx: 1.5, ry: 1.2, kind: 'none', pri: 9 },
+    ];
+    if (Wm > 20) {
+      slots.push({ nm: 'm02', x: Wm * 0.5, y: 6.6, z: -3.6, rx: 3.6, ry: 2.2, kind: 'mixed', pri: 4 });
+    }
+    if (Hm > 13.5) {
+      slots.push({ nm: 'm04b', x: -5.6, y: -Hm - 0.5, z: 0.6, rx: 2.4, ry: 2.2, kind: 'trees', pri: 8 });
+      slots.push({ nm: 'm03b', x: Wm + 5.6, y: -Hm - 0.8, z: 0.4, rx: 2.4, ry: 2.2, kind: 'mixed', pri: 8 });
+    }
+
+    // Assign theme signature landmarks by priority (`m01`, `m00`, `m07`, `m06`, `m02`...)
+    const sortedForFeats = slots
+      .map((s, idx) => ({ idx, pri: s.pri, kind: s.kind }))
+      .filter((s) => s.kind !== 'none')
+      .sort((a, b) => a.pri - b.pri);
+    const featFor = new Map<number, string>();
+    D.features.forEach((fname, fi) => {
+      if (fi < sortedForFeats.length) featFor.set(sortedForFeats[fi].idx, fname);
+    });
+
+    const pickTreePal = (): [string, string, string] => {
+      const tot = P.tree_pals.reduce((acc, [w]) => acc + w, 0);
+      let r = rng.next() * tot;
+      for (const [w, pal] of P.tree_pals) {
+        r -= w;
+        if (r <= 0) return pal;
+      }
+      return P.tree_pals[P.tree_pals.length - 1][1];
+    };
+
+    const pickMixKind = (): string | null => {
+      if (!D.mix || D.mix.length === 0) return null;
+      const tot = D.mix.reduce((acc, [w]) => acc + w, 0);
+      let r = rng.next() * tot;
+      for (const [w, k] of D.mix) {
+        r -= w;
+        if (r <= 0) return k;
+      }
+      return D.mix[D.mix.length - 1][1];
+    };
+
+    const cGrass = hexLin(P.grass);
+    const cGrass2 = hexLin(P.grass2);
+    const cRim = hexLin(P.grass_rim);
+    const cLip = hexLin(P.lip);
+    const cSoil = hexLin(P.soil);
+    const cRockA = hexLin(P.rock_a);
+    const cRockB = hexLin(P.rock_b);
+    const cRockC = hexLin(P.rock_c);
+    const cRockDeep = hexLin(P.rock_deep);
+    const cRockUnder = hexLin(P.rock_under);
+    const fCols = P.flower_main.map((h) => hexLin(h));
+
+    const spaceMap: Record<string, number> = { house: 1.7, bigtree: 1.25, spire: 1.1, sakura: 1.1, palm: 1.0 };
+
+    slots.forEach((sl, si) => {
+      const mb = new HqMeshBuilder();
+
+      // Build organic faceted floating island plateau
+      const sides = 14;
+      const angs: number[] = [];
+      const rScale: number[] = [];
+      for (let i = 0; i < sides; i++) {
+        angs.push((2 * Math.PI * i) / sides + rng.uniform(-0.14, 0.14));
+        rScale.push(rng.uniform(0.84, 1.14));
+      }
+
+      const depth = Math.min(6.2, Math.max(2.6, (sl.rx + sl.ry) * 0.72));
+      const levels: [number, number, LinRGB][] = [
+        [1.0, sl.z, cLip],
+        [1.02, sl.z - 0.12, cSoil],
+        [0.97, sl.z - 0.34, cRockA],
+        [0.86, sl.z - depth * 0.34, cRockB],
+        [0.66, sl.z - depth * 0.64, cRockC],
+        [0.34, sl.z - depth * 0.88, cRockDeep],
+      ];
+
+      const rings: Vec3[][] = levels.map(([sc, zz]) => {
+        const ring: Vec3[] = [];
+        for (let i = 0; i < sides; i++) {
+          ring.push([
+            sl.x + Math.cos(angs[i]) * sl.rx * rScale[i] * sc,
+            sl.y + Math.sin(angs[i]) * sl.ry * rScale[i] * sc,
+            zz,
+          ]);
+        }
+        return ring;
+      });
+
+      // Top grass cap (center -> inner ring -> rim)
+      const topOuter = rings[0];
+      const topMid: Vec3[] = [];
+      for (let i = 0; i < sides; i++) {
+        topMid.push([
+          sl.x + Math.cos(angs[i]) * sl.rx * rScale[i] * 0.78,
+          sl.y + Math.sin(angs[i]) * sl.ry * rScale[i] * 0.78,
+          sl.z + 0.015,
+        ]);
+      }
+      const ctr: Vec3 = [sl.x, sl.y, sl.z + 0.04];
+      for (let i = 0; i < sides; i++) {
+        const j = (i + 1) % sides;
+        const gC = i % 2 === 0 ? cGrass : cGrass2;
+        mb.tri(ctr, topMid[i], topMid[j], cGrass2, gC, gC, 'solid');
+        mb.quad(topMid[i], topOuter[i], topOuter[j], topMid[j], gC, 'solid', cRim, cRim, gC);
+      }
+
+      // Stratified cliff sides + tapered floating keel tip
+      for (let k = 0; k < rings.length - 1; k++) {
+        const r0 = rings[k];
+        const r1 = rings[k + 1];
+        const col = levels[k][2];
+        for (let i = 0; i < sides; i++) {
+          const j = (i + 1) % sides;
+          mb.quad(r0[i], r1[i], r1[j], r0[j], scaleLin(col, 0.92 + ((i * 7 + k * 3) % 5) * 0.04));
+        }
+      }
+      const keelTip: Vec3 = [sl.x, sl.y, sl.z - depth];
+      const botRing = rings[rings.length - 1];
+      for (let i = 0; i < sides; i++) {
+        const j = (i + 1) % sides;
+        mb.tri(botRing[i], keelTip, botRing[j], cRockUnder);
+      }
+
+      // Place landmark feature & distant props on plateau top
+      const placed: [number, number][] = [];
+      const fname = featFor.get(si);
+      if (fname) {
+        addLandmarkFeature(mb, fname, sl.x, sl.y, sl.z + 0.02, rng, P);
+        placed.push([0, 0], [1.2, 0], [-1.2, 0], [0, 0.9], [0, -0.9]);
+      }
+
+      const span = sl.rx * sl.ry * 2.6;
+      const nTarget = sl.kind === 'none' ? 0 : Math.max(1, Math.round((span / 2.6) * D.density));
+      for (let attempt = 0; attempt < nTarget * 5 && placed.length < nTarget + (fname ? 5 : 0); attempt++) {
+        const ang = rng.uniform(0, Math.PI * 2);
+        const rad = Math.sqrt(rng.next()) * 0.72;
+        const lx = Math.cos(ang) * sl.rx * rad;
+        const ly = Math.sin(ang) * sl.ry * rad;
+        let tk: string | null = null;
+        if (D.mix && (sl.kind !== 'bushes' || !D.bushes)) tk = pickMixKind();
+        const gap = tk ? (spaceMap[tk] ?? 0.95) : 0.95;
+        if (placed.some(([qx, qy]) => (lx - qx) ** 2 + (ly - qy) ** 2 < gap * gap)) continue;
+        placed.push([lx, ly]);
+        const wx = sl.x + lx;
+        const wy = sl.y + ly;
+        const sc = rng.uniform(0.9, 1.35) * (sl.kind === 'bushes' && tk ? 0.75 : 1.0);
+        if (tk === 'pine' || (tk === null && sl.kind !== 'bushes' && rng.next() < D.pines * (sl.kind === 'mixed' ? 1.0 : 0.5))) {
+          addFarPine(mb, wx, wy, sl.z, sc * 1.15, rng, P.pine_pal, P.trunk);
+        } else if (tk === null && sl.kind === 'bushes') {
+          addFarBush(mb, wx, wy, sl.z, sc * 1.4, rng, P.bush_pal);
+        } else if (tk === null || tk === 'round') {
+          addFarRoundTree(mb, wx, wy, sl.z, sc, rng, pickTreePal(), P.trunk);
+        } else {
+          addFarProp(mb, tk, wx, wy, sl.z, sc, rng, P, pickTreePal());
+        }
+      }
+
+      if (D.bushes && sl.kind !== 'none') {
+        const bCount = Math.min(8, Math.round(span * 0.25));
+        for (let b = 0; b < bCount; b++) {
+          const ang = rng.uniform(0, Math.PI * 2);
+          const rad = Math.sqrt(rng.next()) * 0.74;
+          const lx = Math.cos(ang) * sl.rx * rad;
+          const ly = Math.sin(ang) * sl.ry * rad;
+          if (placed.some(([qx, qy]) => (lx - qx) ** 2 + (ly - qy) ** 2 < 0.7 * 0.7)) continue;
+          placed.push([lx, ly]);
+          addFarBush(mb, sl.x + lx, sl.y + ly, sl.z, rng.uniform(0.7, 1.15), rng, P.bush_pal);
+        }
+      }
+
+      if (sl.kind !== 'none') {
+        const flPatches = Math.max(1, Math.min(6, Math.round(span * 0.14)));
+        for (let k = 0; k < flPatches; k++) {
+          const ang = rng.uniform(0, Math.PI * 2);
+          const rad = Math.sqrt(rng.next()) * 0.72;
+          const fx0 = sl.x + Math.cos(ang) * sl.rx * rad;
+          const fy0 = sl.y + Math.sin(ang) * sl.ry * rad;
+          const col = rng.choice(fCols);
+          for (let j = 0; j < 4; j++) {
+            const r = rng.uniform(0.035, 0.05);
+            mb.blob(fx0 + rng.normal(0, 0.1), fy0 + rng.normal(0, 0.1), sl.z + rng.uniform(0.04, 0.1), r, r, r * 0.7, col, col, {
+              sub: 1,
+              smooth: false,
+            });
+          }
+        }
+      }
+
+      const { meshes, ownedMaterials } = mb.buildMeshes({ castShadow: false, receiveShadow: true });
+      const grp = new THREE.Group();
+      for (const m of meshes) grp.add(m);
+      this.root.add(grp);
+
+      // Register nearby foreground/side scenic islands as occluders so low close-ups near arena edges stay crisp!
+      if (sl.nm === 'm03' || sl.nm === 'm04' || sl.nm === 'm06' || sl.nm === 'm07') {
+        this.registerOccluder(meshes, ownedMaterials, -1, false);
+      }
+    });
+
+    // Animated cascading waterfall pouring off the left high mesa (`m06`) into the cloud sea
+    if (D.waterfall) {
+      const wf = new THREE.Group();
+      const wfX = -4.4 + 2.75;
+      const wfZ = Hm * 0.56;
+      const topY = 1.4 + D.dz;
+      const drop = 11.5;
+      const width = 0.72;
+
+      // Main luminous falling ribbon
+      const ribGeo = new THREE.PlaneGeometry(width, drop, 1, 8);
+      const posAttr = ribGeo.getAttribute('position');
+      for (let i = 0; i < posAttr.count; i++) {
+        const yLocal = posAttr.getY(i);
+        const t = (drop * 0.5 - yLocal) / drop; // 0 at top -> 1 at bottom
+        const curveOut = Math.sin(Math.min(1, t * 2.2) * Math.PI * 0.5) * 0.55;
+        posAttr.setZ(i, curveOut);
+      }
+      ribGeo.computeVertexNormals();
+      const ribMat = new THREE.MeshBasicMaterial({
+        color: '#7CE0FA',
+        transparent: true,
+        opacity: 0.76,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      const rib = new THREE.Mesh(ribGeo, ribMat);
+      rib.position.set(wfX, topY - drop * 0.5, wfZ);
+      rib.rotation.y = Math.PI * 0.5;
+      wf.add(rib);
+
+      // Animated white foam streaks cascading down the waterfall
+      const streakGeo = new THREE.PlaneGeometry(0.14, 1.35);
+      const streakMat = new THREE.MeshBasicMaterial({
+        color: '#EFFBFF',
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
+      for (let i = 0; i < 9; i++) {
+        const sm = new THREE.Mesh(streakGeo, streakMat);
+        sm.rotation.y = Math.PI * 0.5;
+        sm.userData = {
+          wfX: wfX + 0.52,
+          wfZ: wfZ + ((i % 3) - 1) * 0.2,
+          topY,
+          drop,
+          phase: i / 9,
+        };
+        wf.add(sm);
+        this.waterfallStreaks.push(sm);
+      }
+
+      // Soft foam mist puffs at top lip & bottom cloud splash
+      const mistGeo = new THREE.IcosahedronGeometry(0.32, 1);
+      const mistMat = new THREE.MeshBasicMaterial({
+        color: '#F4FDFF',
+        transparent: true,
+        opacity: 0.72,
+        depthWrite: false,
+      });
+      for (let i = 0; i < 6; i++) {
+        const isTop = i < 3;
+        const mm = new THREE.Mesh(mistGeo, mistMat);
+        mm.position.set(
+          wfX + (isTop ? 0.25 : 0.65) + (i % 3 - 1) * 0.14,
+          isTop ? topY - 0.1 : topY - drop + 0.6,
+          wfZ + ((i % 3) - 1) * 0.25,
+        );
+        mm.scale.setScalar(isTop ? 0.75 : 1.35);
+        mm.userData = { baseY: mm.position.y, phase: i * 1.3, baseScale: mm.scale.x };
+        wf.add(mm);
+        this.waterfallMist.push(mm);
+      }
+
+      this.waterfallGroup = wf;
+      this.root.add(wf);
+    }
+  }
+
+  private buildClouds(rng: SeededRng) {
+    const P = this.hqTheme.pal;
+    const count = 72;
+    const geo = buildFluffyCloudGeometry();
+    const mat = new THREE.MeshLambertMaterial({
+      color: '#ffffff',
+      emissive: new THREE.Color(P.cloud),
+      emissiveIntensity: 0.52,
+    });
+    this.cloudMesh = new THREE.InstancedMesh(geo, mat, count);
+
+    const cMain = new THREE.Color(P.cloud);
+    const cShade = new THREE.Color(P.cloud_shade);
+    const cx0 = this.widthM * 0.5;
+    const cz0 = this.heightM * 0.5;
+
+    for (let i = 0; i < count; i++) {
+      const high = i >= 58;
+      const x = cx0 + (rng.next() - 0.5) * (this.widthM * 3.4 + 34);
+      const z = cz0 + (rng.next() - 0.5) * (this.heightM * 3.0 + 30) - (high ? 4 : 0);
+      const y = high ? -7.8 - rng.next() * 1.8 : -11.5 - rng.next() * 3.8;
+      const szBase = high ? rng.uniform(1.6, 2.9) : rng.uniform(2.5, 5.2);
+      const sx = szBase * rng.uniform(0.95, 1.3);
+      const sy = szBase * rng.uniform(0.55, 0.8);
+      const sz = szBase * rng.uniform(0.85, 1.15);
+      const rotY = rng.uniform(0, Math.PI * 2);
+      const speed = high ? 0.34 : 0.2;
+      this.cloudData.push({ x, y, z, sx, sy, sz, rotY, speed });
+
+      this._dummy.position.set(x, y, z);
+      this._dummy.rotation.set(0, rotY, 0);
+      this._dummy.scale.set(sx, sy, sz);
+      this._dummy.updateMatrix();
+      this.cloudMesh.setMatrixAt(i, this._dummy.matrix);
+      this.cloudMesh.setColorAt(i, cMain.clone().lerp(cShade, rng.next() * 0.38));
+    }
+    this.cloudMesh.instanceMatrix.needsUpdate = true;
+    if (this.cloudMesh.instanceColor) this.cloudMesh.instanceColor.needsUpdate = true;
+    this.root.add(this.cloudMesh);
+  }
+
+  private buildAmbientParticles(rng: SeededRng) {
+    const amb = this.hqTheme.ambient;
+    if (!amb || amb.cols.length === 0) return;
+    const count = Math.max(12, Math.min(72, Math.round((amb.n * (this.widthM * this.heightM)) / 216)));
+    const s0 = amb.size * 2.2;
+    const geo = new THREE.PlaneGeometry(s0, s0 * 0.65);
+    const mat = new THREE.MeshBasicMaterial({
+      color: '#ffffff',
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: 0.84,
+    });
+    this.ambientMesh = new THREE.InstancedMesh(geo, mat, count);
+    for (let i = 0; i < count; i++) {
+      this.ambientData.push({
+        x: rng.uniform(-3, this.widthM + 3),
+        y: rng.uniform(0.5, 6.2),
+        z: rng.uniform(-3, this.heightM + 3),
+        vx: (0.32 + rng.next() * 0.38) * amb.speed,
+        vy: -(0.48 + rng.next() * 0.42) * amb.speed,
+        vz: (0.16 + rng.next() * 0.28) * amb.speed,
+        phase: rng.uniform(0, Math.PI * 2),
+        s: rng.uniform(0.68, 1.12),
+      });
+      this.ambientMesh.setColorAt(i, new THREE.Color(amb.cols[i % amb.cols.length]));
+    }
+    if (this.ambientMesh.instanceColor) this.ambientMesh.instanceColor.needsUpdate = true;
+    this.root.add(this.ambientMesh);
+  }
+
+  public update(gt: number, elapsedSec: number, opts?: ArenaMapUpdateOpts) {
+    const { waveSteps, colWarn } = this.mapData;
+    const freezeT = opts?.freezeCollapseAtTick;
+
+    // 1. Per-wave terrain chunk warning shake/pulse & tumbling fall (with post-match freeze & rewind restore!)
+    for (let i = 0; i < this.chunks.length; i++) {
+      const ch = this.chunks[i];
+      if (ch.wave < 0 || ch.wave >= waveSteps.length) continue;
+      const fallStep = waveSteps[ch.wave];
+      const alreadyFalling = fallStep >= 0 && (freezeT !== undefined ? fallStep <= freezeT : gt >= fallStep);
+
+      if (alreadyFalling && gt >= fallStep) {
+        ch.modified = true;
+        const maxD = this.waveMaxDist.get(ch.wave) ?? 1;
+        const delay = (1 - ch.distFromCenter / maxD) * 4.5 + ch.rnd[0] * 1.8;
+        const u = gt - fallStep;
+        if (u < delay) {
+          // Final crack tremor right before dropping
+          const amp = 0.032;
+          const ph = elapsedSec * 44 + ch.rnd[1] * 20;
+          ch.group.visible = true;
+          ch.group.position.set(ch.cx + Math.sin(ph) * amp, -0.05, ch.cz + Math.cos(ph * 1.3) * amp);
+          ch.group.rotation.set(Math.sin(ph * 0.9) * 0.04, 0, Math.cos(ph * 1.1) * 0.04);
+          ch.group.scale.setScalar(1);
+          for (const m of ch.warnMaterials) m.emissive.copy(this._warnCol).multiplyScalar(0.5);
+        } else {
+          const tau = (u - delay) / 20;
+          const drop = 0.5 * 14.5 * tau * tau + 0.65 * tau;
+          if (drop < 18) {
+            ch.group.visible = true;
+            const ox = ch.cx - this.widthM * 0.5;
+            const oz = ch.cz - this.heightM * 0.5;
+            const L = Math.hypot(ox, oz) || 1;
+            const out = 0.48 * tau;
+            ch.group.position.set(ch.cx + (ox / L) * out, -0.06 - drop, ch.cz + (oz / L) * out);
+            const ax = ch.rnd[4] * Math.PI * 2;
+            const ang = (0.35 + 1.5 * ch.rnd[5]) * tau * 1.5;
+            ch.group.rotation.set(Math.cos(ax) * ang, (ch.rnd[2] - 0.5) * tau, Math.sin(ax) * ang);
+            ch.group.scale.setScalar(Math.max(0.05, 1 - tau * 0.25));
+            for (const m of ch.warnMaterials) m.emissive.copy(this._black);
+          } else {
+            ch.group.visible = false;
+          }
+        }
+        continue;
+      }
+
+      if (freezeT === undefined && fallStep >= 0 && gt >= fallStep - colWarn) {
+        ch.modified = true;
+        const prog = Math.min(1, Math.max(0, (gt - (fallStep - colWarn)) / Math.max(1, colWarn)));
+        const amp = (0.01 + 0.032 * prog) * prog;
+        const ph = elapsedSec * (32 + 22 * prog) + ch.rnd[1] * 20;
+        ch.group.visible = true;
+        ch.group.position.set(ch.cx + Math.sin(ph) * amp, -0.02 - 0.04 * prog * prog, ch.cz + Math.cos(ph * 1.25) * amp);
+        const tilt = (0.012 + 0.04 * prog) * prog;
+        ch.group.rotation.set(Math.sin(ph * 0.8 + ch.rnd[2] * 6) * tilt, 0, Math.cos(ph * 1.1 + ch.rnd[3] * 6) * tilt);
+        ch.group.scale.setScalar(1);
+        const pulse = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(elapsedSec * (9 + prog * 14)));
+        const emi = pulse * (0.18 + 0.42 * prog);
+        for (const m of ch.warnMaterials) m.emissive.copy(this._warnCol).multiplyScalar(emi);
+        continue;
+      }
+
+      if (ch.modified) {
+        ch.modified = false;
+        ch.group.visible = true;
+        ch.group.position.set(ch.cx, 0, ch.cz);
+        ch.group.rotation.set(0, 0, 0);
+        ch.group.scale.setScalar(1);
+        for (const m of ch.warnMaterials) m.emissive.copy(this._black);
+      }
+    }
+
+    // 2. Gentle tall-grass breeze sway
+    for (let i = 0; i < this.grassClusters.length; i++) {
+      const g = this.grassClusters[i];
+      const sw = Math.sin(elapsedSec * 2.3 + g.cx * 0.7 + g.phase) * 0.075;
+      g.group.rotation.set(sw, 0, sw * 0.65);
+    }
+
+    // 3. Animated cascading waterfall streaks & mist
+    if (this.waterfallGroup) {
+      for (let i = 0; i < this.waterfallStreaks.length; i++) {
+        const sm = this.waterfallStreaks[i];
+        const ud = sm.userData as { wfX: number; wfZ: number; topY: number; drop: number; phase: number };
+        const t = ((elapsedSec * 0.62 + ud.phase) % 1 + 1) % 1;
+        const y = ud.topY - t * ud.drop;
+        const curveOut = Math.sin(Math.min(1, t * 2.2) * Math.PI * 0.5) * 0.55;
+        sm.position.set(ud.wfX - 0.52 + curveOut + 0.04, y, ud.wfZ);
+      }
+      for (let i = 0; i < this.waterfallMist.length; i++) {
+        const mm = this.waterfallMist[i];
+        const ud = mm.userData as { baseY: number; phase: number; baseScale: number };
+        const p = Math.sin(elapsedSec * 3.1 + ud.phase);
+        mm.position.y = ud.baseY + p * 0.14;
+        mm.scale.setScalar(ud.baseScale * (0.9 + 0.16 * p));
+      }
+    }
+
+    // 4. Fluffy cloud drift
+    if (!opts?.pauseClouds) {
+      const wrapW = this.widthM * 3.4 + 34;
+      const minX = this.widthM * 0.5 - wrapW * 0.5;
+      for (let i = 0; i < this.cloudData.length; i++) {
+        const c = this.cloudData[i];
+        const x = minX + ((((c.x + elapsedSec * c.speed - minX) % wrapW) + wrapW) % wrapW);
+        this._dummy.position.set(x, c.y + Math.sin(elapsedSec * 0.45 + i) * 0.16, c.z);
+        this._dummy.rotation.set(0, c.rotY, 0);
+        this._dummy.scale.set(c.sx, c.sy, c.sz);
+        this._dummy.updateMatrix();
+        this.cloudMesh.setMatrixAt(i, this._dummy.matrix);
+      }
+      this.cloudMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // 5. Ambient floating petals / snow / autumn leaves
+    if (this.ambientMesh) {
+      if (opts?.hideAmbient) {
+        this.ambientMesh.visible = false;
+      } else {
+        this.ambientMesh.visible = true;
+        const spanW = this.widthM + 6;
+        const spanH = this.heightM + 6;
+        for (let i = 0; i < this.ambientData.length; i++) {
+          const p = this.ambientData[i];
+          const y = (((p.y + elapsedSec * p.vy) % 6.2) + 6.2) % 6.2 + 0.25;
+          const x = (((p.x + elapsedSec * p.vx + Math.sin(elapsedSec * 1.7 + p.phase) * 0.45 + 3) % spanW) + spanW) % spanW - 3;
+          const z = (((p.z + elapsedSec * p.vz + 3) % spanH) + spanH) % spanH - 3;
+          this._dummy.position.set(x, y, z);
+          this._dummy.rotation.set(elapsedSec * 2.1 + p.phase, elapsedSec * 1.5, p.phase);
+          this._dummy.scale.setScalar(p.s);
+          this._dummy.updateMatrix();
+          this.ambientMesh.setMatrixAt(i, this._dummy.matrix);
+        }
+        this.ambientMesh.instanceMatrix.needsUpdate = true;
+      }
+    }
+  }
+
+  public updateCloseupOcclusion(
+    camPos: THREE.Vector3,
+    focusPos: THREE.Vector3,
+    blend: number,
+    dt: number,
+  ) {
+    applyCloseupOcclusionStep(this.occluders, camPos, focusPos, blend, dt, this._dirScratch);
+  }
+
+  public dispose() {
+    this.groundResult.texture.dispose();
+    const geos = new Set<THREE.BufferGeometry>();
+    const mats = new Set<THREE.Material>();
+    this.root.traverse((obj) => {
+      if (obj instanceof THREE.Mesh) {
+        geos.add(obj.geometry);
+        if (Array.isArray(obj.material)) obj.material.forEach((m) => mats.add(m));
+        else mats.add(obj.material);
+      }
+    });
+    geos.forEach((g) => g.dispose());
+    mats.forEach((m) => m.dispose());
+  }
+}

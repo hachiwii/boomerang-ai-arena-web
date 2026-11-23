@@ -1,4 +1,4 @@
-export type FpsCapOption = 'vsync' | 60 | 120 | 144 | 240 | 360 | 'uncapped';
+export type GraphicsQualityOption = 'low' | 'high';
 export type ExportResolutionOption = '480p' | '720p' | '1080p' | '1440p';
 export type ExportBitrateOption = 2 | 4 | 8 | 12;
 export type ExportSpeedOption = 0.5 | 1.0 | 1.5 | 2.0;
@@ -26,7 +26,8 @@ export interface CinematicOptions {
 export interface GameSettings {
   soundEnabled: boolean;
   volume: number; // 0..100
-  fpsCap: FpsCapOption;
+  graphicsQuality: GraphicsQualityOption; // 'low' = lightweight instanced, 'high' = faithful open-source art
+  lockFps: boolean; // true = monitor refresh rate (VSync), false = uncapped
   dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
   killCam: boolean; // Non-final kill slow-mo & eye-level camera (0.5x)
   finisherCam: boolean; // Final kill slow-mo & eye-level camera (0.25x)
@@ -63,14 +64,9 @@ export const ACTION_META: ActionMeta[] = [
   { key: 'quickRestart', label: '重开 / 重新匹配', group: '快捷' },
 ];
 
-export const FPS_CAP_OPTIONS: { value: FpsCapOption; label: string; desc: string }[] = [
-  { value: 'vsync', label: 'VSync', desc: '跟随屏幕刷新率' },
-  { value: 60, label: '60 Hz', desc: '省电稳定' },
-  { value: 120, label: '120 Hz', desc: '高刷流畅' },
-  { value: 144, label: '144 Hz', desc: '电竞高刷' },
-  { value: 240, label: '240 Hz', desc: '超低延迟' },
-  { value: 360, label: '360 Hz', desc: '极限帧率' },
-  { value: 'uncapped', label: '240Hz+ 解锁', desc: '突破 VSync (~260Hz)' },
+export const GRAPHICS_QUALITY_OPTIONS: { value: GraphicsQualityOption; label: string }[] = [
+  { value: 'low', label: '低' },
+  { value: 'high', label: '高' },
 ];
 
 export const EXPORT_RESOLUTION_OPTIONS: {
@@ -122,7 +118,8 @@ export function defaultSettings(): GameSettings {
   return {
     soundEnabled: true,
     volume: 100,
-    fpsCap: 'vsync',
+    graphicsQuality: 'high',
+    lockFps: true,
     dashInputBuffer: true,
     killCam: true,
     finisherCam: true,
@@ -134,7 +131,7 @@ export function defaultSettings(): GameSettings {
   };
 }
 
-const VALID_FPS_CAPS = new Set<FpsCapOption>(['vsync', 60, 120, 144, 240, 360, 'uncapped']);
+const VALID_GRAPHICS_QUALITY = new Set<GraphicsQualityOption>(['low', 'high']);
 const VALID_EXPORT_RES = new Set<ExportResolutionOption>(['480p', '720p', '1080p', '1440p']);
 const VALID_EXPORT_BITRATES = new Set<ExportBitrateOption>([2, 4, 8, 12]);
 const VALID_EXPORT_SPEEDS = new Set<ExportSpeedOption>([0.5, 1.0, 1.5, 2.0]);
@@ -237,14 +234,22 @@ export class SettingsStore {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return def;
-      const parsed = JSON.parse(raw) as Partial<GameSettings>;
+      const parsed = JSON.parse(raw) as Partial<GameSettings> & { fpsCap?: unknown };
       const soundEnabled = typeof parsed.soundEnabled === 'boolean' ? parsed.soundEnabled : def.soundEnabled;
       const volume =
         typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)
           ? Math.max(0, Math.min(100, Math.round(parsed.volume)))
           : def.volume;
-      const fpsCap: FpsCapOption =
-        parsed.fpsCap !== undefined && VALID_FPS_CAPS.has(parsed.fpsCap) ? parsed.fpsCap : def.fpsCap;
+      const graphicsQuality: GraphicsQualityOption =
+        parsed.graphicsQuality !== undefined && VALID_GRAPHICS_QUALITY.has(parsed.graphicsQuality)
+          ? parsed.graphicsQuality
+          : def.graphicsQuality;
+      const lockFps =
+        typeof parsed.lockFps === 'boolean'
+          ? parsed.lockFps
+          : parsed.fpsCap === 'uncapped'
+            ? false
+            : def.lockFps;
       const dashInputBuffer =
         typeof parsed.dashInputBuffer === 'boolean' ? parsed.dashInputBuffer : def.dashInputBuffer;
       const killCam =
@@ -288,7 +293,8 @@ export class SettingsStore {
       return {
         soundEnabled,
         volume,
-        fpsCap,
+        graphicsQuality,
+        lockFps,
         dashInputBuffer,
         killCam,
         finisherCam,
@@ -340,9 +346,15 @@ export class SettingsStore {
     this.emit();
   }
 
-  public setFpsCap(cap: FpsCapOption) {
-    if (!VALID_FPS_CAPS.has(cap) || this.settings.fpsCap === cap) return;
-    this.settings.fpsCap = cap;
+  public setGraphicsQuality(quality: GraphicsQualityOption) {
+    if (!VALID_GRAPHICS_QUALITY.has(quality) || this.settings.graphicsQuality === quality) return;
+    this.settings.graphicsQuality = quality;
+    this.emit();
+  }
+
+  public setLockFps(locked: boolean) {
+    if (this.settings.lockFps === locked) return;
+    this.settings.lockFps = locked;
     this.emit();
   }
 

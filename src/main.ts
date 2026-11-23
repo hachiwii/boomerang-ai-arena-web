@@ -8,7 +8,7 @@ import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { ReplayController } from './game/replayController';
-import { FpsCapOption, getCinematicOptions, isBoundToAction, SettingsStore } from './game/settings';
+import { getCinematicOptions, GraphicsQualityOption, isBoundToAction, SettingsStore } from './game/settings';
 import { CellType, EngineMapData, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
 import { GameRenderer } from './render/renderer';
 import { HistoryModal } from './ui/historyUI';
@@ -70,7 +70,7 @@ async function bootstrap() {
   sfx.applySettings(settings.get().soundEnabled, settings.get().volume);
 
   const input = new HumanInputController(canvas, settings);
-  const renderer = new GameRenderer(canvas, sfx);
+  const renderer = new GameRenderer(canvas, sfx, undefined, undefined, settings.get().graphicsQuality);
   input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
   const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
   const matchHistory = new MatchHistoryStore();
@@ -87,12 +87,12 @@ async function bootstrap() {
   let resultOverlayShown = false;
   let restarting = false;
 
-  // Frame-rate cap driven directly by SettingsStore ('vsync' | 60..360 | 'uncapped')
-  let activeFpsCap: FpsCapOption = settings.get().fpsCap;
+  // Frame-rate lock driven directly by SettingsStore (true = monitor refresh rate, false = uncapped)
+  let activeLockFps = settings.get().lockFps;
+  let activeGraphicsQuality: GraphicsQualityOption = settings.get().graphicsQuality;
   let rafId = 0;
   let uncapChannel: MessageChannel | null = null;
   let uncapRunning = false;
-  let lastUncapRenderMs = 0;
   let lastTelemetryUpdateMs = 0;
 
   let lobbyUI: LobbyUI;
@@ -374,33 +374,24 @@ async function bootstrap() {
       }
     };
 
-    if (activeFpsCap === 'vsync') {
+    if (activeLockFps) {
       const loop = () => {
         tickRender();
         rafId = requestAnimationFrame(loop);
       };
       rafId = requestAnimationFrame(loop);
     } else {
-      // Custom FPS cap or 240Hz+ uncapped pacer (hybrid setTimeout + MessageChannel avoids busy-spinning 100% CPU!)
-      const targetHz = activeFpsCap === 'uncapped' ? 260 : activeFpsCap;
+      // Uncapped render loop via MessageChannel macrotask (pauses automatically when tab hidden)
       uncapRunning = true;
       uncapChannel = new MessageChannel();
-      lastUncapRenderMs = performance.now();
-      const targetIntervalMs = 1000 / targetHz;
       const step = () => {
         if (!uncapRunning) return;
-        const now = performance.now();
-        const rem = targetIntervalMs - (now - lastUncapRenderMs);
-        if (rem <= 0.25) {
-          lastUncapRenderMs = now;
-          tickRender();
-          const sleepMs = Math.max(1, Math.floor(targetIntervalMs - 2));
-          window.setTimeout(() => uncapChannel?.port2.postMessage(null), sleepMs);
-        } else if (rem > 2.0) {
-          window.setTimeout(() => uncapChannel?.port2.postMessage(null), Math.max(1, Math.floor(rem - 1.5)));
-        } else {
-          uncapChannel?.port2.postMessage(null);
+        if (document.hidden) {
+          window.setTimeout(() => uncapChannel?.port2.postMessage(null), 50);
+          return;
         }
+        tickRender();
+        uncapChannel?.port2.postMessage(null);
       };
       uncapChannel.port1.onmessage = step;
       uncapChannel.port2.postMessage(null);
@@ -423,9 +414,13 @@ async function bootstrap() {
 
   settings.onChange((s) => {
     sfx.applySettings(s.soundEnabled, s.volume);
-    if (s.fpsCap !== activeFpsCap) {
-      activeFpsCap = s.fpsCap;
+    if (s.lockFps !== activeLockFps) {
+      activeLockFps = s.lockFps;
       startRenderLoop();
+    }
+    if (s.graphicsQuality !== activeGraphicsQuality) {
+      activeGraphicsQuality = s.graphicsQuality;
+      renderer.setGraphicsQuality(s.graphicsQuality);
     }
     const cinematic = getCinematicOptions(s);
     if (mode === 'replay') {
@@ -482,6 +477,7 @@ async function bootstrap() {
         speed: s.exportSpeed,
         soundEnabled: s.soundEnabled,
         volumePct: s.volume,
+        graphicsQuality: s.graphicsQuality,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
@@ -499,6 +495,7 @@ async function bootstrap() {
       const result = await exportReplayClipToGif(frozenBundle, {
         endTickIndex,
         maxDurationSec: 10.0,
+        graphicsQuality: s.graphicsQuality,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
@@ -545,6 +542,7 @@ async function bootstrap() {
         speed: s.exportSpeed,
         soundEnabled: s.soundEnabled,
         volumePct: s.volume,
+        graphicsQuality: s.graphicsQuality,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,

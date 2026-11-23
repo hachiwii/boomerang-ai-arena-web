@@ -8,9 +8,8 @@ import {
   ExportResolutionOption,
   ExportSpeedOption,
   formatInputCode,
-  FPS_CAP_OPTIONS,
-  FpsCapOption,
-  getExportResolutionSpec,
+  GRAPHICS_QUALITY_OPTIONS,
+  GraphicsQualityOption,
   SettingsStore,
 } from '../game/settings';
 
@@ -248,63 +247,44 @@ export class SettingsModal {
             </div>
           </section>
 
-          <!-- FPS Cap Section -->
+          <!-- Graphics & Display Settings Section -->
           <section class="settings-section">
             <div class="settings-sec-head">
-              <span class="settings-sec-title">⚡ 帧率上限</span>
-              <span class="settings-sec-hint" id="settings-fps-desc">
-                ${FPS_CAP_OPTIONS.find((o) => o.value === s.fpsCap)?.desc || ''}
-              </span>
+              <span class="settings-sec-title">🎨 画面设置</span>
+              <span class="settings-sec-hint">高画质还原原版地形与建筑；特写含慢放与胜者镜头</span>
             </div>
-            <div class="fps-grid">
-              ${FPS_CAP_OPTIONS.map((opt) => {
-                const active = s.fpsCap === opt.value;
-                return `
-                  <button
-                    type="button"
-                    class="fps-btn ${active ? 'active' : ''}"
-                    data-fps-cap="${String(opt.value)}"
-                    aria-pressed="${active}"
-                  >
-                    ${opt.label}
-                  </button>`;
-              }).join('')}
-            </div>
-          </section>
-
-          <!-- Combat Input Buffer Section -->
-          <section class="settings-section">
-            <div class="settings-sec-title">🎮 预输入机制</div>
-            <div class="settings-toggle-row">
-              <div class="settings-toggle-meta">
-                <div class="settings-toggle-title">冲刺过程中可以预输入指令</div>
-                <div class="settings-toggle-desc">
-                  开启后，冲刺中按下的扔镖/挥砍不会打断冲刺，在冲刺结束后首个可操作帧释放（多次输入仅保留最后一个）
-                </div>
-              </div>
-              <button
-                type="button"
-                class="rand-switch ${s.dashInputBuffer ? 'is-on' : ''}"
-                id="settings-dash-buffer-toggle"
-                role="switch"
-                aria-checked="${s.dashInputBuffer}"
-              >
-                <span class="rand-track"><span class="rand-thumb"></span></span>
-                <span class="rand-label">${s.dashInputBuffer ? '已开启' : '已关闭'}</span>
-              </button>
-            </div>
-          </section>
-
-          <!-- Cinematic Camera Toggles Section -->
-          <section class="settings-section">
-            <div class="settings-sec-title">🎥 特写镜头</div>
             <div class="settings-toggle-stack">
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">画面质量</div>
+                </div>
+                <div class="quality-seg" role="group" aria-label="画面质量">
+                  ${GRAPHICS_QUALITY_OPTIONS.map((opt) => {
+                    const active = s.graphicsQuality === opt.value;
+                    return `<button type="button" class="fps-btn quality-seg-btn ${active ? 'active' : ''}" data-graphics-quality="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                  }).join('')}
+                </div>
+              </div>
+
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">锁定帧率上限</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${s.lockFps ? 'is-on' : ''}"
+                  id="settings-lock-fps-toggle"
+                  role="switch"
+                  aria-checked="${s.lockFps}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${s.lockFps ? '显示器帧率' : '无上限'}</span>
+                </button>
+              </div>
+
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">击杀特写</div>
-                  <div class="settings-toggle-desc">
-                    控制非最后一个击杀：击杀前 0.5s 减速至 0.5x 并平滑切至平视镜头，结束后过渡回常规视角（回放 / 纯 AI 观战 / 导出）
-                  </div>
                 </div>
                 <button
                   type="button"
@@ -321,9 +301,6 @@ export class SettingsModal {
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">终结特写</div>
-                  <div class="settings-toggle-desc">
-                    控制最后一个击杀：击杀前 0.5s 减速至 0.25x 并平滑切至平视镜头（回放 / 纯 AI 观战 / 导出）
-                  </div>
                 </div>
                 <button
                   type="button"
@@ -340,9 +317,6 @@ export class SettingsModal {
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">获胜特写</div>
-                  <div class="settings-toggle-desc">
-                    决出胜者后恢复原速并平滑切至获胜者正面平视特写，同时胜利角色周期性向四周洒出彩带（所有模式及导出均生效）
-                  </div>
                 </div>
                 <button
                   type="button"
@@ -358,13 +332,31 @@ export class SettingsModal {
             </div>
           </section>
 
+          <!-- Combat Input Buffer Section -->
+          <section class="settings-section">
+            <div class="settings-sec-title">🎮 操作机制</div>
+            <div class="settings-toggle-row">
+              <div class="settings-toggle-meta">
+                <div class="settings-toggle-title">冲刺预输入</div>
+                <div class="settings-toggle-desc">冲刺中按下扔镖或挥砍不打断冲刺，结束即释放</div>
+              </div>
+              <button
+                type="button"
+                class="rand-switch ${s.dashInputBuffer ? 'is-on' : ''}"
+                id="settings-dash-buffer-toggle"
+                role="switch"
+                aria-checked="${s.dashInputBuffer}"
+              >
+                <span class="rand-track"><span class="rand-thumb"></span></span>
+                <span class="rand-label">${s.dashInputBuffer ? '已开启' : '已关闭'}</span>
+              </button>
+            </div>
+          </section>
+
           <!-- Replay MP4 Export Settings Section -->
           <section class="settings-section">
             <div class="settings-sec-head">
               <span class="settings-sec-title">🎬 回放导出 (MP4)</span>
-              <span class="settings-sec-hint">
-                ${getExportResolutionSpec(s.exportResolution).desc} · ${s.exportBitrateMbps} Mbps · ${s.exportSpeed === 1 ? '1x' : `${s.exportSpeed}x`} · 60fps
-              </span>
             </div>
             <div class="export-opts-card">
               <div class="export-opt-row">
@@ -402,7 +394,6 @@ export class SettingsModal {
             <div class="settings-sec-head">
               <span class="settings-sec-title">⌨️ 键位设置</span>
               <div class="settings-kb-tools">
-                <span class="settings-sec-hint">支持键盘与鼠标键 · 每个操作可设 2 个按键</span>
                 <button type="button" class="settings-reset-kb-btn" id="settings-reset-kb">恢复默认键位</button>
               </div>
             </div>
@@ -452,15 +443,18 @@ export class SettingsModal {
       }
     });
 
-    // FPS cap selection
-    this.body.querySelectorAll<HTMLButtonElement>('[data-fps-cap]').forEach((btn) => {
+    // Graphics quality selection
+    this.body.querySelectorAll<HTMLButtonElement>('[data-graphics-quality]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        const raw = btn.dataset.fpsCap!;
-        const parsed: FpsCapOption =
-          raw === 'vsync' || raw === 'uncapped' ? raw : (Number(raw) as FpsCapOption);
-        this.store.setFpsCap(parsed);
+        this.store.setGraphicsQuality(btn.dataset.graphicsQuality as GraphicsQualityOption);
         this.render();
       });
+    });
+
+    // Lock FPS cap toggle (ON = monitor refresh rate, OFF = uncapped)
+    this.body.querySelector('#settings-lock-fps-toggle')?.addEventListener('click', () => {
+      this.store.setLockFps(!this.store.get().lockFps);
+      this.render();
     });
 
     // Dash pre-input buffer toggle

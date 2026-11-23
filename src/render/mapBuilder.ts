@@ -1,5 +1,11 @@
 import * as THREE from 'three';
 import { CellType, EngineMapData } from '../game/types';
+import {
+  applyCloseupOcclusionStep,
+  ArenaMapUpdateOpts,
+  IArenaMap,
+  OccluderEntry,
+} from './hqMapBuilder';
 import { getTheme, ThemeConfig } from './themes';
 
 interface TileInstanceRef {
@@ -23,12 +29,20 @@ function hash2(x: number, y: number): number {
   return h - Math.floor(h);
 }
 
+interface WallClusterBatch {
+  bodyMesh: THREE.InstancedMesh;
+  topMesh: THREE.InstancedMesh;
+  bodyTiles: TileInstanceRef[];
+  topTiles: TileInstanceRef[];
+}
+
 /**
  * Builds a stylized floating-island 3D arena matching the official 10 map themes,
- * using InstancedMeshes so the entire island renders in < 10 draw calls (240Hz+ ready!)
- * while supporting smooth per-wave collapse warning shake/glow and falling tiles!
+ * using InstancedMeshes so the entire island renders in minimal draw calls (240Hz+ ready!)
+ * while supporting smooth per-wave collapse warning shake/glow, falling tiles, and
+ * close-up foreground occlusion semi-transparency.
  */
-export class ArenaMap3D {
+export class ArenaMap3D implements IArenaMap {
   public readonly root = new THREE.Group();
   public readonly mapData: EngineMapData;
   public readonly theme: ThemeConfig;
@@ -37,23 +51,23 @@ export class ArenaMap3D {
 
   private floorMesh!: THREE.InstancedMesh;
   private cliffMesh!: THREE.InstancedMesh;
-  private wallMesh: THREE.InstancedMesh | null = null;
-  private wallTopMesh: THREE.InstancedMesh | null = null;
+  private wallClusters: WallClusterBatch[] = [];
+  private wallSharedGeos: THREE.BufferGeometry[] = [];
   private grassMesh: THREE.InstancedMesh | null = null;
   private cloudMesh!: THREE.InstancedMesh;
   private ambientMesh: THREE.InstancedMesh | null = null;
 
   private floorTiles: TileInstanceRef[] = [];
   private cliffTiles: TileInstanceRef[] = [];
-  private wallTiles: TileInstanceRef[] = [];
-  private wallTopTiles: TileInstanceRef[] = [];
   private grassTiles: TileInstanceRef[] = [];
+  private readonly occluders: OccluderEntry[] = [];
   private cloudData: { x: number; y: number; z: number; sx: number; sy: number; sz: number; speed: number }[] = [];
   private ambientData: { x: number; y: number; z: number; vx: number; vy: number; vz: number; phase: number; s: number }[] = [];
 
   private readonly _dummy = new THREE.Object3D();
   private readonly _tmpCol = new THREE.Color();
   private readonly _warnCol = new THREE.Color('#ff5a2b');
+  private readonly _dirScratch = new THREE.Vector3();
 
   constructor(mapData: EngineMapData, themeName: string) {
     this.mapData = mapData;
@@ -255,81 +269,119 @@ export class ArenaMap3D {
         break;
     }
 
-    const bodyMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
-    const topMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
-    this.wallMesh = new THREE.InstancedMesh(bodyGeo, bodyMat, walls.length);
-    this.wallTopMesh = new THREE.InstancedMesh(topGeo, topMat, walls.length);
-    this.wallMesh.castShadow = true;
-    this.wallMesh.receiveShadow = true;
-    this.wallTopMesh.castShadow = true;
+    this.wallSharedGeos.push(bodyGeo, topGeo);
 
     const cSide = new THREE.Color(T.wallSide);
     const cTop = new THREE.Color(T.wallTop);
     const cAcc = new THREE.Color(T.wallAccent);
 
-    walls.forEach((w, idx) => {
-      const cx = (w.gx + 0.5) * cs;
-      const cz = (w.gy + 0.5) * cs;
-      const r1 = hash2(w.gx * 3 + 7, w.gy * 5 + 11);
-      const r2 = hash2(w.gx * 7 + 19, w.gy * 2 + 3);
-      const hScale = T.wallKind === 'houses' || T.wallKind === 'crates' ? 0.95 + r1 * 0.12 : 0.84 + r1 * 0.34;
-      const rot = T.wallKind === 'houses' || T.wallKind === 'masonry' || T.wallKind === 'crates' ? 0 : r2 * Math.PI * 2;
-      const by = (baseH * hScale) * 0.5;
+    // Group walls into compact 2x2 spatial clusters so foreground obstacles blocking
+    // close-up cameras fade smoothly to semi-transparent without affecting other walls!
+    const clusterMap = new Map<string, { gx: number; gy: number; wave: number }[]>();
+    for (const w of walls) {
+      const key = `${Math.floor(w.gx / 2)}_${Math.floor(w.gy / 2)}`;
+      let arr = clusterMap.get(key);
+      if (!arr) {
+        arr = [];
+        clusterMap.set(key, arr);
+      }
+      arr.push(w);
+    }
 
-      const bc = cSide.clone().lerp(cAcc, r2 * 0.28);
-      this._dummy.position.set(cx, by, cz);
-      this._dummy.rotation.set(0, rot, 0);
-      this._dummy.scale.set(1, hScale, 1);
-      this._dummy.updateMatrix();
-      this.wallMesh!.setMatrixAt(idx, this._dummy.matrix);
-      this.wallMesh!.setColorAt(idx, bc);
-      this.wallTiles.push({
-        idx,
-        cx,
-        cz,
-        baseY: by,
-        scaleX: 1,
-        scaleY: hScale,
-        scaleZ: 1,
-        rotY: rot,
-        wave: w.wave,
-        rndA: r1,
-        rndB: r2,
-        baseColor: bc,
+    for (const [, list] of clusterMap) {
+      const bodyMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
+      const topMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
+      const bodyMesh = new THREE.InstancedMesh(bodyGeo, bodyMat, list.length);
+      const topMesh = new THREE.InstancedMesh(topGeo, topMat, list.length);
+      bodyMesh.castShadow = true;
+      bodyMesh.receiveShadow = true;
+      topMesh.castShadow = true;
+
+      const bodyTiles: TileInstanceRef[] = [];
+      const topTiles: TileInstanceRef[] = [];
+      let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity, maxY = 0.8;
+
+      list.forEach((w, idx) => {
+        const cx = (w.gx + 0.5) * cs;
+        const cz = (w.gy + 0.5) * cs;
+        const r1 = hash2(w.gx * 3 + 7, w.gy * 5 + 11);
+        const r2 = hash2(w.gx * 7 + 19, w.gy * 2 + 3);
+        const hScale = T.wallKind === 'houses' || T.wallKind === 'crates' ? 0.95 + r1 * 0.12 : 0.84 + r1 * 0.34;
+        const rot = T.wallKind === 'houses' || T.wallKind === 'masonry' || T.wallKind === 'crates' ? 0 : r2 * Math.PI * 2;
+        const by = (baseH * hScale) * 0.5;
+
+        const bc = cSide.clone().lerp(cAcc, r2 * 0.28);
+        this._dummy.position.set(cx, by, cz);
+        this._dummy.rotation.set(0, rot, 0);
+        this._dummy.scale.set(1, hScale, 1);
+        this._dummy.updateMatrix();
+        bodyMesh.setMatrixAt(idx, this._dummy.matrix);
+        bodyMesh.setColorAt(idx, bc);
+        bodyTiles.push({
+          idx,
+          cx,
+          cz,
+          baseY: by,
+          scaleX: 1,
+          scaleY: hScale,
+          scaleZ: 1,
+          rotY: rot,
+          wave: w.wave,
+          rndA: r1,
+          rndB: r2,
+          baseColor: bc,
+        });
+
+        const ty = baseH * hScale + (topOffset - baseH * 0.5);
+        const tc = cTop.clone().lerp(cAcc, r1 * 0.35);
+        const ts = T.wallKind === 'trees' ? 0.92 + r2 * 0.26 : 1.0;
+        this._dummy.position.set(cx, ty, cz);
+        this._dummy.rotation.set(0, rot, 0);
+        this._dummy.scale.set(ts, ts, ts);
+        this._dummy.updateMatrix();
+        topMesh.setMatrixAt(idx, this._dummy.matrix);
+        topMesh.setColorAt(idx, tc);
+        topTiles.push({
+          idx,
+          cx,
+          cz,
+          baseY: ty,
+          scaleX: ts,
+          scaleY: ts,
+          scaleZ: ts,
+          rotY: rot,
+          wave: w.wave,
+          rndA: r1,
+          rndB: r2,
+          baseColor: tc,
+        });
+
+        minX = Math.min(minX, cx - cs * 0.5);
+        maxX = Math.max(maxX, cx + cs * 0.5);
+        minZ = Math.min(minZ, cz - cs * 0.5);
+        maxZ = Math.max(maxZ, cz + cs * 0.5);
+        maxY = Math.max(maxY, ty + cs * 0.65);
       });
 
-      const ty = baseH * hScale + (topOffset - baseH * 0.5);
-      const tc = cTop.clone().lerp(cAcc, r1 * 0.35);
-      const ts = T.wallKind === 'trees' ? 0.92 + r2 * 0.26 : 1.0;
-      this._dummy.position.set(cx, ty, cz);
-      this._dummy.rotation.set(0, rot, 0);
-      this._dummy.scale.set(ts, ts, ts);
-      this._dummy.updateMatrix();
-      this.wallTopMesh!.setMatrixAt(idx, this._dummy.matrix);
-      this.wallTopMesh!.setColorAt(idx, tc);
-      this.wallTopTiles.push({
-        idx,
-        cx,
-        cz,
-        baseY: ty,
-        scaleX: ts,
-        scaleY: ts,
-        scaleZ: ts,
-        rotY: rot,
-        wave: w.wave,
-        rndA: r1,
-        rndB: r2,
-        baseColor: tc,
+      bodyMesh.instanceMatrix.needsUpdate = true;
+      if (bodyMesh.instanceColor) bodyMesh.instanceColor.needsUpdate = true;
+      topMesh.instanceMatrix.needsUpdate = true;
+      if (topMesh.instanceColor) topMesh.instanceColor.needsUpdate = true;
+
+      this.root.add(bodyMesh);
+      this.root.add(topMesh);
+      this.wallClusters.push({ bodyMesh, topMesh, bodyTiles, topTiles });
+
+      this.occluders.push({
+        materials: [bodyMat, topMat],
+        baseOpacities: [1, 1],
+        box: new THREE.Box3(new THREE.Vector3(minX, 0, minZ), new THREE.Vector3(maxX, maxY, maxZ)),
+        isGrass: false,
+        minOpacity: 0.24,
+        curOpacity: 1.0,
+        wave: list[0].wave,
       });
-    });
-
-    this.wallMesh.instanceMatrix.needsUpdate = true;
-    if (this.wallMesh.instanceColor) this.wallMesh.instanceColor.needsUpdate = true;
-    this.wallTopMesh.instanceMatrix.needsUpdate = true;
-    if (this.wallTopMesh.instanceColor) this.wallTopMesh.instanceColor.needsUpdate = true;
-
-    this.root.add(this.wallMesh);
-    this.root.add(this.wallTopMesh);
+    }
   }
 
   private buildGrass() {
@@ -484,7 +536,7 @@ export class ArenaMap3D {
   public update(
     gt: number,
     elapsedSec: number,
-    opts?: { pauseClouds?: boolean; hideAmbient?: boolean; freezeCollapseAtTick?: number },
+    opts?: ArenaMapUpdateOpts,
   ) {
     const { waveSteps, colWarn } = this.mapData;
     const freezeT = opts?.freezeCollapseAtTick;
@@ -592,8 +644,11 @@ export class ArenaMap3D {
 
     updateGroup(this.floorMesh, this.floorTiles, false, true);
     updateGroup(this.cliffMesh, this.cliffTiles, false, false);
-    updateGroup(this.wallMesh, this.wallTiles, false, true);
-    updateGroup(this.wallTopMesh, this.wallTopTiles, false, false);
+    for (let c = 0; c < this.wallClusters.length; c++) {
+      const wc = this.wallClusters[c];
+      updateGroup(wc.bodyMesh, wc.bodyTiles, false, true);
+      updateGroup(wc.topMesh, wc.topTiles, false, false);
+    }
     updateGroup(this.grassMesh, this.grassTiles, true, false);
 
     // Gentle cloud drift (optionally paused for compact GIF capture)
@@ -634,13 +689,26 @@ export class ArenaMap3D {
     }
   }
 
+  public updateCloseupOcclusion(
+    camPos: THREE.Vector3,
+    focusPos: THREE.Vector3,
+    blend: number,
+    dt: number,
+  ) {
+    applyCloseupOcclusionStep(this.occluders, camPos, focusPos, blend, dt, this._dirScratch);
+  }
+
   public dispose() {
+    const geos = new Set<THREE.BufferGeometry>(this.wallSharedGeos);
+    const mats = new Set<THREE.Material>();
     this.root.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
-        obj.geometry.dispose();
-        if (Array.isArray(obj.material)) obj.material.forEach((m) => m.dispose());
-        else obj.material.dispose();
+        geos.add(obj.geometry);
+        if (Array.isArray(obj.material)) obj.material.forEach((m) => mats.add(m));
+        else mats.add(obj.material);
       }
     });
+    geos.forEach((g) => g.dispose());
+    mats.forEach((m) => m.dispose());
   }
 }

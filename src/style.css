@@ -83,6 +83,53 @@ html, body, #app {
   flex-shrink: 0;
 }
 
+/* Grass stealth AI vision eye indicator (above enemy nameplate, LoL Twitch style) */
+.np-eye {
+  position: absolute;
+  bottom: calc(100% + 5px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  border-radius: 999px;
+  pointer-events: none;
+  transition: opacity 0.14s ease, transform 0.16s ease, background 0.16s ease, border-color 0.16s ease;
+}
+
+.np-eye[data-eye='none'] {
+  display: none;
+}
+
+.np-eye[data-eye='closed'] {
+  background: rgba(12, 18, 32, 0.72);
+  border: 1px solid rgba(205, 224, 255, 0.36);
+  color: rgba(215, 230, 255, 0.88);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.38);
+}
+
+.np-eye[data-eye='open'] {
+  background: rgba(34, 18, 14, 0.88);
+  border: 1.5px solid rgba(255, 214, 102, 0.92);
+  color: #ffe27a;
+  box-shadow: 0 0 12px rgba(255, 182, 64, 0.65), 0 2px 8px rgba(0, 0, 0, 0.45);
+  animation: eyeSpotPop 0.22s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes eyeSpotPop {
+  0% {
+    transform: translateX(-50%) scale(0.75);
+  }
+  65% {
+    transform: translateX(-50%) scale(1.18);
+  }
+  100% {
+    transform: translateX(-50%) scale(1);
+  }
+}
+
 /* ---------- Lobby Overlay ---------- */
 .lobby-overlay {
   position: fixed;
@@ -3081,6 +3128,17 @@ kbd {
   font-weight: 800;
   color: #cfe0ff;
   font-variant-numeric: tabular-nums;
+}
+
+.quality-seg {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(56px, 1fr));
+  gap: 5px;
+}
+
+.quality-seg-btn {
+  padding: 5px 14px;
+  font-size: 12px;
 }
 
 .fps-grid {

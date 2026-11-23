@@ -194,8 +194,35 @@ function createCrescentArcGeo(): THREE.BufferGeometry {
   return geo;
 }
 
+const STEALTH_SEE_RADIUS_M = 2.5; // Exact cf.see_r = 2500mm from dart.hpp
+
+function createStealthRingTexture(): THREE.CanvasTexture {
+  const size = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d')!;
+  const half = size * 0.5;
+
+  // Radial translucent white fill + soft inner feathered halo + crisp outer edge ring (LoL Twitch style!)
+  const grad = ctx.createRadialGradient(half, half, 0, half, half, half);
+  grad.addColorStop(0.0, 'rgba(255, 255, 255, 0.055)');
+  grad.addColorStop(0.76, 'rgba(255, 255, 255, 0.075)');
+  grad.addColorStop(0.92, 'rgba(255, 255, 255, 0.21)');
+  grad.addColorStop(0.962, 'rgba(255, 255, 255, 0.88)');
+  grad.addColorStop(0.985, 'rgba(255, 255, 255, 0.92)');
+  grad.addColorStop(1.0, 'rgba(255, 255, 255, 0.0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+
 /**
- * Zero-allocation pooled 3D FX system + human aim reticle & recall progress indicator.
+ * Zero-allocation pooled 3D FX system + human aim reticle, recall progress & grass stealth ring.
  */
 export class FXSystem {
   private readonly scene: THREE.Scene;
@@ -211,11 +238,15 @@ export class FXSystem {
   private readonly dashTrails: TrailRibbon[] = [];
   private readonly bursts: ActiveBurst[] = [];
 
-  // Human tactical reticle & aim line
+  // Human tactical reticle, aim line, recall ring, and grass stealth detection ring (2.5m)
   private readonly reticleGroup = new THREE.Group();
   private readonly aimLine: THREE.Line;
   private readonly aimLinePositions = new Float32Array(6);
   private readonly recallRing: THREE.Mesh;
+  private readonly stealthRing: THREE.Mesh;
+  private readonly stealthTex: THREE.CanvasTexture;
+  private stealthAlpha = 0;
+  private lastNowSec = 0;
 
   private readonly _white = new THREE.Color('#ffffff');
   private readonly _yellow = new THREE.Color('#ffe066');
@@ -332,6 +363,26 @@ export class FXSystem {
     this.recallRing.position.y = 0.05;
     this.recallRing.visible = false;
     scene.add(this.recallRing);
+
+    // Grass stealth detection range circle (exact 2.5m radius = cf.see_r, translucent white LoL Twitch style)
+    this.stealthTex = createStealthRingTexture();
+    const stGeo = new THREE.CircleGeometry(STEALTH_SEE_RADIUS_M, 64);
+    stGeo.rotateX(-Math.PI / 2);
+    this.stealthRing = new THREE.Mesh(
+      stGeo,
+      new THREE.MeshBasicMaterial({
+        map: this.stealthTex,
+        color: '#ffffff',
+        transparent: true,
+        opacity: 0,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    );
+    this.stealthRing.position.y = 0.048;
+    this.stealthRing.renderOrder = 1;
+    this.stealthRing.visible = false;
+    scene.add(this.stealthRing);
   }
 
   public spawnSlash(x: number, z: number, angleRad: number, colorHex: string, nowSec: number) {
@@ -718,7 +769,11 @@ export class FXSystem {
     aimX: number,
     aimZ: number,
     hasMouse: boolean,
+    humanInGrass = false,
+    spottedByAny = false,
   ) {
+    const dt = Math.max(0.001, Math.min(0.08, nowSec - this.lastNowSec));
+    this.lastNowSec = nowSec;
     // 1. Reset pooled FX
     this.rings.reset();
     this.arcs.reset();
@@ -898,6 +953,28 @@ export class FXSystem {
       this.aimLine.visible = false;
       this.recallRing.visible = false;
     }
+
+    // 5. Grass stealth detection range circle (2.5m translucent white ring around human while in grass)
+    const showStealth = humanSeat >= 0 && !curr.over && curr.players[humanSeat]?.alive === 1 && humanInGrass;
+    const targetAlpha = showStealth ? 1 : 0;
+    const fadeK = 1 - Math.exp(-dt * 14);
+    this.stealthAlpha += (targetAlpha - this.stealthAlpha) * fadeK;
+    if (this.stealthAlpha > 0.01 && humanSeat >= 0 && curr.players[humanSeat]) {
+      const hp0 = prev.players[humanSeat];
+      const hp1 = curr.players[humanSeat];
+      const hx = (hp0.x + (hp1.x - hp0.x) * alpha) / 1000;
+      const hz = (hp0.y + (hp1.y - hp0.y) * alpha) / 1000;
+      this.stealthRing.visible = true;
+      this.stealthRing.position.set(hx, 0.048, hz);
+      const pulse = spottedByAny
+        ? 0.86 + 0.14 * Math.sin(nowSec * 9.5)
+        : 0.72 + 0.06 * Math.sin(nowSec * 3.0);
+      const stMat = this.stealthRing.material as THREE.MeshBasicMaterial;
+      stMat.opacity = this.stealthAlpha * pulse;
+    } else {
+      this.stealthRing.visible = false;
+      if (!showStealth) this.stealthAlpha = 0;
+    }
   }
 
   public clearAll() {
@@ -926,5 +1003,9 @@ export class FXSystem {
     this.scene.remove(this.reticleGroup);
     this.scene.remove(this.aimLine);
     this.scene.remove(this.recallRing);
+    this.scene.remove(this.stealthRing);
+    this.stealthRing.geometry.dispose();
+    (this.stealthRing.material as THREE.Material).dispose();
+    this.stealthTex.dispose();
   }
 }

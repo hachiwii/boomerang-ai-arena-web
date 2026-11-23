@@ -3,6 +3,7 @@ import { SoundFX } from '../audio/sfx';
 import { HumanInputController } from '../game/humanInput';
 import { CinematicCameraPose, CinematicDirector } from '../game/killCamDirector';
 import { CountdownStage } from '../game/matchController';
+import { GraphicsQualityOption } from '../game/settings';
 import {
   CauseType,
   CellType,
@@ -15,9 +16,23 @@ import {
 } from '../game/types';
 import { CharacterRig } from './charRig';
 import { FXSystem } from './fxSystem';
+import { HqArenaMap3D, IArenaMap } from './hqMapBuilder';
+import { getHqTheme } from './hqThemes';
 import { ArenaMap3D } from './mapBuilder';
 import { getTheme } from './themes';
 import { VoxelModelData } from './voxelBuilder';
+
+const EYE_OPEN_SVG =
+  `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">` +
+  `<path d="M2 12s3.8-6.5 10-6.5S22 12 22 12s-3.8 6.5-10 6.5S2 12 2 12Z"/>` +
+  `<circle cx="12" cy="12" r="3.2" fill="currentColor"/>` +
+  `</svg>`;
+
+const EYE_CLOSED_SVG =
+  `<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round">` +
+  `<path d="M3 10c2.4 3.6 5.5 5.2 9 5.2s6.6-1.6 9-5.2"/>` +
+  `<path d="M7.4 14.1 5.8 17.4M12 15.2v3.5M16.6 14.1 18.2 17.4"/>` +
+  `</svg>`;
 
 const PITCH_RAD = (58 * Math.PI) / 180;
 const CAM_FOV = 26;
@@ -77,7 +92,10 @@ export class GameRenderer {
   private readonly hemiLight: THREE.HemisphereLight;
   private readonly skyMesh: THREE.Mesh;
 
-  private arena: ArenaMap3D | null = null;
+  private arena: IArenaMap | null = null;
+  private activeMapData: EngineMapData | null = null;
+  private activeThemeName = 'meadow';
+  private graphicsQuality: GraphicsQualityOption = 'high';
   private rigs: CharacterRig[] = [];
   private fx: FXSystem | null = null;
   private countdownArrow: THREE.Group | null = null;
@@ -115,12 +133,15 @@ export class GameRenderer {
   private readonly _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.06);
   private readonly _hitPoint = new THREE.Vector3();
   private readonly _projVec = new THREE.Vector3();
+  private readonly _focusVec = new THREE.Vector3();
   private cursorSuppressed = false;
   private activeCursorKey = 'default';
 
   // Floating nameplate DOM elements (positioned via CSS transform3d for 240Hz smoothness!)
   private nameplateLayer: HTMLDivElement | null = null;
   private nameplates: HTMLDivElement[] = [];
+  private nameplateEyeEls: (HTMLSpanElement | null)[] = [];
+  private nameplateEyeStates: ('none' | 'closed' | 'open')[] = [];
 
   // Render Hz & frame-time telemetry
   public renderHz = 0;
@@ -145,11 +166,13 @@ export class GameRenderer {
     sfx: SoundFX,
     fixedSize?: { width: number; height: number },
     sharedCharModelCache?: Map<string, VoxelModelData>,
+    graphicsQuality: GraphicsQualityOption = 'high',
   ) {
     this.canvas = canvas;
     this.sfx = sfx;
     this.fixedSize = fixedSize ?? null;
     this.charModelCache = sharedCharModelCache ?? new Map<string, VoxelModelData>();
+    this.graphicsQuality = graphicsQuality;
 
     const initW = this.fixedSize ? this.fixedSize.width : window.innerWidth;
     const initH = this.fixedSize ? this.fixedSize.height : window.innerHeight;
@@ -211,14 +234,16 @@ export class GameRenderer {
     this.sunLight = new THREE.DirectionalLight('#ffecd0', 1.55);
     this.sunLight.position.set(16, 26, 14);
     this.sunLight.castShadow = true;
-    this.sunLight.shadow.mapSize.set(1024, 1024); // Lean 1K shadow map keeps GPU < 1ms for 240Hz+
+    const initShadowRes = this.graphicsQuality === 'high' ? 2048 : 1024;
+    this.sunLight.shadow.mapSize.set(initShadowRes, initShadowRes);
     this.sunLight.shadow.camera.near = 4;
-    this.sunLight.shadow.camera.far = 65;
+    this.sunLight.shadow.camera.far = 75;
     this.sunLight.shadow.camera.left = -16;
     this.sunLight.shadow.camera.right = 16;
     this.sunLight.shadow.camera.top = 16;
     this.sunLight.shadow.camera.bottom = -16;
-    this.sunLight.shadow.bias = -0.0012;
+    this.sunLight.shadow.bias = this.graphicsQuality === 'high' ? -0.0007 : -0.0012;
+    this.sunLight.shadow.normalBias = this.graphicsQuality === 'high' ? 0.025 : 0;
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
@@ -261,25 +286,106 @@ export class GameRenderer {
     return data;
   }
 
+  private createArenaInstance(mapData: EngineMapData, themeName: string): IArenaMap {
+    return this.graphicsQuality === 'high'
+      ? new HqArenaMap3D(mapData, themeName)
+      : new ArenaMap3D(mapData, themeName);
+  }
+
+  private updateSunShadowResolution() {
+    const targetRes = this.graphicsQuality === 'high' ? 2048 : 1024;
+    if (this.sunLight.shadow.mapSize.x !== targetRes) {
+      this.sunLight.shadow.mapSize.set(targetRes, targetRes);
+      if (this.sunLight.shadow.map) {
+        this.sunLight.shadow.map.dispose();
+        this.sunLight.shadow.map = null;
+      }
+    }
+    this.sunLight.shadow.bias = this.graphicsQuality === 'high' ? -0.0007 : -0.0012;
+    this.sunLight.shadow.normalBias = this.graphicsQuality === 'high' ? 0.025 : 0;
+  }
+
+  private positionSunForArena() {
+    if (!this.arena) return;
+    const cx = this.arena.widthM * 0.5;
+    const cz = this.arena.heightM * 0.5;
+    if (this.graphicsQuality === 'high') {
+      const hq = getHqTheme(this.activeThemeName);
+      const azRad = (hq.light.az * Math.PI) / 180;
+      const elRad = (hq.light.el * Math.PI) / 180;
+      const dist = 34;
+      // Blender az/el -> Three.js (bx, bz, -by)
+      const dx = Math.cos(elRad) * Math.sin(azRad) * dist;
+      const dy = Math.sin(elRad) * dist;
+      const dz = -Math.cos(elRad) * Math.cos(azRad) * dist;
+      this.sunLight.position.set(cx + dx, dy, cz + dz);
+    } else {
+      this.sunLight.position.set(cx + 10, 24, cz + 8);
+    }
+    this.sunLight.target.position.set(cx, 0, cz);
+    this.sunLight.target.updateMatrixWorld();
+
+    const halfSpan = Math.max(this.arena.widthM, this.arena.heightM) * (this.graphicsQuality === 'high' ? 0.78 : 0.65);
+    this.sunLight.shadow.camera.left = -halfSpan;
+    this.sunLight.shadow.camera.right = halfSpan;
+    this.sunLight.shadow.camera.top = halfSpan;
+    this.sunLight.shadow.camera.bottom = -halfSpan;
+    this.sunLight.shadow.camera.updateProjectionMatrix();
+  }
+
+  public setGraphicsQuality(quality: GraphicsQualityOption) {
+    if (this.graphicsQuality === quality) return;
+    this.graphicsQuality = quality;
+    this.updateSunShadowResolution();
+    if (this.arena && this.activeMapData) {
+      this.scene.remove(this.arena.root);
+      this.arena.dispose();
+      this.applyThemeLighting(this.activeThemeName);
+      this.arena = this.createArenaInstance(this.activeMapData, this.activeThemeName);
+      this.scene.add(this.arena.root);
+      this.positionSunForArena();
+      if (this.currState) {
+        this.arena.update(this.currState.t, this.elapsedSec, {
+          freezeCollapseAtTick: this.currState.over ? this.currState.t : undefined,
+        });
+      }
+    }
+  }
+
   private applyThemeLighting(themeName: string) {
-    const T = getTheme(themeName);
     const skyMat = this.skyMesh.material as THREE.ShaderMaterial;
-    skyMat.uniforms.topColor.value.set(T.skyTop);
-    skyMat.uniforms.bottomColor.value.set(T.skyBottom);
-    this.scene.fog = new THREE.Fog(T.fogColor, 48, 125);
-    this.sunLight.color.set(T.sunColor);
-    this.sunLight.intensity = T.sunIntensity;
-    this.hemiLight.color.set(T.ambientSky);
-    this.hemiLight.groundColor.set(T.ambientGround);
-    this.hemiLight.intensity = T.ambientIntensity;
+    if (this.graphicsQuality === 'high') {
+      const hq = getHqTheme(themeName);
+      skyMat.uniforms.topColor.value.set(hq.pal.sky_deep);
+      skyMat.uniforms.bottomColor.value.set(hq.pal.sky);
+      this.scene.fog = new THREE.Fog(hq.pal.haze, 52, 138);
+      this.sunLight.color.setRGB(hq.light.color[0], hq.light.color[1], hq.light.color[2]);
+      this.sunLight.intensity = hq.light.energy * 0.34;
+      this.hemiLight.color.set(hq.pal.ambient);
+      this.hemiLight.groundColor.set(hq.pal.rock_deep);
+      this.hemiLight.intensity = hq.light.ambient * 1.62;
+    } else {
+      const T = getTheme(themeName);
+      skyMat.uniforms.topColor.value.set(T.skyTop);
+      skyMat.uniforms.bottomColor.value.set(T.skyBottom);
+      this.scene.fog = new THREE.Fog(T.fogColor, 48, 125);
+      this.sunLight.color.set(T.sunColor);
+      this.sunLight.intensity = T.sunIntensity;
+      this.hemiLight.color.set(T.ambientSky);
+      this.hemiLight.groundColor.set(T.ambientGround);
+      this.hemiLight.intensity = T.ambientIntensity;
+    }
   }
 
   public async loadPreviewMap(mapData: EngineMapData, themeName: string) {
     this.clearMatchObjects();
     this.previewMode = true;
+    this.activeMapData = mapData;
+    this.activeThemeName = themeName;
     this.applyThemeLighting(themeName);
-    this.arena = new ArenaMap3D(mapData, themeName);
+    this.arena = this.createArenaInstance(mapData, themeName);
     this.scene.add(this.arena.root);
+    this.positionSunForArena();
     this.camTargetX = this.arena.widthM * 0.5;
     this.camTargetZ = this.arena.heightM * 0.5;
     this.recomputeCameraFit();
@@ -295,28 +401,20 @@ export class GameRenderer {
   ) {
     this.clearMatchObjects();
     this.previewMode = false;
+    this.activeMapData = mapData;
+    this.activeThemeName = themeName;
     this.slots = slots;
     this.humanSeat = humanSeat;
     this.gameSpeed = Math.max(0.1, Math.min(2.0, speed || 1.0));
     this.tickIntervalMs = LOGIC_DT_MS / this.gameSpeed;
 
     this.applyThemeLighting(themeName);
-    this.arena = new ArenaMap3D(mapData, themeName);
+    this.arena = this.createArenaInstance(mapData, themeName);
     this.scene.add(this.arena.root);
 
-    // Position sun centered on arena
     const cx = this.arena.widthM * 0.5;
     const cz = this.arena.heightM * 0.5;
-    this.sunLight.position.set(cx + 10, 24, cz + 8);
-    this.sunLight.target.position.set(cx, 0, cz);
-    this.sunLight.target.updateMatrixWorld();
-
-    const halfSpan = Math.max(this.arena.widthM, this.arena.heightM) * 0.65;
-    this.sunLight.shadow.camera.left = -halfSpan;
-    this.sunLight.shadow.camera.right = halfSpan;
-    this.sunLight.shadow.camera.top = halfSpan;
-    this.sunLight.shadow.camera.bottom = -halfSpan;
-    this.sunLight.shadow.camera.updateProjectionMatrix();
+    this.positionSunForArena();
 
     // Load voxel character models & construct rigs
     const models = await Promise.all(slots.map((s) => this.loadCharModel(s.charKey)));
@@ -470,14 +568,29 @@ export class GameRenderer {
     if (!this.nameplateLayer) return;
     this.nameplateLayer.innerHTML = '';
     this.nameplates = [];
+    this.nameplateEyeEls = [];
+    this.nameplateEyeStates = [];
     for (let i = 0; i < this.slots.length; i++) {
       const s = this.slots[i];
       const el = document.createElement('div');
       el.className = `nameplate ${s.kind === 'human' ? 'nameplate-human' : ''}`;
-      el.innerHTML = `<span class="np-dot" style="background:${s.ringAccent || s.color}"></span><span class="np-txt">${s.displayName}</span>`;
+      el.innerHTML = `<span class="np-eye" data-eye="none"></span><span class="np-dot" style="background:${s.ringAccent || s.color}"></span><span class="np-txt">${s.displayName}</span>`;
       this.nameplateLayer.appendChild(el);
       this.nameplates.push(el);
+      this.nameplateEyeEls.push(el.querySelector<HTMLSpanElement>('.np-eye'));
+      this.nameplateEyeStates.push('none');
     }
+  }
+
+  private setNameplateEyeState(seat: number, next: 'none' | 'closed' | 'open') {
+    if (this.nameplateEyeStates[seat] === next) return;
+    this.nameplateEyeStates[seat] = next;
+    const eyeEl = this.nameplateEyeEls[seat];
+    if (!eyeEl) return;
+    eyeEl.dataset.eye = next;
+    if (next === 'open') eyeEl.innerHTML = EYE_OPEN_SVG;
+    else if (next === 'closed') eyeEl.innerHTML = EYE_CLOSED_SVG;
+    else eyeEl.innerHTML = '';
   }
 
   private recomputeCameraFit() {
@@ -1055,6 +1168,15 @@ export class GameRenderer {
         freezeCollapseAtTick: this.currState.over ? this.currState.t : undefined,
       });
 
+      // Semi-transparent foreground obstacles blocking subject during close-up shots!
+      if (cinePose && cinePose.blend > 0.01) {
+        this._focusVec.set(cinePose.lookAt.x, cinePose.lookAt.y, cinePose.lookAt.z);
+        this.arena.updateCloseupOcclusion(this.camera.position, this._focusVec, cinePose.blend, frameDt);
+      } else {
+        this._focusVec.set(this.camTargetX, 0, this.camTargetZ);
+        this.arena.updateCloseupOcclusion(this.camera.position, this._focusVec, 0, frameDt);
+      }
+
       // Play escalating crumbling-gravel SFX when the human player stands on an impending-collapse tile
       const warnUrgency = this.getHumanCollapseWarnUrgency();
       if (warnUrgency >= 0) {
@@ -1069,6 +1191,15 @@ export class GameRenderer {
         this.nextCrumbleAtMs = 0;
       }
 
+      // Determine whether the live human player is currently in grass (LoL Twitch-style stealth ring + AI eye indicators)
+      const meHuman = this.humanSeat >= 0 ? this.currState.players[this.humanSeat] : null;
+      const humanAlive = Boolean(meHuman && meHuman.alive === 1);
+      const humanInGrass =
+        humanAlive &&
+        !this.currState.over &&
+        Boolean(meHuman && this.isCellGrassAt(meHuman.x, meHuman.y, this.currState.t));
+      let spottedByAny = false;
+
       // Update character rigs & floating nameplates
       const screenW = window.innerWidth;
       const screenH = window.innerHeight;
@@ -1079,12 +1210,22 @@ export class GameRenderer {
         const currD = this.currState.darts[k];
 
         // Visibility rule: if Human is playing & alive, hide enemies that Human cannot see in grass!
-        const humanAlive = this.humanSeat >= 0 && this.currState.players[this.humanSeat]?.alive === 1;
         const hiddenFromHuman =
           humanAlive &&
           k !== this.humanSeat &&
           currP.alive === 1 &&
           ((currP.visMask >> this.humanSeat) & 1) === 0;
+
+        // Eye indicator above opponent AI heads when human is standing in grass!
+        let eyeState: 'none' | 'closed' | 'open' = 'none';
+        if (humanInGrass && meHuman && k !== this.humanSeat && currP.alive === 1) {
+          const aiCanSeeMe = ((meHuman.visMask >> k) & 1) !== 0;
+          if (aiCanSeeMe) spottedByAny = true;
+          if (!hiddenFromHuman) {
+            eyeState = aiCanSeeMe ? 'open' : 'closed';
+          }
+        }
+        this.setNameplateEyeState(k, eyeState);
 
         // Stealth visual cue (crouch & dim) whenever character is hidden in grass from any opponent
         let inGrassStealth = false;
@@ -1146,7 +1287,7 @@ export class GameRenderer {
         this.maybeEmitWinnerConfetti(this.currState, cinePose, this.elapsedSec);
       }
 
-      // Update pooled FX + human aim reticle
+      // Update pooled FX + human aim reticle + grass stealth ring
       if (this.fx) {
         this.fx.update(
           this.elapsedSec,
@@ -1157,6 +1298,8 @@ export class GameRenderer {
           aimX,
           aimZ,
           input.hasMouse,
+          humanInGrass,
+          spottedByAny,
         );
       }
 
@@ -1292,6 +1435,14 @@ export class GameRenderer {
       freezeCollapseAtTick: curr.over ? curr.t : undefined,
     });
 
+    if (cinePose && cinePose.blend > 0.01) {
+      this._focusVec.set(cinePose.lookAt.x, cinePose.lookAt.y, cinePose.lookAt.z);
+      this.arena.updateCloseupOcclusion(this.camera.position, this._focusVec, cinePose.blend, frameDt);
+    } else {
+      this._focusVec.set(this.camTargetX, 0, this.camTargetZ);
+      this.arena.updateCloseupOcclusion(this.camera.position, this._focusVec, 0, frameDt);
+    }
+
     const { width: screenW, height: screenH } = this.getViewportSize();
     for (let k = 0; k < this.rigs.length; k++) {
       const prevP = prev.players[k];
@@ -1392,6 +1543,9 @@ export class GameRenderer {
       this.nameplateLayer.innerHTML = '';
     }
     this.nameplates = [];
+    this.nameplateEyeEls = [];
+    this.nameplateEyeStates = [];
+    this.activeMapData = null;
     this.prevState = null;
     this.currState = null;
     this.playbackPaused = false;

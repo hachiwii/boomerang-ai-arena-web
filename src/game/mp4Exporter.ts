@@ -10,6 +10,7 @@ import {
   ExportResolutionOption,
   ExportSpeedOption,
   getExportResolutionSpec,
+  GraphicsQualityOption,
 } from './settings';
 import { DState, LOGIC_DT_MS, SlotConfig, TickSnapshot } from './types';
 
@@ -19,6 +20,7 @@ export interface Mp4ExportOptions {
   speed: ExportSpeedOption;
   soundEnabled: boolean;
   volumePct: number;
+  graphicsQuality?: GraphicsQualityOption;
   cinematic?: boolean | Partial<CinematicOptions>;
   sharedCharModelCache?: Map<string, VoxelModelData>;
   signal?: AbortSignal;
@@ -551,6 +553,7 @@ export async function exportReplayToMp4(
     offlineSfx,
     { width, height },
     options.sharedCharModelCache,
+    options.graphicsQuality ?? 'high',
   );
 
   try {

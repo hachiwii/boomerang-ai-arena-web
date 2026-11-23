@@ -5,7 +5,7 @@ import { VoxelModelData } from '../render/voxelBuilder';
 import { CinematicDirector } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
 import { drawBroadcastOverlay, loadImage, triggerMp4Download } from './mp4Exporter';
-import { CinematicOptions } from './settings';
+import { CinematicOptions, GraphicsQualityOption } from './settings';
 import { LOGIC_DT_MS, TickSnapshot } from './types';
 
 export interface GifClipExportOptions {
@@ -13,6 +13,8 @@ export interface GifClipExportOptions {
   endTickIndex: number;
   /** Maximum clip duration in seconds (default 10s). */
   maxDurationSec?: number;
+  /** Graphics quality tier ('low' | 'high'). */
+  graphicsQuality?: GraphicsQualityOption;
   /** Granular cinematic camera toggles (killCam, finisherCam, winnerCam). */
   cinematic?: boolean | Partial<CinematicOptions>;
   sharedCharModelCache?: Map<string, VoxelModelData>;
@@ -126,6 +128,7 @@ export async function exportReplayClipToGif(
     silentSfx,
     { width: GIF_WIDTH, height: GIF_HEIGHT },
     options.sharedCharModelCache,
+    options.graphicsQuality ?? 'high',
   );
 
   try {
