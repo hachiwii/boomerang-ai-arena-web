@@ -1,9 +1,16 @@
 import {
   ACTION_META,
   ActionBindKey,
+  EXPORT_BITRATE_OPTIONS,
+  EXPORT_RESOLUTION_OPTIONS,
+  EXPORT_SPEED_OPTIONS,
+  ExportBitrateOption,
+  ExportResolutionOption,
+  ExportSpeedOption,
   formatInputCode,
   FPS_CAP_OPTIONS,
   FpsCapOption,
+  getExportResolutionSpec,
   SettingsStore,
 } from '../game/settings';
 
@@ -266,6 +273,45 @@ export class SettingsModal {
             </div>
           </section>
 
+          <!-- Replay MP4 Export Settings Section -->
+          <section class="settings-section">
+            <div class="settings-sec-head">
+              <span class="settings-sec-title">🎬 回放导出 (MP4)</span>
+              <span class="settings-sec-hint">
+                ${getExportResolutionSpec(s.exportResolution).desc} · ${s.exportBitrateMbps} Mbps · ${s.exportSpeed === 1 ? '1x' : `${s.exportSpeed}x`} · 60fps
+              </span>
+            </div>
+            <div class="export-opts-card">
+              <div class="export-opt-row">
+                <span class="export-opt-label">分辨率</span>
+                <div class="export-opt-grid">
+                  ${EXPORT_RESOLUTION_OPTIONS.map((opt) => {
+                    const active = s.exportResolution === opt.value;
+                    return `<button type="button" class="fps-btn export-opt-btn ${active ? 'active' : ''}" data-export-res="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                  }).join('')}
+                </div>
+              </div>
+              <div class="export-opt-row">
+                <span class="export-opt-label">码率</span>
+                <div class="export-opt-grid">
+                  ${EXPORT_BITRATE_OPTIONS.map((opt) => {
+                    const active = s.exportBitrateMbps === opt.value;
+                    return `<button type="button" class="fps-btn export-opt-btn ${active ? 'active' : ''}" data-export-bitrate="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                  }).join('')}
+                </div>
+              </div>
+              <div class="export-opt-row">
+                <span class="export-opt-label">播放速度</span>
+                <div class="export-opt-grid">
+                  ${EXPORT_SPEED_OPTIONS.map((opt) => {
+                    const active = s.exportSpeed === opt.value;
+                    return `<button type="button" class="fps-btn export-opt-btn ${active ? 'active' : ''}" data-export-speed="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                  }).join('')}
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- Keybindings Section -->
           <section class="settings-section">
             <div class="settings-sec-head">
@@ -348,6 +394,26 @@ export class SettingsModal {
     this.backdrop.querySelector('#settings-dash-buffer-toggle')?.addEventListener('click', () => {
       this.store.setDashInputBuffer(!this.store.get().dashInputBuffer);
       this.render();
+    });
+
+    // Export MP4 option selectors
+    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-export-res]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.store.setExportResolution(btn.dataset.exportRes as ExportResolutionOption);
+        this.render();
+      });
+    });
+    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-export-bitrate]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.store.setExportBitrateMbps(Number(btn.dataset.exportBitrate) as ExportBitrateOption);
+        this.render();
+      });
+    });
+    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-export-speed]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.store.setExportSpeed(Number(btn.dataset.exportSpeed) as ExportSpeedOption);
+        this.render();
+      });
     });
 
     // Keybinding slot capture

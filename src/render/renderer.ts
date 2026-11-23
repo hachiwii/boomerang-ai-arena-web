@@ -21,6 +21,15 @@ import { VoxelModelData } from './voxelBuilder';
 const PITCH_RAD = (58 * Math.PI) / 180;
 const CAM_FOV = 26;
 
+export interface ProjectedNameplate {
+  seat: number;
+  x: number;
+  y: number;
+  visible: boolean;
+  opacity: number;
+  inGrassStealth: boolean;
+}
+
 /**
  * High-refresh-rate (240Hz+ capable) Three.js WebGL2 renderer with smooth
  * 20Hz -> 240Hz+ entity interpolation, dynamic camera framing, sky gradient,
@@ -90,12 +99,23 @@ export class GameRenderer {
   private nextCrumbleAtMs = 0;
 
   // Voxel JSON cache
-  private readonly charModelCache = new Map<string, VoxelModelData>();
+  private readonly charModelCache: Map<string, VoxelModelData>;
   private readonly sfx: SoundFX;
+  private readonly fixedSize: { width: number; height: number } | null;
 
-  constructor(canvas: HTMLCanvasElement, sfx: SoundFX) {
+  constructor(
+    canvas: HTMLCanvasElement,
+    sfx: SoundFX,
+    fixedSize?: { width: number; height: number },
+    sharedCharModelCache?: Map<string, VoxelModelData>,
+  ) {
     this.canvas = canvas;
     this.sfx = sfx;
+    this.fixedSize = fixedSize ?? null;
+    this.charModelCache = sharedCharModelCache ?? new Map<string, VoxelModelData>();
+
+    const initW = this.fixedSize ? this.fixedSize.width : window.innerWidth;
+    const initH = this.fixedSize ? this.fixedSize.height : window.innerHeight;
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -103,8 +123,8 @@ export class GameRenderer {
       powerPreference: 'high-performance',
       alpha: false,
     });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setPixelRatio(this.fixedSize ? 1 : Math.min(window.devicePixelRatio || 1, 2));
+    this.renderer.setSize(initW, initH, !this.fixedSize);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.06;
@@ -113,7 +133,7 @@ export class GameRenderer {
 
     this.camera = new THREE.PerspectiveCamera(
       CAM_FOV,
-      window.innerWidth / window.innerHeight,
+      initW / Math.max(1, initH),
       0.5,
       260,
     );
@@ -165,7 +185,18 @@ export class GameRenderer {
     this.scene.add(this.sunLight);
     this.scene.add(this.sunLight.target);
 
-    window.addEventListener('resize', () => this.handleResize());
+    if (!this.fixedSize) {
+      window.addEventListener('resize', () => this.handleResize());
+    }
+  }
+
+  public getCharModelCache(): Map<string, VoxelModelData> {
+    return this.charModelCache;
+  }
+
+  private getViewportSize(): { width: number; height: number } {
+    if (this.fixedSize) return this.fixedSize;
+    return { width: window.innerWidth, height: window.innerHeight };
   }
 
   public setNameplateLayer(el: HTMLDivElement) {
@@ -403,9 +434,10 @@ export class GameRenderer {
 
   private recomputeCameraFit() {
     if (!this.arena) return;
+    const { width: vw, height: vh } = this.getViewportSize();
     const w = this.arena.widthM + 2.2;
     const h = this.arena.heightM + 2.4;
-    const aspect = Math.max(0.7, window.innerWidth / Math.max(1, window.innerHeight));
+    const aspect = Math.max(0.7, vw / Math.max(1, vh));
     const vFovRad = (CAM_FOV * Math.PI) / 180;
     const tanV = Math.tan(vFovRad * 0.5);
     const tanH = tanV * aspect;
@@ -1032,6 +1064,115 @@ export class GameRenderer {
       return [Math.round(this._hitPoint.x * 1000), Math.round(this._hitPoint.z * 1000)];
     }
     return null;
+  }
+
+  public processOfflineTickEvents(prev: TickSnapshot, curr: TickSnapshot, elapsedSec: number) {
+    this.elapsedSec = elapsedSec;
+    this.prevState = prev;
+    this.currState = curr;
+    this.processEvents(prev, curr, curr.events);
+  }
+
+  /**
+   * Renders one deterministic spectator-perspective frame for offline MP4 export
+   * and returns projected 2D nameplate coordinates in the fixed export viewport.
+   */
+  public renderOfflineFrame(
+    prev: TickSnapshot,
+    curr: TickSnapshot,
+    alpha: number,
+    gt: number,
+    frameDt: number,
+    elapsedSec: number,
+  ): ProjectedNameplate[] {
+    this.elapsedSec = elapsedSec;
+    const out: ProjectedNameplate[] = [];
+    if (!this.arena) return out;
+
+    let sx = 0;
+    let sz = 0;
+    if (this.shakeAmp > 0.002) {
+      sx = Math.sin(this.elapsedSec * 72) * this.shakeAmp;
+      sz = Math.cos(this.elapsedSec * 64) * this.shakeAmp;
+      this.shakeAmp *= Math.exp(-frameDt * 12);
+    } else {
+      this.shakeAmp = 0;
+    }
+
+    const camY = this.camDist * Math.sin(PITCH_RAD);
+    const camZ = this.camTargetZ + this.camDist * Math.cos(PITCH_RAD) - 0.35;
+    this.camera.position.set(this.camTargetX + sx, camY, camZ + sz);
+    this.camera.lookAt(this.camTargetX + sx * 0.4, 0, this.camTargetZ - 0.35 + sz * 0.4);
+    this.camera.updateMatrixWorld();
+
+    this.arena.update(gt, elapsedSec);
+
+    const { width: screenW, height: screenH } = this.getViewportSize();
+    for (let k = 0; k < this.rigs.length; k++) {
+      const prevP = prev.players[k];
+      const currP = curr.players[k];
+      const prevD = prev.darts[k];
+      const currD = curr.darts[k];
+
+      let inGrassStealth = false;
+      if (currP.alive === 1 && this.isCellGrassAt(currP.x, currP.y, curr.t)) {
+        const hasFlyingDart =
+          currD.st === DState.OUT || currD.st === DState.BACK || currD.st === DState.CALL || currD.st === DState.RISE;
+        if (!hasFlyingDart && currP.expose === 0) inGrassStealth = true;
+      }
+
+      const interpXMm = prevP.x + (currP.x - prevP.x) * alpha;
+      const interpYMm = prevP.y + (currP.y - prevP.y) * alpha;
+      const onGround = this.isCellSolidAt(interpXMm, interpYMm, curr.t);
+
+      this.rigs[k].update(
+        prevP,
+        currP,
+        prevD,
+        currD,
+        alpha,
+        gt,
+        curr.winner === k,
+        curr.over,
+        false,
+        inGrassStealth,
+        onGround,
+        frameDt,
+      );
+
+      if (!currP.alive) {
+        out.push({ seat: k, x: 0, y: 0, visible: false, opacity: 0, inGrassStealth: false });
+      } else {
+        this._projVec.set(interpXMm / 1000, 1.52, interpYMm / 1000);
+        this._projVec.project(this.camera);
+        out.push({
+          seat: k,
+          x: (this._projVec.x * 0.5 + 0.5) * screenW,
+          y: (-this._projVec.y * 0.5 + 0.5) * screenH,
+          visible: true,
+          opacity: inGrassStealth ? 0.56 : 0.96,
+          inGrassStealth,
+        });
+      }
+    }
+
+    if (this.fx) {
+      this.fx.update(elapsedSec, prev, curr, alpha, -1, 0, 0, false);
+    }
+
+    this.renderer.render(this.scene, this.camera);
+    return out;
+  }
+
+  public dispose() {
+    this.clearMatchObjects();
+    this.scene.remove(this.skyMesh);
+    this.skyMesh.geometry.dispose();
+    (this.skyMesh.material as THREE.Material).dispose();
+    this.renderer.dispose();
+    if (this.fixedSize) {
+      this.renderer.forceContextLoss();
+    }
   }
 
   public clearMatchObjects() {

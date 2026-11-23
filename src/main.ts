@@ -4,6 +4,7 @@ import { HumanInputController } from './game/humanInput';
 import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
 import { MatchController } from './game/matchController';
 import { buildMatchHistoryBundle, MatchHistoryStore } from './game/matchHistory';
+import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { ReplayController } from './game/replayController';
 import { FpsCapOption, isBoundToAction, SettingsStore } from './game/settings';
 import { CellType, EngineMapData, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
@@ -376,8 +377,30 @@ async function bootstrap() {
     },
   });
 
-  historyModal = new HistoryModal(matchHistory, {
+  historyModal = new HistoryModal(matchHistory, settings, {
     onReplay: startReplayById,
+    onExportMp4: async (matchId, signal, onProgress) => {
+      const bundle = await matchHistory.getReplayBundle(matchId);
+      if (!bundle) {
+        throw new Error('未找到该场对局的回放数据');
+      }
+      const s = settings.get();
+      const result = await exportReplayToMp4(bundle, {
+        resolution: s.exportResolution,
+        bitrateMbps: s.exportBitrateMbps,
+        speed: s.exportSpeed,
+        soundEnabled: s.soundEnabled,
+        volumePct: s.volume,
+        sharedCharModelCache: renderer.getCharModelCache(),
+        signal,
+        onProgress,
+      });
+      triggerMp4Download(result.blob, result.filename);
+      return result;
+    },
+    onOpenSettings: () => {
+      settingsModal.open();
+    },
   });
 
   controller = new MatchController(input, {

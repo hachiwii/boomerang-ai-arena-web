@@ -3,6 +3,8 @@
  */
 export class SoundFX {
   private ctx: AudioContext | null = null;
+  private offlineCtx: BaseAudioContext | null = null;
+  private offlineTimeSec = 0;
   public muted = false;
   public volume = 1.0;
 
@@ -11,8 +13,18 @@ export class SoundFX {
     this.volume = Math.max(0, Math.min(1, volumePct / 100));
   }
 
-  private ensure(): AudioContext | null {
+  /**
+   * Directs SFX scheduling into an OfflineAudioContext at an exact video timestamp
+   * for frame-accurate audio muxing during offline MP4 replay export.
+   */
+  public setOfflineTarget(ctx: BaseAudioContext | null, timeSec = 0) {
+    this.offlineCtx = ctx;
+    this.offlineTimeSec = Math.max(0.001, timeSec);
+  }
+
+  private ensure(): BaseAudioContext | null {
     if (this.muted || this.volume <= 0.001) return null;
+    if (this.offlineCtx) return this.offlineCtx;
     if (!this.ctx) {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AC) return null;
@@ -28,7 +40,8 @@ export class SoundFX {
     const ctx = this.ensure();
     if (!ctx) return;
     const gScaled = Math.max(0.0002, gainVal * this.volume);
-    const t0 = ctx.currentTime + delay;
+    const baseTime = this.offlineCtx ? this.offlineTimeSec : ctx.currentTime;
+    const t0 = Math.max(0.001, baseTime + delay);
     const osc = ctx.createOscillator();
     const g = ctx.createGain();
     osc.type = type;
@@ -57,7 +70,8 @@ export class SoundFX {
     flt.frequency.value = filterFreq;
     flt.Q.value = q;
     const g = ctx.createGain();
-    const t0 = ctx.currentTime + delay;
+    const baseTime = this.offlineCtx ? this.offlineTimeSec : ctx.currentTime;
+    const t0 = Math.max(0.001, baseTime + delay);
     g.gain.setValueAtTime(0.0001, t0);
     g.gain.linearRampToValueAtTime(gScaled, t0 + Math.min(0.004, dur * 0.25));
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);

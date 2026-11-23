@@ -3,16 +3,38 @@ import {
   MatchHistorySummary,
   MAX_HISTORY_RECORDS,
 } from '../game/matchHistory';
+import { Mp4ExportResult } from '../game/mp4Exporter';
+import { SettingsStore } from '../game/settings';
 
 type HistoryFilter = 'all' | 'ranked' | 'custom';
 
 export interface HistoryModalCallbacks {
   onReplay: (matchId: string) => Promise<void> | void;
+  onExportMp4: (
+    matchId: string,
+    signal: AbortSignal,
+    onProgress: (progress01: number, phaseText: string) => void,
+  ) => Promise<Mp4ExportResult>;
+  onOpenSettings: () => void;
   onOpenChange?: (open: boolean) => void;
+}
+
+interface ActiveExportState {
+  matchId: string;
+  mapTitle: string;
+  presetLabel: string;
+  progress: number;
+  phaseText: string;
+  controller: AbortController;
 }
 
 function escapeHtml(s: string): string {
   return s.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] || c);
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
 function formatPlayedTime(ts: number): { short: string; full: string } {
@@ -38,6 +60,7 @@ function formatPlayedTime(ts: number): { short: string; full: string } {
 
 export class HistoryModal {
   private readonly store: MatchHistoryStore;
+  private readonly settings: SettingsStore;
   private readonly callbacks: HistoryModalCallbacks;
   private readonly backdrop: HTMLDivElement;
 
@@ -46,13 +69,17 @@ export class HistoryModal {
   private summaries: MatchHistorySummary[] = [];
   private loading = false;
   private loadingReplayId: string | null = null;
+  private activeExport: ActiveExportState | null = null;
+  private statusNotice: { text: string; kind: 'ok' | 'err' } | null = null;
+  private statusTimer: number | null = null;
   private confirmClear = false;
   private confirmTimer: number | null = null;
 
   private readonly handleKeyDown: (e: KeyboardEvent) => void;
 
-  constructor(store: MatchHistoryStore, callbacks: HistoryModalCallbacks) {
+  constructor(store: MatchHistoryStore, settings: SettingsStore, callbacks: HistoryModalCallbacks) {
     this.store = store;
+    this.settings = settings;
     this.callbacks = callbacks;
 
     this.backdrop = document.createElement('div');
@@ -65,11 +92,18 @@ export class HistoryModal {
       }
     });
 
+    this.settings.onChange(() => {
+      if (this.openState && !this.activeExport) {
+        this.render();
+      }
+    });
+
     this.handleKeyDown = (e: KeyboardEvent) => {
       if (!this.openState) return;
       if (e.code === 'Escape') {
         e.preventDefault();
         e.stopPropagation();
+        if (this.activeExport) return; // Don't accidentally abort active export via ESC
         this.close();
       }
     };
@@ -78,6 +112,10 @@ export class HistoryModal {
 
   public isOpen(): boolean {
     return this.openState;
+  }
+
+  public isExporting(): boolean {
+    return this.activeExport !== null;
   }
 
   public async open() {
@@ -91,6 +129,10 @@ export class HistoryModal {
 
   public close() {
     if (!this.openState) return;
+    if (this.activeExport) {
+      this.activeExport.controller.abort();
+      this.activeExport = null;
+    }
     this.openState = false;
     this.loadingReplayId = null;
     this.clearConfirmReset();
@@ -104,6 +146,25 @@ export class HistoryModal {
       window.clearTimeout(this.confirmTimer);
       this.confirmTimer = null;
     }
+  }
+
+  private showNotice(text: string, kind: 'ok' | 'err' = 'ok') {
+    this.statusNotice = { text, kind };
+    if (this.statusTimer !== null) {
+      window.clearTimeout(this.statusTimer);
+    }
+    this.statusTimer = window.setTimeout(() => {
+      this.statusNotice = null;
+      this.statusTimer = null;
+      if (this.openState) this.render();
+    }, 5000);
+    if (this.openState) this.render();
+  }
+
+  private getExportPresetLabel(): string {
+    const s = this.settings.get();
+    const spd = s.exportSpeed === 1 ? '1x' : `${s.exportSpeed}x`;
+    return `${s.exportResolution} · ${s.exportBitrateMbps} Mbps · ${spd}`;
   }
 
   private async refresh() {
@@ -127,6 +188,62 @@ export class HistoryModal {
       return this.summaries.filter((m) => m.matchMode === 'custom');
     }
     return this.summaries;
+  }
+
+  private updateExportProgressDom() {
+    if (!this.activeExport) return;
+    const pct = Math.max(0, Math.min(100, Math.round(this.activeExport.progress * 100)));
+    const barFill = this.backdrop.querySelector<HTMLElement>('#history-export-fill');
+    const pctEl = this.backdrop.querySelector<HTMLElement>('#history-export-pct');
+    const phaseEl = this.backdrop.querySelector<HTMLElement>('#history-export-phase');
+    const rowBtn = this.backdrop.querySelector<HTMLButtonElement>(
+      `[data-export-id="${CSS.escape(this.activeExport.matchId)}"]`,
+    );
+    if (barFill) barFill.style.width = `${pct}%`;
+    if (pctEl) pctEl.textContent = `${pct}%`;
+    if (phaseEl) phaseEl.textContent = this.activeExport.phaseText;
+    if (rowBtn) rowBtn.textContent = `导出 ${pct}%`;
+  }
+
+  private startExport(summary: MatchHistorySummary) {
+    if (this.activeExport || this.loadingReplayId !== null) return;
+    const controller = new AbortController();
+    const presetLabel = this.getExportPresetLabel();
+    this.statusNotice = null;
+    this.activeExport = {
+      matchId: summary.id,
+      mapTitle: summary.mapTitle,
+      presetLabel,
+      progress: 0.01,
+      phaseText: '准备导出...',
+      controller,
+    };
+    this.render();
+
+    void this.callbacks
+      .onExportMp4(summary.id, controller.signal, (p01, phaseText) => {
+        if (!this.activeExport || this.activeExport.matchId !== summary.id) return;
+        this.activeExport.progress = p01;
+        this.activeExport.phaseText = phaseText;
+        this.updateExportProgressDom();
+      })
+      .then((res) => {
+        this.activeExport = null;
+        const audioTag = res.hasAudio ? '含音效' : '无音轨';
+        this.showNotice(
+          `✅ 已下载 ${res.filename}（${formatBytes(res.sizeBytes)} · ${res.width}×${res.height} · ${audioTag}）`,
+          'ok',
+        );
+      })
+      .catch((err) => {
+        this.activeExport = null;
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          this.showNotice('已取消 MP4 导出', 'err');
+        } else {
+          const msg = err instanceof Error ? err.message : String(err);
+          this.showNotice(`导出失败：${msg}`, 'err');
+        }
+      });
   }
 
   private renderRow(m: MatchHistorySummary): string {
@@ -170,6 +287,10 @@ export class HistoryModal {
     const timeInfo = formatPlayedTime(m.playedAt);
     const orderedPlayers = [...m.players].sort((a, b) => a.rank - b.rank || b.kills - a.kills);
     const isLoadingThis = this.loadingReplayId === m.id;
+    const isExportingThis = this.activeExport?.matchId === m.id;
+    const busy = this.loadingReplayId !== null || this.activeExport !== null;
+    const exportPct = isExportingThis ? Math.round((this.activeExport?.progress || 0) * 100) : 0;
+    const presetLabel = this.getExportPresetLabel();
 
     return `
       <div class="history-row ${outcomeCls}" data-history-id="${escapeHtml(m.id)}">
@@ -207,9 +328,18 @@ export class HistoryModal {
               type="button"
               class="hm-replay-btn"
               data-replay-id="${escapeHtml(m.id)}"
-              ${this.loadingReplayId !== null ? 'disabled' : ''}
+              ${busy ? 'disabled' : ''}
             >
               ${isLoadingThis ? '加载中...' : '▶ 回放'}
+            </button>
+            <button
+              type="button"
+              class="hm-export-btn ${isExportingThis ? 'is-exporting' : ''}"
+              data-export-id="${escapeHtml(m.id)}"
+              title="将本局观战回放导出下载为 MP4（当前：${presetLabel}）"
+              ${busy ? 'disabled' : ''}
+            >
+              ${isExportingThis ? `导出 ${exportPct}%` : '⬇ 导出'}
             </button>
             <button
               type="button"
@@ -217,7 +347,7 @@ export class HistoryModal {
               data-delete-id="${escapeHtml(m.id)}"
               title="删除此条对局记录"
               aria-label="删除此条对局记录"
-              ${this.loadingReplayId !== null ? 'disabled' : ''}
+              ${busy ? 'disabled' : ''}
             >
               ×
             </button>
@@ -232,6 +362,8 @@ export class HistoryModal {
     const rankedCount = this.summaries.filter((m) => m.matchMode !== 'custom').length;
     const customCount = totalCount - rankedCount;
     const visible = this.filteredSummaries();
+    const busy = this.activeExport !== null;
+    const presetLabel = this.getExportPresetLabel();
 
     let bodyHtml = '';
     if (this.loading && totalCount === 0) {
@@ -251,6 +383,29 @@ export class HistoryModal {
       bodyHtml = `<div class="history-list">${visible.map((m) => this.renderRow(m)).join('')}</div>`;
     }
 
+    const exportBarHtml = this.activeExport
+      ? `
+        <div class="history-export-bar">
+          <div class="heb-top">
+            <div class="heb-info">
+              <span class="heb-title">🎬 正在导出《${escapeHtml(this.activeExport.mapTitle)}》MP4 (${escapeHtml(this.activeExport.presetLabel)})</span>
+              <span class="heb-phase" id="history-export-phase">${escapeHtml(this.activeExport.phaseText)}</span>
+            </div>
+            <div class="heb-right">
+              <span class="heb-pct" id="history-export-pct">${Math.round(this.activeExport.progress * 100)}%</span>
+              <button type="button" class="heb-cancel-btn" id="history-export-cancel">取消</button>
+            </div>
+          </div>
+          <div class="heb-track">
+            <div class="heb-fill" id="history-export-fill" style="width:${Math.round(this.activeExport.progress * 100)}%"></div>
+          </div>
+        </div>`
+      : '';
+
+    const noticeHtml = this.statusNotice
+      ? `<div class="history-notice ${this.statusNotice.kind === 'ok' ? 'is-ok' : 'is-err'}">${escapeHtml(this.statusNotice.text)}</div>`
+      : '';
+
     this.backdrop.innerHTML = `
       <div class="history-card" role="dialog" aria-label="对局历史">
         <div class="history-head">
@@ -261,12 +416,12 @@ export class HistoryModal {
           <div class="history-head-right">
             ${
               totalCount > 0
-                ? `<button type="button" class="history-clear-btn ${this.confirmClear ? 'confirm' : ''}" id="history-clear-all">
+                ? `<button type="button" class="history-clear-btn ${this.confirmClear ? 'confirm' : ''}" id="history-clear-all" ${busy ? 'disabled' : ''}>
                     ${this.confirmClear ? '确认清空全部？' : '清空历史'}
                   </button>`
                 : ''
             }
-            <button type="button" class="settings-close-btn" id="history-close">完成</button>
+            <button type="button" class="settings-close-btn" id="history-close" ${busy ? 'disabled' : ''}>完成</button>
           </div>
         </div>
 
@@ -282,8 +437,19 @@ export class HistoryModal {
               🎛️ 自定义 <span>${customCount}</span>
             </button>
           </div>
-          <div class="history-tip">点击「▶ 回放」以观战全视野视角重放</div>
+          <button
+            type="button"
+            class="history-export-cfg-btn"
+            id="history-open-export-settings"
+            title="在设置中调整 MP4 导出分辨率、码率与播放速度"
+            ${busy ? 'disabled' : ''}
+          >
+            ⚙️ 导出设置：${escapeHtml(presetLabel)}
+          </button>
         </div>
+
+        ${exportBarHtml}
+        ${noticeHtml}
 
         <div class="history-body">
           ${bodyHtml}
@@ -292,16 +458,26 @@ export class HistoryModal {
     `;
 
     this.backdrop.onclick = (e) => {
-      if (e.target === this.backdrop) {
+      if (e.target === this.backdrop && !this.activeExport) {
         this.close();
       }
     };
 
     this.backdrop.querySelector('#history-close')?.addEventListener('click', () => {
-      this.close();
+      if (!this.activeExport) this.close();
+    });
+
+    this.backdrop.querySelector('#history-open-export-settings')?.addEventListener('click', () => {
+      if (this.activeExport) return;
+      this.callbacks.onOpenSettings();
+    });
+
+    this.backdrop.querySelector('#history-export-cancel')?.addEventListener('click', () => {
+      this.activeExport?.controller.abort();
     });
 
     this.backdrop.querySelector('#history-clear-all')?.addEventListener('click', () => {
+      if (this.activeExport) return;
       if (!this.confirmClear) {
         this.confirmClear = true;
         this.render();
@@ -328,7 +504,7 @@ export class HistoryModal {
     this.backdrop.querySelectorAll<HTMLButtonElement>('[data-replay-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.replayId!;
-        if (this.loadingReplayId !== null) return;
+        if (this.loadingReplayId !== null || this.activeExport !== null) return;
         this.loadingReplayId = id;
         this.render();
         Promise.resolve(this.callbacks.onReplay(id)).catch((err) => {
@@ -339,8 +515,19 @@ export class HistoryModal {
       });
     });
 
+    const summaryById = new Map(this.summaries.map((s) => [s.id, s]));
+    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-export-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.exportId!;
+        const s = summaryById.get(id);
+        if (!s) return;
+        this.startExport(s);
+      });
+    });
+
     this.backdrop.querySelectorAll<HTMLButtonElement>('[data-delete-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
+        if (this.activeExport) return;
         const id = btn.dataset.deleteId!;
         void this.store.deleteMatch(id);
       });

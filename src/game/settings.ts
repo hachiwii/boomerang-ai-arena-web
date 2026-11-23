@@ -1,4 +1,7 @@
 export type FpsCapOption = 'vsync' | 60 | 120 | 144 | 240 | 360 | 'uncapped';
+export type ExportResolutionOption = '480p' | '720p' | '1080p' | '1440p';
+export type ExportBitrateOption = 2 | 4 | 8 | 12;
+export type ExportSpeedOption = 0.5 | 1.0 | 1.5 | 2.0;
 
 export type ActionBindKey =
   | 'moveUp'
@@ -19,6 +22,9 @@ export interface GameSettings {
   volume: number; // 0..100
   fpsCap: FpsCapOption;
   dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
+  exportResolution: ExportResolutionOption;
+  exportBitrateMbps: ExportBitrateOption;
+  exportSpeed: ExportSpeedOption;
   keybindings: KeyBindings;
 }
 
@@ -50,6 +56,37 @@ export const FPS_CAP_OPTIONS: { value: FpsCapOption; label: string; desc: string
   { value: 'uncapped', label: '240Hz+ 解锁', desc: '突破 VSync (~260Hz)' },
 ];
 
+export const EXPORT_RESOLUTION_OPTIONS: {
+  value: ExportResolutionOption;
+  label: string;
+  width: number;
+  height: number;
+  desc: string;
+}[] = [
+  { value: '480p', label: '480p', width: 854, height: 480, desc: '854×480 · 极小体积' },
+  { value: '720p', label: '720p', width: 1280, height: 720, desc: '1280×720 · 适合 Web 分享' },
+  { value: '1080p', label: '1080p', width: 1920, height: 1080, desc: '1920×1080 · 全高清' },
+  { value: '1440p', label: '1440p', width: 2560, height: 1440, desc: '2560×1440 · 2K 超清' },
+];
+
+export const EXPORT_BITRATE_OPTIONS: { value: ExportBitrateOption; label: string; desc: string }[] = [
+  { value: 2, label: '2 Mbps', desc: '超轻量' },
+  { value: 4, label: '4 Mbps', desc: '推荐 · 均衡清晰' },
+  { value: 8, label: '8 Mbps', desc: '高清晰度' },
+  { value: 12, label: '12 Mbps', desc: '极致画质' },
+];
+
+export const EXPORT_SPEED_OPTIONS: { value: ExportSpeedOption; label: string }[] = [
+  { value: 0.5, label: '0.5x' },
+  { value: 1.0, label: '1x' },
+  { value: 1.5, label: '1.5x' },
+  { value: 2.0, label: '2x' },
+];
+
+export function getExportResolutionSpec(res: ExportResolutionOption) {
+  return EXPORT_RESOLUTION_OPTIONS.find((o) => o.value === res) || EXPORT_RESOLUTION_OPTIONS[1];
+}
+
 export function cloneDefaultKeybindings(): KeyBindings {
   return {
     moveUp: ['KeyW', 'ArrowUp'],
@@ -70,11 +107,17 @@ export function defaultSettings(): GameSettings {
     volume: 100,
     fpsCap: 'vsync',
     dashInputBuffer: true,
+    exportResolution: '720p',
+    exportBitrateMbps: 4,
+    exportSpeed: 1.0,
     keybindings: cloneDefaultKeybindings(),
   };
 }
 
 const VALID_FPS_CAPS = new Set<FpsCapOption>(['vsync', 60, 120, 144, 240, 360, 'uncapped']);
+const VALID_EXPORT_RES = new Set<ExportResolutionOption>(['480p', '720p', '1080p', '1440p']);
+const VALID_EXPORT_BITRATES = new Set<ExportBitrateOption>([2, 4, 8, 12]);
+const VALID_EXPORT_SPEEDS = new Set<ExportSpeedOption>([0.5, 1.0, 1.5, 2.0]);
 const STORAGE_KEY = 'boomerang_arena_settings_v1';
 
 /**
@@ -184,6 +227,18 @@ export class SettingsStore {
         parsed.fpsCap !== undefined && VALID_FPS_CAPS.has(parsed.fpsCap) ? parsed.fpsCap : def.fpsCap;
       const dashInputBuffer =
         typeof parsed.dashInputBuffer === 'boolean' ? parsed.dashInputBuffer : def.dashInputBuffer;
+      const exportResolution: ExportResolutionOption =
+        parsed.exportResolution !== undefined && VALID_EXPORT_RES.has(parsed.exportResolution)
+          ? parsed.exportResolution
+          : def.exportResolution;
+      const exportBitrateMbps: ExportBitrateOption =
+        parsed.exportBitrateMbps !== undefined && VALID_EXPORT_BITRATES.has(parsed.exportBitrateMbps)
+          ? parsed.exportBitrateMbps
+          : def.exportBitrateMbps;
+      const exportSpeed: ExportSpeedOption =
+        parsed.exportSpeed !== undefined && VALID_EXPORT_SPEEDS.has(parsed.exportSpeed)
+          ? parsed.exportSpeed
+          : def.exportSpeed;
 
       const kb = cloneDefaultKeybindings();
       if (parsed.keybindings && typeof parsed.keybindings === 'object') {
@@ -196,7 +251,16 @@ export class SettingsStore {
           }
         }
       }
-      return { soundEnabled, volume, fpsCap, dashInputBuffer, keybindings: kb };
+      return {
+        soundEnabled,
+        volume,
+        fpsCap,
+        dashInputBuffer,
+        exportResolution,
+        exportBitrateMbps,
+        exportSpeed,
+        keybindings: kb,
+      };
     } catch {
       return def;
     }
@@ -248,6 +312,24 @@ export class SettingsStore {
   public setDashInputBuffer(enabled: boolean) {
     if (this.settings.dashInputBuffer === enabled) return;
     this.settings.dashInputBuffer = enabled;
+    this.emit();
+  }
+
+  public setExportResolution(res: ExportResolutionOption) {
+    if (!VALID_EXPORT_RES.has(res) || this.settings.exportResolution === res) return;
+    this.settings.exportResolution = res;
+    this.emit();
+  }
+
+  public setExportBitrateMbps(mbps: ExportBitrateOption) {
+    if (!VALID_EXPORT_BITRATES.has(mbps) || this.settings.exportBitrateMbps === mbps) return;
+    this.settings.exportBitrateMbps = mbps;
+    this.emit();
+  }
+
+  public setExportSpeed(speed: ExportSpeedOption) {
+    if (!VALID_EXPORT_SPEEDS.has(speed) || this.settings.exportSpeed === speed) return;
+    this.settings.exportSpeed = speed;
     this.emit();
   }
 

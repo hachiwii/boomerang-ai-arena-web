@@ -3018,6 +3018,41 @@ kbd {
   color: var(--text-dim);
 }
 
+.export-opts-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.export-opt-row {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 10px;
+}
+
+.export-opt-label {
+  font-size: 12px;
+  font-weight: 800;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.export-opt-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+}
+
+.export-opt-btn {
+  padding: 6px 8px;
+  font-size: 12px;
+}
+
 .settings-vol-wrap {
   flex: 1;
   min-width: 190px;
@@ -3429,6 +3464,135 @@ kbd {
   color: var(--text-dim);
 }
 
+.history-export-cfg-btn {
+  padding: 5px 11px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.06);
+  color: #cfe0ff;
+  font-size: 11.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.14s ease;
+}
+
+.history-export-cfg-btn:hover:not(:disabled) {
+  background: rgba(61, 126, 255, 0.22);
+  border-color: rgba(114, 170, 255, 0.48);
+  color: #fff;
+}
+
+.history-export-cfg-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.history-export-bar {
+  margin: 10px 20px 0;
+  padding: 10px 13px;
+  border-radius: 12px;
+  background: rgba(61, 126, 255, 0.14);
+  border: 1px solid rgba(114, 175, 255, 0.42);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.heb-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.heb-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.heb-title {
+  font-size: 12.5px;
+  font-weight: 800;
+  color: #eef5ff;
+}
+
+.heb-phase {
+  font-size: 11px;
+  color: #a9c7f8;
+  font-variant-numeric: tabular-nums;
+}
+
+.heb-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.heb-pct {
+  font-size: 13px;
+  font-weight: 900;
+  color: #8df4bc;
+  font-variant-numeric: tabular-nums;
+  min-width: 36px;
+  text-align: right;
+}
+
+.heb-cancel-btn {
+  padding: 4px 10px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 130, 130, 0.45);
+  background: rgba(235, 72, 72, 0.2);
+  color: #ffc2c2;
+  font-size: 11.5px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.heb-cancel-btn:hover {
+  background: rgba(235, 72, 72, 0.36);
+  color: #fff;
+}
+
+.heb-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  overflow: hidden;
+}
+
+.heb-fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, #3d7eff 0%, #5ce8a4 100%);
+  transition: width 0.08s linear;
+}
+
+.history-notice {
+  margin: 10px 20px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  font-size: 12px;
+  font-weight: 700;
+  word-break: break-all;
+}
+
+.history-notice.is-ok {
+  background: rgba(74, 196, 128, 0.18);
+  border: 1px solid rgba(114, 234, 166, 0.45);
+  color: #aef7cf;
+}
+
+.history-notice.is-err {
+  background: rgba(235, 82, 82, 0.18);
+  border: 1px solid rgba(255, 130, 130, 0.45);
+  color: #ffc0c0;
+}
+
 .history-body {
   padding: 14px 20px 18px;
   overflow-y: auto;
@@ -3718,6 +3882,38 @@ kbd {
 
 .hm-replay-btn:disabled {
   opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.hm-export-btn {
+  padding: 7px 11px;
+  border-radius: 9px;
+  border: 1px solid rgba(114, 234, 166, 0.42);
+  background: rgba(56, 188, 124, 0.18);
+  color: #aaf6cc;
+  font-size: 12.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.14s ease;
+}
+
+.hm-export-btn:hover:not(:disabled) {
+  background: rgba(56, 188, 124, 0.32);
+  border-color: rgba(130, 245, 182, 0.65);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.hm-export-btn.is-exporting {
+  background: rgba(61, 126, 255, 0.25);
+  border-color: rgba(114, 175, 255, 0.55);
+  color: #cfe4ff;
+}
+
+.hm-export-btn:disabled {
+  opacity: 0.52;
   cursor: not-allowed;
 }
 
