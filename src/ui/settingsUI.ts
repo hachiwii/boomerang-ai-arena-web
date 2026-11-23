@@ -243,6 +243,29 @@ export class SettingsModal {
             </div>
           </section>
 
+          <!-- Combat Input Buffer Section -->
+          <section class="settings-section">
+            <div class="settings-sec-title">🎮 预输入机制</div>
+            <div class="settings-toggle-row">
+              <div class="settings-toggle-meta">
+                <div class="settings-toggle-title">冲刺过程中可以预输入指令</div>
+                <div class="settings-toggle-desc">
+                  开启后，冲刺中按下的扔镖/挥砍不会打断冲刺，在冲刺结束后首个可操作帧释放（多次输入仅保留最后一个）
+                </div>
+              </div>
+              <button
+                type="button"
+                class="rand-switch ${s.dashInputBuffer ? 'is-on' : ''}"
+                id="settings-dash-buffer-toggle"
+                role="switch"
+                aria-checked="${s.dashInputBuffer}"
+              >
+                <span class="rand-track"><span class="rand-thumb"></span></span>
+                <span class="rand-label">${s.dashInputBuffer ? '已开启' : '已关闭'}</span>
+              </button>
+            </div>
+          </section>
+
           <!-- Keybindings Section -->
           <section class="settings-section">
             <div class="settings-sec-head">
@@ -319,6 +342,12 @@ export class SettingsModal {
         this.store.setFpsCap(parsed);
         this.render();
       });
+    });
+
+    // Dash pre-input buffer toggle
+    this.backdrop.querySelector('#settings-dash-buffer-toggle')?.addEventListener('click', () => {
+      this.store.setDashInputBuffer(!this.store.get().dashInputBuffer);
+      this.render();
     });
 
     // Keybinding slot capture

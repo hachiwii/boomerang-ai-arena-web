@@ -18,6 +18,7 @@ export interface GameSettings {
   soundEnabled: boolean;
   volume: number; // 0..100
   fpsCap: FpsCapOption;
+  dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
   keybindings: KeyBindings;
 }
 
@@ -68,6 +69,7 @@ export function defaultSettings(): GameSettings {
     soundEnabled: true,
     volume: 100,
     fpsCap: 'vsync',
+    dashInputBuffer: true,
     keybindings: cloneDefaultKeybindings(),
   };
 }
@@ -180,6 +182,8 @@ export class SettingsStore {
           : def.volume;
       const fpsCap: FpsCapOption =
         parsed.fpsCap !== undefined && VALID_FPS_CAPS.has(parsed.fpsCap) ? parsed.fpsCap : def.fpsCap;
+      const dashInputBuffer =
+        typeof parsed.dashInputBuffer === 'boolean' ? parsed.dashInputBuffer : def.dashInputBuffer;
 
       const kb = cloneDefaultKeybindings();
       if (parsed.keybindings && typeof parsed.keybindings === 'object') {
@@ -192,7 +196,7 @@ export class SettingsStore {
           }
         }
       }
-      return { soundEnabled, volume, fpsCap, keybindings: kb };
+      return { soundEnabled, volume, fpsCap, dashInputBuffer, keybindings: kb };
     } catch {
       return def;
     }
@@ -238,6 +242,12 @@ export class SettingsStore {
   public setFpsCap(cap: FpsCapOption) {
     if (!VALID_FPS_CAPS.has(cap) || this.settings.fpsCap === cap) return;
     this.settings.fpsCap = cap;
+    this.emit();
+  }
+
+  public setDashInputBuffer(enabled: boolean) {
+    if (this.settings.dashInputBuffer === enabled) return;
+    this.settings.dashInputBuffer = enabled;
     this.emit();
   }
 
