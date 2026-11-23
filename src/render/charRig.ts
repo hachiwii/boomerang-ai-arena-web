@@ -48,6 +48,30 @@ export interface FallAnimState {
   kicked: boolean;
 }
 
+let _softShadowTex: THREE.CanvasTexture | null = null;
+function getSoftShadowTexture(): THREE.CanvasTexture {
+  if (_softShadowTex) return _softShadowTex;
+  const sz = 128;
+  const cvs = document.createElement('canvas');
+  cvs.width = sz;
+  cvs.height = sz;
+  const ctx = cvs.getContext('2d')!;
+  const half = sz * 0.5;
+  const grad = ctx.createRadialGradient(half, half, 0, half, half, half);
+  grad.addColorStop(0.0, 'rgba(18, 22, 38, 1.0)');
+  grad.addColorStop(0.32, 'rgba(18, 22, 38, 0.86)');
+  grad.addColorStop(0.62, 'rgba(18, 22, 38, 0.36)');
+  grad.addColorStop(0.86, 'rgba(18, 22, 38, 0.08)');
+  grad.addColorStop(1.0, 'rgba(18, 22, 38, 0.0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, sz, sz);
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  _softShadowTex = tex;
+  return tex;
+}
+
 /**
  * Hierarchical voxel character rig with smooth 240Hz+ procedural animation
  * ported from pose.py & chars_voxel.py.
@@ -94,6 +118,12 @@ export class CharacterRig {
   private stealthBlend = 0;
   private visibilityAlpha = 1;
 
+  // Projected sun-ray ground shadow offset per unit height: (-sunDx/sunDy, -sunDz/sunDy)
+  private sunProjX = -0.35;
+  private sunProjZ = -0.28;
+  private sunShadowYaw = 0;
+  private sunShadowStretch = 1.18;
+
   // Scratch vectors to guarantee ZERO per-frame allocations at 240Hz+!
   private readonly _tmpDir = new THREE.Vector3();
   private readonly _downVec = new THREE.Vector3(0, -1, 0);
@@ -130,7 +160,9 @@ export class CharacterRig {
       const grp = new THREE.Group();
       grp.name = nm;
       const mesh = new THREE.Mesh(mainGeo, charMat);
-      mesh.castShadow = true;
+      // Dynamic characters use a sun-aligned soft ground shadow instead of casting into the
+      // cached static obstacle shadow map (prevents frozen ghost shadows & saves ~44 shadow draws/frame).
+      mesh.castShadow = false;
       grp.add(mesh);
       if (outlineGeo) {
         const om = new THREE.Mesh(outlineGeo, omat);
@@ -192,17 +224,18 @@ export class CharacterRig {
     this.flyingDart.visible = false;
     parentScene.add(this.flyingDart);
 
-    // Ground contact shadow blob
-    const blobGeo = new THREE.CircleGeometry(0.46, 20);
+    // Sun-aligned soft radial ground shadow (smooth Gaussian penumbra, zero extra shadow pass!)
+    const blobGeo = new THREE.PlaneGeometry(1.18, 1.18);
     blobGeo.rotateX(-Math.PI / 2);
     const blobMat = new THREE.MeshBasicMaterial({
-      color: '#1b1628',
+      map: getSoftShadowTexture(),
       transparent: true,
-      opacity: 0.34,
+      opacity: 0.42,
       depthWrite: false,
     });
     this.shadowBlob = new THREE.Mesh(blobGeo, blobMat);
-    this.shadowBlob.position.y = 0.015;
+    this.shadowBlob.position.y = 0.014;
+    this.shadowBlob.renderOrder = 1;
     parentScene.add(this.shadowBlob);
 
     // Colored foot ring (slightly bolder & bright highlight for Human player!)
@@ -235,6 +268,24 @@ export class CharacterRig {
 
     parentScene.add(this.root);
     this.setFace('open');
+    this.setSunDirection(10, 24, 8);
+  }
+
+  /** Aligns the character's soft ground shadow with the active map's directional sun ray. */
+  public setSunDirection(dx: number, dy: number, dz: number) {
+    const safeY = Math.max(4, Math.abs(dy));
+    let px = -dx / safeY;
+    let pz = -dz / safeY;
+    const len = Math.hypot(px, pz);
+    const maxLen = 1.05;
+    if (len > maxLen) {
+      px = (px / len) * maxLen;
+      pz = (pz / len) * maxLen;
+    }
+    this.sunProjX = px;
+    this.sunProjZ = pz;
+    this.sunShadowYaw = Math.atan2(px, pz);
+    this.sunShadowStretch = 1.0 + Math.min(0.48, Math.hypot(px, pz) * 0.48);
   }
 
   public setFace(which: 'open' | 'tight' | 'happy') {
@@ -662,10 +713,14 @@ export class CharacterRig {
       this.dashCdRing.visible = false;
     } else {
       this.shadowBlob.visible = true;
-      const bs = Math.max(0.35, 1 - posY * 0.35);
-      this.shadowBlob.position.set(x, 0.015, z);
-      this.shadowBlob.scale.set(bs, 1, bs);
-      (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity = 0.34 * this.visibilityAlpha;
+      const bs = Math.max(0.42, 1 - posY * 0.22);
+      const liftShift = 0.16 + posY * 0.45;
+      this.shadowBlob.position.set(x + this.sunProjX * liftShift, 0.014, z + this.sunProjZ * liftShift);
+      this.shadowBlob.rotation.set(0, this.sunShadowYaw, 0);
+      this.shadowBlob.scale.set(bs, 1, bs * this.sunShadowStretch);
+      const heightFade = 1 / (1 + posY * 0.85);
+      (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity =
+        0.42 * heightFade * (1 - 0.25 * this.stealthBlend) * this.visibilityAlpha;
 
       this.groundRing.visible = true;
       this.groundRing.position.set(x, 0.022, z);

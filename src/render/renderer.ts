@@ -91,6 +91,8 @@ export class GameRenderer {
   private readonly sunLight: THREE.DirectionalLight;
   private readonly hemiLight: THREE.HemisphereLight;
   private readonly skyMesh: THREE.Mesh;
+  private readonly sunDirVec = new THREE.Vector3(10, 24, 8);
+  private shadowMapDirty = true;
 
   private arena: IArenaMap | null = null;
   private activeMapData: EngineMapData | null = null;
@@ -190,6 +192,10 @@ export class GameRenderer {
     this.renderer.toneMappingExposure = 1.06;
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    // Static shadow map caching: only re-render the 2048/1024 depth map when the map loads,
+    // quality changes, replay seeks, or shadow-casting obstacles actually collapse/fall!
+    this.renderer.shadowMap.autoUpdate = false;
+    this.renderer.shadowMap.needsUpdate = false;
 
     this.camera = new THREE.PerspectiveCamera(
       CAM_FOV,
@@ -292,6 +298,16 @@ export class GameRenderer {
       : new ArenaMap3D(mapData, themeName);
   }
 
+  private invalidateShadowMap() {
+    this.shadowMapDirty = true;
+  }
+
+  private flushShadowMapIfDirty() {
+    if (!this.shadowMapDirty) return;
+    this.renderer.shadowMap.needsUpdate = true;
+    this.shadowMapDirty = false;
+  }
+
   private updateSunShadowResolution() {
     const targetRes = this.graphicsQuality === 'high' ? 2048 : 1024;
     if (this.sunLight.shadow.mapSize.x !== targetRes) {
@@ -303,27 +319,34 @@ export class GameRenderer {
     }
     this.sunLight.shadow.bias = this.graphicsQuality === 'high' ? -0.0007 : -0.0012;
     this.sunLight.shadow.normalBias = this.graphicsQuality === 'high' ? 0.025 : 0;
+    this.invalidateShadowMap();
   }
 
   private positionSunForArena() {
     if (!this.arena) return;
     const cx = this.arena.widthM * 0.5;
     const cz = this.arena.heightM * 0.5;
+    let dx = 10;
+    let dy = 24;
+    let dz = 8;
     if (this.graphicsQuality === 'high') {
       const hq = getHqTheme(this.activeThemeName);
       const azRad = (hq.light.az * Math.PI) / 180;
       const elRad = (hq.light.el * Math.PI) / 180;
       const dist = 34;
       // Blender az/el -> Three.js (bx, bz, -by)
-      const dx = Math.cos(elRad) * Math.sin(azRad) * dist;
-      const dy = Math.sin(elRad) * dist;
-      const dz = -Math.cos(elRad) * Math.cos(azRad) * dist;
-      this.sunLight.position.set(cx + dx, dy, cz + dz);
-    } else {
-      this.sunLight.position.set(cx + 10, 24, cz + 8);
+      dx = Math.cos(elRad) * Math.sin(azRad) * dist;
+      dy = Math.sin(elRad) * dist;
+      dz = -Math.cos(elRad) * Math.cos(azRad) * dist;
     }
+    this.sunDirVec.set(dx, dy, dz);
+    this.sunLight.position.set(cx + dx, dy, cz + dz);
     this.sunLight.target.position.set(cx, 0, cz);
     this.sunLight.target.updateMatrixWorld();
+
+    for (const rig of this.rigs) {
+      rig.setSunDirection(dx, dy, dz);
+    }
 
     const halfSpan = Math.max(this.arena.widthM, this.arena.heightM) * (this.graphicsQuality === 'high' ? 0.78 : 0.65);
     this.sunLight.shadow.camera.left = -halfSpan;
@@ -331,6 +354,7 @@ export class GameRenderer {
     this.sunLight.shadow.camera.top = halfSpan;
     this.sunLight.shadow.camera.bottom = -halfSpan;
     this.sunLight.shadow.camera.updateProjectionMatrix();
+    this.invalidateShadowMap();
   }
 
   public setGraphicsQuality(quality: GraphicsQualityOption) {
@@ -420,7 +444,9 @@ export class GameRenderer {
     const models = await Promise.all(slots.map((s) => this.loadCharModel(s.charKey)));
     this.rigs = slots.map((slot, idx) => {
       const ringCol = slot.ringAccent || slot.color;
-      return new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human', this.scene);
+      const rig = new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human', this.scene);
+      rig.setSunDirection(this.sunDirVec.x, this.sunDirVec.y, this.sunDirVec.z);
+      return rig;
     });
 
     this.fx = new FXSystem(
@@ -734,6 +760,7 @@ export class GameRenderer {
     this.winnerRibbonWave = 0;
     this.tickReceivedAtMs = performance.now();
     this.pausedAlpha = 1.0;
+    this.invalidateShadowMap();
   }
 
   private processEvents(prev: TickSnapshot, curr: TickSnapshot, events: GameEvent[]) {
@@ -1083,7 +1110,9 @@ export class GameRenderer {
         this.camTargetZ + Math.cos(this.previewAngle) * rHoriz,
       );
       this.camera.lookAt(this.camTargetX, 0, this.camTargetZ);
-      this.arena.update(0, this.elapsedSec);
+      if (this.arena.update(0, this.elapsedSec)) {
+        this.shadowMapDirty = true;
+      }
     } else if (this.arena && this.prevState && this.currState) {
       // Smooth sub-tick interpolation factor [0..1] adapted to current game speed & kill-cam slow-mo!
       const sameTick = this.prevState === this.currState || this.prevState.t === this.currState.t;
@@ -1164,9 +1193,13 @@ export class GameRenderer {
       }
 
       // Update arena collapsing tiles, grass sway, clouds (freeze collapse once match is over!)
-      this.arena.update(gt, this.elapsedSec, {
-        freezeCollapseAtTick: this.currState.over ? this.currState.t : undefined,
-      });
+      if (
+        this.arena.update(gt, this.elapsedSec, {
+          freezeCollapseAtTick: this.currState.over ? this.currState.t : undefined,
+        })
+      ) {
+        this.shadowMapDirty = true;
+      }
 
       // Semi-transparent foreground obstacles blocking subject during close-up shots!
       if (cinePose && cinePose.blend > 0.01) {
@@ -1344,6 +1377,7 @@ export class GameRenderer {
       }
     }
 
+    this.flushShadowMapIfDirty();
     this.renderer.render(this.scene, this.camera);
 
     // Measure CPU frame work time (ms)
@@ -1429,11 +1463,15 @@ export class GameRenderer {
 
     const cinePose = this.applyCameraWithOptionalCinematic(gt * 0.05, frameDt, opts?.cameraPose);
 
-    this.arena.update(gt, elapsedSec, {
-      pauseClouds: opts?.pauseClouds,
-      hideAmbient: opts?.hideAmbient,
-      freezeCollapseAtTick: curr.over ? curr.t : undefined,
-    });
+    if (
+      this.arena.update(gt, elapsedSec, {
+        pauseClouds: opts?.pauseClouds,
+        hideAmbient: opts?.hideAmbient,
+        freezeCollapseAtTick: curr.over ? curr.t : undefined,
+      })
+    ) {
+      this.shadowMapDirty = true;
+    }
 
     if (cinePose && cinePose.blend > 0.01) {
       this._focusVec.set(cinePose.lookAt.x, cinePose.lookAt.y, cinePose.lookAt.z);
@@ -1506,6 +1544,7 @@ export class GameRenderer {
     }
 
     if (!opts?.skipRender) {
+      this.flushShadowMapIfDirty();
       this.renderer.render(this.scene, this.camera);
     }
     return out;

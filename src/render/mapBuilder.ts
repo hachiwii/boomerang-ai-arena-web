@@ -23,6 +23,8 @@ interface TileInstanceRef {
   rndB: number;
   baseColor: THREE.Color;
   modified?: boolean;
+  /** 0 = intact/warning, 1 = actively dropping, 2 = fallen out of sight */
+  shadowState?: 0 | 1 | 2;
 }
 
 function hash2(x: number, y: number): number {
@@ -69,6 +71,7 @@ export class ArenaMap3D implements IArenaMap {
   private readonly _tmpCol = new THREE.Color();
   private readonly _warnCol = new THREE.Color('#ff5a2b');
   private readonly _dirScratch = new THREE.Vector3();
+  private lastShadowBakeGt = -9999;
 
   constructor(mapData: EngineMapData, themeName: string) {
     this.mapData = mapData;
@@ -542,15 +545,18 @@ export class ArenaMap3D implements IArenaMap {
     gt: number,
     elapsedSec: number,
     opts?: ArenaMapUpdateOpts,
-  ) {
+  ): boolean {
     const { waveSteps, colWarn } = this.mapData;
     const freezeT = opts?.freezeCollapseAtTick;
+    let shadowDirty = false;
+    let anyShadowWallDropping = false;
 
     const updateGroup = (
       mesh: THREE.InstancedMesh | null,
       tiles: TileInstanceRef[],
       sway: boolean,
       warnTint: boolean,
+      trackShadow = false,
     ) => {
       if (!mesh || tiles.length === 0) return;
       let dirtyMat = false;
@@ -582,12 +588,23 @@ export class ArenaMap3D implements IArenaMap {
             this._dummy.updateMatrix();
             mesh.setMatrixAt(ti.idx, this._dummy.matrix);
             dirtyMat = true;
+            if (trackShadow) {
+              anyShadowWallDropping = true;
+              if (ti.shadowState !== 1) {
+                ti.shadowState = 1;
+                shadowDirty = true;
+              }
+            }
           } else {
             this._dummy.position.set(ti.cx, -100, ti.cz);
             this._dummy.scale.set(0.0001, 0.0001, 0.0001);
             this._dummy.updateMatrix();
             mesh.setMatrixAt(ti.idx, this._dummy.matrix);
             dirtyMat = true;
+            if (trackShadow && ti.shadowState !== 2) {
+              ti.shadowState = 2;
+              shadowDirty = true;
+            }
           }
           continue;
         }
@@ -612,6 +629,10 @@ export class ArenaMap3D implements IArenaMap {
             mesh.setColorAt(ti.idx, this._tmpCol);
             dirtyCol = true;
           }
+          if (trackShadow && (ti.shadowState ?? 0) !== 0) {
+            ti.shadowState = 0;
+            shadowDirty = true;
+          }
           continue;
         }
 
@@ -629,6 +650,10 @@ export class ArenaMap3D implements IArenaMap {
           if (warnTint) {
             mesh.setColorAt(ti.idx, ti.baseColor);
             dirtyCol = true;
+          }
+          if (trackShadow && (ti.shadowState ?? 0) !== 0) {
+            ti.shadowState = 0;
+            shadowDirty = true;
           }
         }
 
@@ -651,10 +676,17 @@ export class ArenaMap3D implements IArenaMap {
     updateGroup(this.cliffMesh, this.cliffTiles, false, false);
     for (let c = 0; c < this.wallClusters.length; c++) {
       const wc = this.wallClusters[c];
-      updateGroup(wc.bodyMesh, wc.bodyTiles, false, true);
-      updateGroup(wc.topMesh, wc.topTiles, false, false);
+      updateGroup(wc.bodyMesh, wc.bodyTiles, false, true, true);
+      updateGroup(wc.topMesh, wc.topTiles, false, false, true);
     }
     updateGroup(this.grassMesh, this.grassTiles, true, false);
+
+    if (!shadowDirty && anyShadowWallDropping && Math.abs(gt - this.lastShadowBakeGt) >= 1.5) {
+      shadowDirty = true;
+    }
+    if (shadowDirty) {
+      this.lastShadowBakeGt = gt;
+    }
 
     // Gentle cloud drift (optionally paused for compact GIF capture)
     if (!opts?.pauseClouds) {
@@ -692,6 +724,7 @@ export class ArenaMap3D implements IArenaMap {
         this.ambientMesh.instanceMatrix.needsUpdate = true;
       }
     }
+    return shadowDirty;
   }
 
   public updateCloseupOcclusion(

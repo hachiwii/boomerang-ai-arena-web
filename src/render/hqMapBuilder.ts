@@ -27,6 +27,7 @@ import {
   Vec3,
 } from './hqGeomBuilder';
 import { BridgeSpec, PaintedGroundResult, paintHighQualityGround } from './hqGroundPaint';
+import { buildOriginalDecorIsland } from './hqOuterIsland';
 import { getHqTheme, HqThemeSpec } from './hqThemes';
 
 export interface ArenaMapUpdateOpts {
@@ -40,7 +41,8 @@ export interface IArenaMap {
   readonly mapData: EngineMapData;
   readonly widthM: number;
   readonly heightM: number;
-  update(gt: number, elapsedSec: number, opts?: ArenaMapUpdateOpts): void;
+  /** Returns `true` when static shadow-casting obstacles changed and the cached shadow map should be refreshed. */
+  update(gt: number, elapsedSec: number, opts?: ArenaMapUpdateOpts): boolean;
   updateCloseupOcclusion(
     camPos: THREE.Vector3,
     focusPos: THREE.Vector3,
@@ -200,6 +202,9 @@ interface CollapseChunk {
   rnd: [number, number, number, number, number, number];
   usingWarnMat: boolean;
   modified: boolean;
+  hasShadowCaster: boolean;
+  /** 0 = intact/warning, 1 = actively dropping, 2 = fallen out of sight */
+  shadowState: 0 | 1 | 2;
 }
 
 interface WaveBundle {
@@ -387,6 +392,7 @@ export class HqArenaMap3D implements IArenaMap {
   private readonly _warnCol = new THREE.Color('#ff5d1f');
   private readonly _black = new THREE.Color(0x000000);
   private readonly waveMaxDist = new Map<number, number>();
+  private lastShadowBakeGt = -9999;
 
   constructor(mapData: EngineMapData, themeName: string) {
     this.mapData = mapData;
@@ -816,6 +822,8 @@ export class HqArenaMap3D implements IArenaMap {
         rnd: [rng.next(), rng.next(), rng.next(), rng.next(), rng.next(), rng.next()],
         usingWarnMat: false,
         modified: false,
+        hasShadowCaster: false,
+        shadowState: 0,
       };
       this.chunks.push(chunk);
       this.waveBundles.get(info.wave)?.chunks.push(chunk);
@@ -840,6 +848,7 @@ export class HqArenaMap3D implements IArenaMap {
       localGrp.position.set(-chunk.cx, 0, -chunk.cz);
       for (const m of meshes) localGrp.add(m);
       chunk.propMount.add(localGrp);
+      chunk.hasShadowCaster = true;
       this.registerOccluder(meshes, chunk.wave, false);
     };
 
@@ -1546,32 +1555,32 @@ export class HqArenaMap3D implements IArenaMap {
     const D = this.hqTheme.decor;
     const P = this.hqTheme.pal;
 
+    // Exact outer floating island layout from `env.py` `auto_decor(Wm, Hm)`!
     interface DecorSlot {
       nm: string;
       x: number;
       y: number;
       z: number;
-      rx: number;
-      ry: number;
+      rot: number;
       kind: 'mixed' | 'trees' | 'bushes' | 'none';
       pri: number;
       occludable: boolean;
     }
     const slots: DecorSlot[] = [
-      { nm: 'm06', x: -4.4, y: -Hm * 0.5 + 0.3, z: 1.4 + D.dz, rx: 2.9, ry: 4.5, kind: 'mixed', pri: 3, occludable: true },
-      { nm: 'm07', x: Wm + 4.3, y: -Hm * 0.5 - 0.3, z: 1.1 + D.dz, rx: 2.9, ry: 4.4, kind: 'trees', pri: 2, occludable: true },
-      { nm: 'm00', x: 1.0 + Wm * 0.05, y: 4.6, z: -1.8, rx: 3.4, ry: 2.3, kind: 'trees', pri: 1, occludable: false },
-      { nm: 'm01', x: Wm - 1.0 - Wm * 0.05, y: 4.8, z: -2.2, rx: 3.4, ry: 2.3, kind: 'mixed', pri: 0, occludable: false },
-      { nm: 'm03', x: -2.2, y: -(Hm + 2.8), z: -0.3, rx: 2.2, ry: 1.7, kind: 'bushes', pri: 6, occludable: true },
-      { nm: 'm04', x: Wm + 2.4, y: -(Hm + 3.0), z: -0.5, rx: 2.2, ry: 1.7, kind: 'bushes', pri: 7, occludable: true },
-      { nm: 's01', x: -1.0, y: 1.4, z: -3.0, rx: 1.35, ry: 1.15, kind: 'none', pri: 9, occludable: false },
-      { nm: 's03', x: Wm + 1.0, y: 1.1, z: -2.5, rx: 1.4, ry: 1.15, kind: 'none', pri: 9, occludable: false },
-      { nm: 's00', x: Wm * 0.3, y: -(Hm + 3.4), z: -2.2, rx: 1.5, ry: 1.2, kind: 'none', pri: 9, occludable: false },
+      { nm: 'm06', x: -4.9, y: -Hm * 0.5 + 0.3, z: 1.5 + D.dz, rot: 0, kind: 'mixed', pri: 3, occludable: true },
+      { nm: 'm07', x: Wm + 4.8, y: -Hm * 0.5 - 0.3, z: 1.2 + D.dz, rot: 180, kind: 'trees', pri: 2, occludable: true },
+      { nm: 'm00', x: 1.0 + Wm * 0.05, y: 4.8, z: -1.8, rot: 90, kind: 'trees', pri: 1, occludable: false },
+      { nm: 'm01', x: Wm - 1.0 - Wm * 0.05, y: 5.0, z: -2.2, rot: 95, kind: 'mixed', pri: 0, occludable: false },
+      { nm: 'm03', x: -2.2, y: -(Hm + 2.8), z: -0.3, rot: 20, kind: 'bushes', pri: 6, occludable: true },
+      { nm: 'm04', x: Wm + 2.4, y: -(Hm + 3.0), z: -0.5, rot: -15, kind: 'bushes', pri: 7, occludable: true },
+      { nm: 's01', x: -1.0, y: 1.4, z: -3.0, rot: 0, kind: 'none', pri: 9, occludable: false },
+      { nm: 's03', x: Wm + 1.0, y: 1.1, z: -2.5, rot: 0, kind: 'none', pri: 9, occludable: false },
+      { nm: 's00', x: Wm * 0.3, y: -(Hm + 3.4), z: -2.2, rot: 30, kind: 'none', pri: 9, occludable: false },
     ];
-    if (Wm > 20) slots.push({ nm: 'm02', x: Wm * 0.5, y: 6.6, z: -3.6, rx: 3.6, ry: 2.2, kind: 'mixed', pri: 4, occludable: false });
+    if (Wm > 20) slots.push({ nm: 'm02', x: Wm * 0.5, y: 6.6, z: -3.6, rot: 0, kind: 'mixed', pri: 4, occludable: false });
     if (Hm > 13.5) {
-      slots.push({ nm: 'm04b', x: -5.6, y: -Hm - 0.5, z: 0.6, rx: 2.4, ry: 2.2, kind: 'trees', pri: 8, occludable: false });
-      slots.push({ nm: 'm03b', x: Wm + 5.6, y: -Hm - 0.8, z: 0.4, rx: 2.4, ry: 2.2, kind: 'mixed', pri: 8, occludable: false });
+      slots.push({ nm: 'm04', x: -5.6, y: -Hm - 0.5, z: 0.6, rot: 60, kind: 'trees', pri: 8, occludable: false });
+      slots.push({ nm: 'm03', x: Wm + 5.6, y: -Hm - 0.8, z: 0.4, rot: 200, kind: 'mixed', pri: 8, occludable: false });
     }
 
     const sortedForFeats = slots
@@ -1597,124 +1606,114 @@ export class HqArenaMap3D implements IArenaMap {
       return D.mix[D.mix.length - 1][1];
     };
 
-    const cGrass = hexLin(P.grass), cGrass2 = hexLin(P.grass2), cRim = hexLin(P.grass_rim);
-    const cLip = hexLin(P.lip), cSoil = hexLin(P.soil);
-    const cRockA = hexLin(P.rock_a), cRockB = hexLin(P.rock_b), cRockC = hexLin(P.rock_c);
-    const cRockDeep = hexLin(P.rock_deep), cRockUnder = hexLin(P.rock_under);
     const fCols = P.flower_main.map((h) => hexLin(h));
     const spaceMap: Record<string, number> = { house: 1.7, bigtree: 1.25, spire: 1.1, sakura: 1.1, palm: 1.0 };
+    const arenaCenterX = Wm * 0.5;
+    const arenaCenterY = -Hm * 0.5;
 
     // Merge all non-occludable distant islands into ONE single builder (3 draw calls instead of 28!)
     const mergedFarMb = new HqMeshBuilder();
+    let m06RimWorld: [number, number][] = [];
 
     slots.forEach((sl, si) => {
       const mb = sl.occludable ? new HqMeshBuilder() : mergedFarMb;
 
-      const sides = 14;
-      const angs: number[] = [];
-      const rScale: number[] = [];
-      for (let i = 0; i < sides; i++) {
-        angs.push((2 * Math.PI * i) / sides + rng.uniform(-0.12, 0.12));
-        rScale.push(rng.uniform(0.86, 1.12));
+      // Faithful original multi-lobe SDF + Voronoi columnar cliff + sharp_deg=33° floating island!
+      const built = buildOriginalDecorIsland(mb, sl.nm, sl.x, sl.y, sl.z, sl.rot, P);
+      if (si === 0 && sl.nm === 'm06') {
+        m06RimWorld = built.rimWorldPoints;
       }
 
-      const depth = Math.min(6.2, Math.max(2.6, (sl.rx + sl.ry) * 0.72));
-      const levels: [number, number, LinRGB][] = [
-        [1.0, sl.z, cLip],
-        [1.02, sl.z - 0.12, cSoil],
-        [0.97, sl.z - 0.34, cRockA],
-        [0.86, sl.z - depth * 0.34, cRockB],
-        [0.66, sl.z - depth * 0.64, cRockC],
-        [0.34, sl.z - depth * 0.88, cRockDeep],
-      ];
-
-      const rings: Vec3[][] = levels.map(([sc, zz]) => {
-        const ring: Vec3[] = [];
-        for (let i = 0; i < sides; i++) {
-          ring.push([sl.x + Math.cos(angs[i]) * sl.rx * rScale[i] * sc, sl.y + Math.sin(angs[i]) * sl.ry * rScale[i] * sc, zz]);
-        }
-        return ring;
-      });
-
-      const topOuter = rings[0];
-      const topMid: Vec3[] = [];
-      for (let i = 0; i < sides; i++) {
-        topMid.push([sl.x + Math.cos(angs[i]) * sl.rx * rScale[i] * 0.78, sl.y + Math.sin(angs[i]) * sl.ry * rScale[i] * 0.78, sl.z + 0.015]);
-      }
-      const ctr: Vec3 = [sl.x, sl.y, sl.z + 0.04];
-      for (let i = 0; i < sides; i++) {
-        const j = (i + 1) % sides;
-        const gC = i % 2 === 0 ? cGrass : cGrass2;
-        mb.tri(ctr, topMid[i], topMid[j], cGrass2, gC, gC, 'solid');
-        mb.quad(topMid[i], topOuter[i], topOuter[j], topMid[j], gC, 'solid', cRim, cRim, gC);
-      }
-
-      for (let k = 0; k < rings.length - 1; k++) {
-        const r0 = rings[k], r1 = rings[k + 1], col = levels[k][2];
-        for (let i = 0; i < sides; i++) {
-          const j = (i + 1) % sides;
-          mb.quad(r0[i], r1[i], r1[j], r0[j], scaleLin(col, 0.92 + ((i * 7 + k * 3) % 5) * 0.04));
-        }
-      }
-      const keelTip: Vec3 = [sl.x, sl.y, sl.z - depth];
-      const botRing = rings[rings.length - 1];
-      for (let i = 0; i < sides; i++) mb.tri(botRing[i], keelTip, botRing[(i + 1) % sides], cRockUnder);
-
+      const topPts = built.topWorldPoints;
       const placed: [number, number][] = [];
-      const fname = featFor.get(si);
-      if (fname) {
-        addLandmarkFeature(mb, fname, sl.x, sl.y, sl.z + 0.02, rng, P);
-        placed.push([0, 0], [1.2, 0], [-1.2, 0], [0, 0.9], [0, -0.9]);
-      }
 
-      const span = sl.rx * sl.ry * 2.6;
-      const nTarget = sl.kind === 'none' ? 0 : Math.max(1, Math.round((span / 2.6) * D.density));
-      for (let attempt = 0; attempt < nTarget * 5 && placed.length < nTarget + (fname ? 5 : 0); attempt++) {
-        const ang = rng.uniform(0, Math.PI * 2);
-        const rad = Math.sqrt(rng.next()) * 0.72;
-        const lx = Math.cos(ang) * sl.rx * rad;
-        const ly = Math.sin(ang) * sl.ry * rad;
-        let tk: string | null = null;
-        if (D.mix && (sl.kind !== 'bushes' || !D.bushes)) tk = pickMixKind();
-        const gap = tk ? (spaceMap[tk] ?? 0.95) : 0.95;
-        if (placed.some(([qx, qy]) => (lx - qx) ** 2 + (ly - qy) ** 2 < gap * gap)) continue;
-        placed.push([lx, ly]);
-        const wx = sl.x + lx, wy = sl.y + ly;
-        const sc = rng.uniform(0.9, 1.35) * (sl.kind === 'bushes' && tk ? 0.75 : 1.0);
-        if (tk === 'pine' || (tk === null && sl.kind !== 'bushes' && rng.next() < D.pines * (sl.kind === 'mixed' ? 1.0 : 0.5))) {
-          addFarPine(mb, wx, wy, sl.z, sc * 1.15, rng, P.pine_pal, P.trunk);
-        } else if (tk === null && sl.kind === 'bushes') {
-          addFarBush(mb, wx, wy, sl.z, sc * 1.4, rng, P.bush_pal);
-        } else if (tk === null || tk === 'round') {
-          addFarRoundTree(mb, wx, wy, sl.z, sc, rng, pickTreePal(), P.trunk);
-        } else {
-          addFarProp(mb, tk, wx, wy, sl.z, sc, rng, P, pickTreePal());
+      if (topPts.length > 0 && sl.kind !== 'none') {
+        // Place theme landmark feature closest to arena center on prime flat interior (`env.py` L869-880)
+        const fname = featFor.get(si);
+        if (fname) {
+          let maxEdge = 0;
+          for (let i = 0; i < topPts.length; i++) if (topPts[i].edgeDist > maxEdge) maxEdge = topPts[i].edgeDist;
+          const need = Math.min(0.75, maxEdge * 0.85);
+          let bestIdx = 0;
+          let bestScore = Infinity;
+          for (let i = 0; i < topPts.length; i++) {
+            const p = topPts[i];
+            const d2 = (p.wx - arenaCenterX) ** 2 + (p.wy - arenaCenterY) ** 2 + (p.edgeDist < need ? 1e6 : 0);
+            if (d2 < bestScore) {
+              bestScore = d2;
+              bestIdx = i;
+            }
+          }
+          const fp = topPts[bestIdx];
+          addLandmarkFeature(mb, fname, fp.wx, fp.wy, sl.z + 0.01, rng, P);
+          placed.push(
+            [fp.wx, fp.wy],
+            [fp.wx + 1.2, fp.wy],
+            [fp.wx - 1.2, fp.wy],
+            [fp.wx, fp.wy + 0.9],
+            [fp.wx, fp.wy - 0.9],
+          );
         }
-      }
 
-      if (D.bushes && sl.kind !== 'none') {
-        const bCount = Math.min(8, Math.round(span * 0.25));
-        for (let b = 0; b < bCount; b++) {
-          const ang = rng.uniform(0, Math.PI * 2);
-          const rad = Math.sqrt(rng.next()) * 0.74;
-          const lx = Math.cos(ang) * sl.rx * rad, ly = Math.sin(ang) * sl.ry * rad;
-          if (placed.some(([qx, qy]) => (lx - qx) ** 2 + (ly - qy) ** 2 < 0.7 * 0.7)) continue;
-          placed.push([lx, ly]);
-          addFarBush(mb, sl.x + lx, sl.y + ly, sl.z, rng.uniform(0.7, 1.15), rng, P.bush_pal);
+        // Fisher-Yates shuffle indices for organic tree/prop scattering strictly inside real island outline
+        const perm = new Int32Array(topPts.length);
+        for (let i = 0; i < perm.length; i++) perm[i] = i;
+        for (let i = perm.length - 1; i > 0; i--) {
+          const j = rng.int(0, i + 1);
+          const tmp = perm[i];
+          perm[i] = perm[j];
+          perm[j] = tmp;
         }
-      }
 
-      if (sl.kind !== 'none') {
-        const flPatches = Math.max(1, Math.min(6, Math.round(span * 0.14)));
+        const nTarget = Math.max(1, Math.round((built.area / 2.6) * D.density)) + placed.length;
+        for (let pi = 0; pi < perm.length && placed.length < nTarget; pi++) {
+          const p = topPts[perm[pi]];
+          let tk: string | null = null;
+          if (D.mix && (sl.kind !== 'bushes' || !D.bushes)) tk = pickMixKind();
+          const gap = tk ? (spaceMap[tk] ?? 0.95) : 0.95;
+          if (placed.some(([qx, qy]) => (p.wx - qx) ** 2 + (p.wy - qy) ** 2 < gap * gap)) continue;
+          placed.push([p.wx, p.wy]);
+          const sc = rng.uniform(0.9, 1.35) * (sl.kind === 'bushes' && tk ? 0.75 : 1.0);
+          if (tk === 'pine' || (tk === null && sl.kind !== 'bushes' && rng.next() < D.pines * (sl.kind === 'mixed' ? 1.0 : 0.5))) {
+            addFarPine(mb, p.wx, p.wy, sl.z, sc * 1.15, rng, P.pine_pal, P.trunk);
+          } else if (tk === null && sl.kind === 'bushes') {
+            addFarBush(mb, p.wx, p.wy, sl.z, sc * 1.4, rng, P.bush_pal);
+          } else if (tk === null || tk === 'round') {
+            addFarRoundTree(mb, p.wx, p.wy, sl.z, sc, rng, pickTreePal(), P.trunk);
+          } else {
+            addFarProp(mb, tk, p.wx, p.wy, sl.z, sc, rng, P, pickTreePal());
+          }
+        }
+
+        if (D.bushes) {
+          let bPlaced = 0;
+          const bLimit = Math.min(10, Math.round(built.area * 0.22));
+          for (let pi = 0; pi < perm.length && bPlaced < bLimit; pi += 2) {
+            const p = topPts[perm[pi]];
+            if (placed.some(([qx, qy]) => (p.wx - qx) ** 2 + (p.wy - qy) ** 2 < 0.7 * 0.7)) continue;
+            placed.push([p.wx, p.wy]);
+            addFarBush(mb, p.wx, p.wy, sl.z, rng.uniform(0.7, 1.15), rng, P.bush_pal);
+            bPlaced++;
+          }
+        }
+
+        const flPatches = Math.max(1, Math.min(10, Math.round(built.area * 0.16)));
         for (let k = 0; k < flPatches; k++) {
-          const ang = rng.uniform(0, Math.PI * 2);
-          const rad = Math.sqrt(rng.next()) * 0.72;
-          const fx0 = sl.x + Math.cos(ang) * sl.rx * rad;
-          const fy0 = sl.y + Math.sin(ang) * sl.ry * rad;
+          const p = topPts[rng.int(0, topPts.length)];
           const col = rng.choice(fCols);
           for (let j = 0; j < 4; j++) {
-            const r = rng.uniform(0.035, 0.05);
-            mb.blob(fx0 + rng.normal(0, 0.1), fy0 + rng.normal(0, 0.1), sl.z + rng.uniform(0.04, 0.1), r, r, r * 0.7, col, col, { sub: 0, smooth: false });
+            const r = rng.uniform(0.032, 0.048);
+            mb.blob(
+              p.wx + rng.normal(0, 0.1),
+              p.wy + rng.normal(0, 0.1),
+              sl.z + rng.uniform(0.035, 0.095),
+              r,
+              r,
+              r * 0.7,
+              col,
+              col,
+              { sub: 1, smooth: true },
+            );
           }
         }
       }
@@ -1733,12 +1732,27 @@ export class HqArenaMap3D implements IArenaMap {
       for (const m of meshes) this.root.add(m);
     }
 
-    // Animated cascading waterfall pouring off left high mesa (`m06`)
+    // Animated cascading waterfall anchored cleanly to the exact organic east cliff edge of `m06`!
     if (D.waterfall) {
       const wf = new THREE.Group();
-      const wfX = -4.4 + 2.75;
-      const wfZ = Hm * 0.56;
-      const topY = 1.4 + D.dz;
+      const targetAlongY = -Hm * 0.56;
+      let wfX = -4.9 + 2.8;
+      let wfZ = Hm * 0.56;
+      if (m06RimWorld.length > 0) {
+        let bestX = -Infinity;
+        let bestY = targetAlongY;
+        for (const [rx, ry] of m06RimWorld) {
+          if (Math.abs(ry - targetAlongY) < 0.65 && rx > bestX) {
+            bestX = rx;
+            bestY = ry;
+          }
+        }
+        if (bestX > -Infinity) {
+          wfX = bestX - 0.04;
+          wfZ = -bestY;
+        }
+      }
+      const topY = 1.5 + D.dz;
       const drop = 11.5;
 
       const ribGeo = new THREE.PlaneGeometry(0.72, drop, 1, 8);
@@ -1850,11 +1864,13 @@ export class HqArenaMap3D implements IArenaMap {
     this.root.add(this.ambientMesh);
   }
 
-  public update(gt: number, elapsedSec: number, opts?: ArenaMapUpdateOpts) {
+  public update(gt: number, elapsedSec: number, opts?: ArenaMapUpdateOpts): boolean {
     const { waveSteps, colWarn } = this.mapData;
     const freezeT = opts?.freezeCollapseAtTick;
 
     let maxWarnEmissive = 0;
+    let shadowDirty = false;
+    let anyShadowObstacleDropping = false;
 
     // 1. Wave-level swap between ultra-fast merged intact mesh & compact 4x4 active-collapse chunks!
     for (const [wave, bundle] of this.waveBundles) {
@@ -1882,6 +1898,10 @@ export class HqArenaMap3D implements IArenaMap {
               if (ch.cliffMesh) ch.cliffMesh.material = this.sharedCliffMat;
             }
             ch.modified = false;
+            if (ch.hasShadowCaster && ch.shadowState !== 0) {
+              ch.shadowState = 0;
+              shadowDirty = true;
+            }
           }
         }
         continue;
@@ -1921,6 +1941,10 @@ export class HqArenaMap3D implements IArenaMap {
               if (ch.cliffMesh) ch.cliffMesh.material = this.warnCliffMat;
             }
             maxWarnEmissive = Math.max(maxWarnEmissive, 0.5);
+            if (ch.hasShadowCaster && ch.shadowState !== 0) {
+              ch.shadowState = 0;
+              shadowDirty = true;
+            }
           } else {
             const tau = (u - delay) / 20;
             const drop = 0.5 * 14.5 * tau * tau + 0.65 * tau;
@@ -1953,9 +1977,20 @@ export class HqArenaMap3D implements IArenaMap {
                 if (ch.topMesh) ch.topMesh.material = this.sharedTopMat;
                 if (ch.cliffMesh) ch.cliffMesh.material = this.sharedCliffMat;
               }
+              if (ch.hasShadowCaster) {
+                anyShadowObstacleDropping = true;
+                if (ch.shadowState !== 1) {
+                  ch.shadowState = 1;
+                  shadowDirty = true;
+                }
+              }
             } else {
               ch.terrainGroup.visible = false;
               ch.propMount.visible = false;
+              if (ch.hasShadowCaster && ch.shadowState !== 2) {
+                ch.shadowState = 2;
+                shadowDirty = true;
+              }
             }
           }
         } else {
@@ -1987,10 +2022,21 @@ export class HqArenaMap3D implements IArenaMap {
           }
           const pulse = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(elapsedSec * (9 + prog * 14)));
           maxWarnEmissive = Math.max(maxWarnEmissive, pulse * (0.18 + 0.42 * prog));
+          if (ch.hasShadowCaster && ch.shadowState !== 0) {
+            ch.shadowState = 0;
+            shadowDirty = true;
+          }
         }
       }
 
       if (!anyVisible && isFalling) bundle.mode = 'fallen';
+    }
+
+    if (!shadowDirty && anyShadowObstacleDropping && Math.abs(gt - this.lastShadowBakeGt) >= 1.5) {
+      shadowDirty = true;
+    }
+    if (shadowDirty) {
+      this.lastShadowBakeGt = gt;
     }
 
     if (maxWarnEmissive > 0.001) {
@@ -2065,6 +2111,7 @@ export class HqArenaMap3D implements IArenaMap {
         this.ambientMesh.instanceMatrix.needsUpdate = true;
       }
     }
+    return shadowDirty;
   }
 
   public updateCloseupOcclusion(
