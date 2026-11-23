@@ -1,5 +1,5 @@
 import { LeaderboardStore } from '../game/leaderboard';
-import { formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
+import { formatDashSummary, formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
 import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { getTheme } from '../render/themes';
 import { LeaderboardPanel } from './leaderboardUI';
@@ -720,7 +720,7 @@ export class LobbyUI {
     const mv = formatMoveSummary(kb);
     const thr = formatPrimaryBind(kb.throwRecall);
     const mel = formatPrimaryBind(kb.melee);
-    const dsh = formatPrimaryBind(kb.dash);
+    const dsh = formatDashSummary(kb);
     return `
       <div class="controls-legend ${extraClass}">
         <div><kbd>${mv}</kbd> 移动</div>

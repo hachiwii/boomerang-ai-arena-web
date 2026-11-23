@@ -8,6 +8,7 @@ export type ActionBindKey =
   | 'throwRecall'
   | 'melee'
   | 'dash'
+  | 'dashToMouse'
   | 'quickRestart';
 
 export type KeySlotPair = [string | null, string | null];
@@ -34,6 +35,7 @@ export const ACTION_META: ActionMeta[] = [
   { key: 'throwRecall', label: '扔镖 / 长按召回', group: '战斗' },
   { key: 'melee', label: '挥砍 / 空手踢人', group: '战斗' },
   { key: 'dash', label: '冲刺', group: '战斗' },
+  { key: 'dashToMouse', label: '向鼠标方向冲刺', group: '战斗' },
   { key: 'quickRestart', label: '重开 / 重新匹配', group: '快捷' },
 ];
 
@@ -56,6 +58,7 @@ export function cloneDefaultKeybindings(): KeyBindings {
     throwRecall: ['Mouse0', null],
     melee: ['Mouse2', null],
     dash: ['ShiftLeft', 'ShiftRight'],
+    dashToMouse: [null, null],
     quickRestart: ['KeyR', null],
   };
 }
@@ -64,7 +67,7 @@ export function defaultSettings(): GameSettings {
   return {
     soundEnabled: true,
     volume: 100,
-    fpsCap: 'uncapped',
+    fpsCap: 'vsync',
     keybindings: cloneDefaultKeybindings(),
   };
 }
@@ -124,6 +127,13 @@ export function formatInputCode(code: string | null, compact = false): string {
 export function formatPrimaryBind(pair: KeySlotPair, fallback = '未绑定'): string {
   const primary = pair[0] || pair[1];
   return primary ? formatInputCode(primary, true) : fallback;
+}
+
+export function formatDashSummary(kb: KeyBindings): string {
+  const moveDash = formatPrimaryBind(kb.dash, '');
+  const mouseDash = formatPrimaryBind(kb.dashToMouse, '');
+  if (moveDash && mouseDash) return `${moveDash} / ${mouseDash}`;
+  return moveDash || mouseDash || '未绑定';
 }
 
 /**

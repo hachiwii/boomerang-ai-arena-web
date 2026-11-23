@@ -35,6 +35,7 @@ export class HumanInputController {
   private queuedThrowAt = -1;
   private queuedMeleeAt = -1;
   private queuedDashAt = -1;
+  private queuedDashToMouseAt = -1;
 
   private bufferMs = 140;
   private recallHoldDelayMs = 160;
@@ -77,6 +78,7 @@ export class HumanInputController {
       this.queuedThrowAt = -1;
       this.queuedMeleeAt = -1;
       this.queuedDashAt = -1;
+      this.queuedDashToMouseAt = -1;
     }
   }
 
@@ -105,6 +107,7 @@ export class HumanInputController {
       this.queuedThrowAt = -1;
       this.queuedMeleeAt = -1;
       this.queuedDashAt = -1;
+      this.queuedDashToMouseAt = -1;
     }
   }
 
@@ -119,6 +122,7 @@ export class HumanInputController {
     this.queuedThrowAt = -1;
     this.queuedMeleeAt = -1;
     this.queuedDashAt = -1;
+    this.queuedDashToMouseAt = -1;
   }
 
   private isActionHeld(action: ActionBindKey): boolean {
@@ -156,6 +160,11 @@ export class HumanInputController {
         if (isBoundToAction(kb, 'dash', code)) {
           if (code === 'Space') e.preventDefault();
           if (!e.repeat) this.queuedDashAt = now;
+          this.pressedCodes.add(code);
+        }
+        if (isBoundToAction(kb, 'dashToMouse', code)) {
+          if (code === 'Space') e.preventDefault();
+          if (!e.repeat) this.queuedDashToMouseAt = now;
           this.pressedCodes.add(code);
         }
         if (isBoundToAction(kb, 'melee', code)) {
@@ -234,6 +243,11 @@ export class HumanInputController {
         this.pressedCodes.add(code);
         this.queuedDashAt = now;
       }
+      if (isBoundToAction(kb, 'dashToMouse', code)) {
+        e.preventDefault();
+        this.pressedCodes.add(code);
+        this.queuedDashToMouseAt = now;
+      }
     });
 
     window.addEventListener('mouseup', (e) => {
@@ -302,6 +316,7 @@ export class HumanInputController {
     }
 
     const hasBufferedDash = this.queuedDashAt > 0 && now - this.queuedDashAt <= this.bufferMs;
+    const hasBufferedDashToMouse = this.queuedDashToMouseAt > 0 && now - this.queuedDashToMouseAt <= this.bufferMs;
     const hasBufferedMelee = this.queuedMeleeAt > 0 && now - this.queuedMeleeAt <= this.bufferMs;
     const hasBufferedThrow = this.queuedThrowAt > 0 && now - this.queuedThrowAt <= this.bufferMs;
 
@@ -314,10 +329,13 @@ export class HumanInputController {
       return { mx, my, act: ActType.MELEE, ax: aimX, ay: aimY, msg: 0 };
     }
 
-    // 2. Priority: Dash
-    if (hasBufferedDash && canStartNew && me.cd === 0) {
+    // 2. Priority: Dash (movement-direction dash or dash toward mouse cursor)
+    if ((hasBufferedDash || hasBufferedDashToMouse) && canStartNew && me.cd === 0) {
+      const useMouseDir =
+        hasBufferedDashToMouse && (!hasBufferedDash || this.queuedDashToMouseAt >= this.queuedDashAt);
       this.queuedDashAt = -1;
-      const [dx, dy] = mx !== 0 || my !== 0 ? [mx, my] : [aimX, aimY];
+      this.queuedDashToMouseAt = -1;
+      const [dx, dy] = useMouseDir ? [aimX, aimY] : mx !== 0 || my !== 0 ? [mx, my] : [aimX, aimY];
       return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
     }
 

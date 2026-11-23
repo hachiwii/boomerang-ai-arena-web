@@ -1,6 +1,6 @@
 import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
 import { CountdownStage } from '../game/matchController';
-import { formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
+import { formatDashSummary, formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
 import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
 
 export interface HudCallbacks {
@@ -229,7 +229,7 @@ export class HudUI {
     const mv = formatMoveSummary(kb);
     const thr = formatPrimaryBind(kb.throwRecall);
     const mel = formatPrimaryBind(kb.melee);
-    const dsh = formatPrimaryBind(kb.dash);
+    const dsh = formatDashSummary(kb);
     const rst = formatPrimaryBind(kb.quickRestart);
 
     if (humanSeat >= 0) {
@@ -310,7 +310,7 @@ export class HudUI {
     const kb = this.settings.get().keybindings;
     const thr = formatPrimaryBind(kb.throwRecall);
     const mel = formatPrimaryBind(kb.melee);
-    const dsh = formatPrimaryBind(kb.dash);
+    const dsh = formatDashSummary(kb);
     const rst = formatPrimaryBind(kb.quickRestart);
 
     const me = state.players[this.humanSeat];
