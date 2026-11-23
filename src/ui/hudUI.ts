@@ -39,6 +39,7 @@ export class HudUI {
   public readonly nameplateLayer: HTMLDivElement;
   private readonly topBar: HTMLDivElement;
   private readonly bottomBar: HTMLDivElement;
+  private readonly eloToastEl: HTMLDivElement;
   private readonly countdownOverlay: HTMLDivElement;
   private readonly resultOverlay: HTMLDivElement;
   private readonly callbacks: HudCallbacks;
@@ -50,6 +51,7 @@ export class HudUI {
   private cliffGuard = true;
   private autoReturnTimer: number | null = null;
   private countdownInterval: number | null = null;
+  private eloToastTimer: number | null = null;
 
   // Cached DOM references for ultra-fast HUD updates (no full innerHTML rebuild per tick!)
   private timerEl: HTMLElement | null = null;
@@ -84,6 +86,10 @@ export class HudUI {
     this.bottomBar = document.createElement('div');
     this.bottomBar.className = 'hud-bottom';
     this.root.appendChild(this.bottomBar);
+
+    this.eloToastEl = document.createElement('div');
+    this.eloToastEl.className = 'hud-elo-toast hidden';
+    this.root.appendChild(this.eloToastEl);
 
     this.countdownOverlay = document.createElement('div');
     this.countdownOverlay.className = 'countdown-overlay hidden';
@@ -396,6 +402,22 @@ export class HudUI {
     }, 4000);
   }
 
+  public showEloToast(rank: number, eloResult: EloUpdateResult) {
+    if (this.eloToastTimer !== null) {
+      window.clearTimeout(this.eloToastTimer);
+      this.eloToastTimer = null;
+    }
+    const fmt = (v: number) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1));
+    const deltaStr = `${eloResult.delta >= 0 ? '+' : ''}${eloResult.delta.toFixed(1)}`;
+    const cls = eloResult.delta > 0 ? 'elo-up' : eloResult.delta < 0 ? 'elo-down' : '';
+    this.eloToastEl.className = `hud-elo-toast ${cls}`;
+    this.eloToastEl.innerHTML = `上局第 <strong>#${rank}</strong> 名 · Elo ${fmt(eloResult.oldRating)} → <strong>${fmt(eloResult.newRating)}</strong> <span class="het-delta">(${deltaStr})</span>`;
+    this.eloToastTimer = window.setTimeout(() => {
+      this.eloToastTimer = null;
+      this.eloToastEl.classList.add('hidden');
+    }, 2600);
+  }
+
   public cancelResultOverlay(restarting = false) {
     this.clearTimers();
     this.setCountdown(null);
@@ -408,6 +430,11 @@ export class HudUI {
 
   public hide() {
     this.clearTimers();
+    if (this.eloToastTimer !== null) {
+      window.clearTimeout(this.eloToastTimer);
+      this.eloToastTimer = null;
+    }
+    this.eloToastEl.classList.add('hidden');
     this.setCountdown(null);
     this.root.classList.add('hidden');
     this.resultOverlay.classList.add('hidden');

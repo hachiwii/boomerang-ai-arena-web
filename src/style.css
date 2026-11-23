@@ -730,6 +730,53 @@ kbd {
   color: #ffe2a8;
 }
 
+.hud-elo-toast {
+  position: fixed;
+  top: 118px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 16;
+  pointer-events: none;
+  padding: 7px 16px;
+  border-radius: 999px;
+  background: rgba(12, 18, 34, 0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(120, 175, 255, 0.35);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.45);
+  font-size: 13px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: #e6f0ff;
+  white-space: nowrap;
+  animation: toastPop 0.2s cubic-bezier(0.2, 0.9, 0.3, 1);
+}
+
+@keyframes toastPop {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0) scale(1);
+  }
+}
+
+.hud-elo-toast.elo-up {
+  border-color: rgba(114, 234, 166, 0.5);
+  color: #aef7ce;
+}
+
+.hud-elo-toast.elo-down {
+  border-color: rgba(255, 130, 130, 0.5);
+  color: #ffc2c2;
+}
+
+.hud-elo-toast .het-delta {
+  font-weight: 900;
+}
+
 /* ---------- Post-Match Result Card ---------- */
 .result-overlay {
   position: fixed;

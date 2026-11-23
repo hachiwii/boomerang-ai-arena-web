@@ -66,6 +66,7 @@ async function bootstrap() {
   let activeConfig: MatchConfig | null = null;
   let activeMapData: EngineMapData | null = null;
   let matchOverTimer: number | null = null;
+  let matchRecorded = false;
   let restarting = false;
 
   // Default to 240Hz+ uncapped smooth render loop (toggleable to VSync in HUD anytime)
@@ -117,7 +118,22 @@ async function bootstrap() {
     if (!activeConfig || restarting) return;
     restarting = true;
     clearMatchOverTimer();
+
+    // If an eliminated human restarts before the remaining bots finish, settle human's Elo by current rank!
+    if (!matchRecorded) {
+      const hSeat = controller.getHumanSeat();
+      const st = controller.getCurrentState();
+      if (hSeat >= 0 && st && st.players[hSeat] && !st.players[hSeat].alive) {
+        matchRecorded = true;
+        const eloResult = leaderboard.recordHumanEarlyExit(activeConfig, st);
+        if (eloResult) {
+          hudUI.showEloToast(st.players[hSeat].rank, eloResult);
+        }
+      }
+    }
+
     hudUI.cancelResultOverlay(true);
+    matchRecorded = false;
     const cfg: MatchConfig = {
       ...activeConfig,
       slots: activeConfig.slots.map((s) => ({ ...s })),
@@ -249,7 +265,11 @@ async function bootstrap() {
     },
     onMatchOver: (finalState) => {
       hudUI.updateTick(finalState, activeMapData?.colStart, activeMapData?.colEvery);
-      const eloResult = activeConfig ? leaderboard.recordMatch(activeConfig, finalState) : null;
+      let eloResult = null;
+      if (activeConfig && !matchRecorded) {
+        matchRecorded = true;
+        eloResult = leaderboard.recordMatch(activeConfig, finalState);
+      }
       // Wait 1.6s so players see the victory celebration & confetti, then show result card + auto return!
       clearMatchOverTimer();
       matchOverTimer = window.setTimeout(() => {
@@ -275,6 +295,7 @@ async function bootstrap() {
     },
     onStartMatch: (config) => {
       clearMatchOverTimer();
+      matchRecorded = false;
       restarting = false;
       activeConfig = config;
       lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
@@ -284,6 +305,11 @@ async function bootstrap() {
         alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);
       });
     },
+  });
+
+  // Disable native browser right-click context menu everywhere inside the page
+  window.addEventListener('contextmenu', (e) => {
+    e.preventDefault();
   });
 
   // Match keyboard shortcuts: ESC returns to lobby; R restarts with exact same config & spawn positions when spectating

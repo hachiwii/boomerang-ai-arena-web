@@ -149,6 +149,43 @@ export class LeaderboardStore {
     return this.stats[id];
   }
 
+  private applyHumanEloUpdate(config: MatchConfig, state: TickSnapshot): EloUpdateResult | null {
+    const n = config.slots.length;
+    const humanSeat = config.slots.findIndex((s) => s.kind === 'human');
+    if (humanSeat < 0 || humanSeat >= state.players.length) return null;
+
+    const oldRating = this.humanRating;
+    const humanP = state.players[humanSeat];
+    let oppCount = 0;
+    let sumDiff = 0;
+
+    for (let j = 0; j < n && j < state.players.length; j++) {
+      if (j === humanSeat) continue;
+      const oppSlot = config.slots[j];
+      const oppP = state.players[j];
+      const oppRating = oppSlot.kind === 'bot' && oppSlot.botId ? this.getBotFixedRating(oppSlot.botId) : 0;
+
+      // Expected score (standard 400-scale Elo matching meow-ai-arena Bradley-Terry scale)
+      const expected = 1 / (1 + Math.pow(10, (oppRating - oldRating) / 400));
+
+      // Actual score vs this opponent: rank first, then kills on tie, else 0.5 draw
+      let actual = 0.5;
+      if (humanP.rank < oppP.rank) actual = 1.0;
+      else if (humanP.rank > oppP.rank) actual = 0.0;
+      else if (humanP.kills > oppP.kills) actual = 1.0;
+      else if (humanP.kills < oppP.kills) actual = 0.0;
+
+      sumDiff += actual - expected;
+      oppCount++;
+    }
+
+    const rawDelta = oppCount > 0 ? (ELO_K / oppCount) * sumDiff : 0;
+    const newRating = Math.round((oldRating + rawDelta) * 10) / 10;
+    const delta = Math.round((newRating - oldRating) * 10) / 10;
+    this.humanRating = newRating;
+    return { oldRating, newRating, delta };
+  }
+
   /**
    * Record a finished match for all participants (2p/3p/4p win rates, kills, deaths,
    * dart/melee/terrain kills, cliff falls). If a human participated, update ONLY the
@@ -187,41 +224,37 @@ export class LeaderboardStore {
 
     // 2. If human participated, update human Elo using pairwise Elo (scale 400, K=32)
     // Bot scores are ALWAYS fixed.
-    let eloResult: EloUpdateResult | null = null;
+    const eloResult = this.applyHumanEloUpdate(config, finalState);
+
+    this.save();
+    return eloResult;
+  }
+
+  /**
+   * Called when an eliminated human presses R to restart before the remaining bots finish.
+   * Since the human is already dead, their relative rank vs every opponent is already final:
+   * update human's Elo and personal stats without corrupting unfinished bots' win rates.
+   */
+  public recordHumanEarlyExit(config: MatchConfig, state: TickSnapshot): EloUpdateResult | null {
+    const n = config.slots.length;
     const humanSeat = config.slots.findIndex((s) => s.kind === 'human');
-    if (humanSeat >= 0 && humanSeat < finalState.players.length) {
-      const oldRating = this.humanRating;
-      const humanP = finalState.players[humanSeat];
-      let oppCount = 0;
-      let sumDiff = 0;
+    if (humanSeat < 0 || humanSeat >= state.players.length) return null;
+    const humanP = state.players[humanSeat];
+    if (humanP.alive) return null;
 
-      for (let j = 0; j < n && j < finalState.players.length; j++) {
-        if (j === humanSeat) continue;
-        const oppSlot = config.slots[j];
-        const oppP = finalState.players[j];
-        const oppRating = oppSlot.kind === 'bot' && oppSlot.botId ? this.getBotFixedRating(oppSlot.botId) : 0;
-
-        // Expected score (standard 400-scale Elo matching meow-ai-arena Bradley-Terry scale)
-        const expected = 1 / (1 + Math.pow(10, (oppRating - oldRating) / 400));
-
-        // Actual score vs this opponent: rank first, then kills on tie, else 0.5 draw
-        let actual = 0.5;
-        if (humanP.rank < oppP.rank) actual = 1.0;
-        else if (humanP.rank > oppP.rank) actual = 0.0;
-        else if (humanP.kills > oppP.kills) actual = 1.0;
-        else if (humanP.kills < oppP.kills) actual = 0.0;
-
-        sumDiff += actual - expected;
-        oppCount++;
-      }
-
-      const rawDelta = oppCount > 0 ? (ELO_K / oppCount) * sumDiff : 0;
-      const newRating = Math.round((oldRating + rawDelta) * 10) / 10;
-      const delta = Math.round((newRating - oldRating) * 10) / 10;
-      this.humanRating = newRating;
-      eloResult = { oldRating, newRating, delta };
+    const modeKey: 'mode2' | 'mode3' | 'mode4' = n === 2 ? 'mode2' : n === 3 ? 'mode3' : 'mode4';
+    const st = this.ensureStats('human');
+    st[modeKey].games += 1;
+    st.kills += humanP.kills;
+    st.deaths += 1;
+    st.dartKills += humanP.kDart || 0;
+    st.meleeKills += humanP.kSlash || 0;
+    st.terrainKills += humanP.kFall || 0;
+    if (humanP.cause === CauseType.FALL) {
+      st.cliffFalls += 1;
     }
 
+    const eloResult = this.applyHumanEloUpdate(config, state);
     this.save();
     return eloResult;
   }
