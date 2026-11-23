@@ -10,6 +10,7 @@ const { default: createEngineModule } = await import(pathToFileURL(ENGINE_JS).hr
 const mod = await createEngineModule({ printErr: () => {} });
 const engineInit = mod.cwrap('engine_init', 'number', ['string', 'number', 'number']);
 const engineSetHumanSeat = mod.cwrap('engine_set_human_seat', null, ['number']);
+const engineSetHumanSlashTicks = mod.cwrap('engine_set_human_slash_ticks', null, ['number']);
 const engineStep = mod.cwrap('engine_step', 'number', ['string']);
 const engineGetState = mod.cwrap('engine_get_state_json', 'string', []);
 
@@ -25,9 +26,10 @@ function assert(cond, msg) {
  * When `emptyHandSeat0` is true, seat 0 first throws its dart straight left into the wall
  * so it drops to D_GROUND far behind seat 0 before positioning.
  */
-function setupDuelAtDistance(targetDistMm, humanSeat, emptyHandSeat0 = false) {
+function setupDuelAtDistance(targetDistMm, humanSeat, emptyHandSeat0 = false, humanSlashTicks = 5) {
   assert(engineInit(mapText, 2, 0), 'engine_init failed');
   engineSetHumanSeat(humanSeat);
+  engineSetHumanSlashTicks(humanSlashTicks);
   let st = JSON.parse(engineGetState());
 
   if (emptyHandSeat0) {
@@ -252,4 +254,118 @@ for (const tc of [
   console.log('  [PASS] Bot SLASH & Bot KICK both retain exact original 1-tick judgment on Tick 1 only!');
 }
 
-console.log('ALL HUMAN 250ms (5-TICK) SLASH & KICK WASM TESTS PASSED!');
+// ---------------------------------------------------------------------------
+// Test 5: Human STRICT mode (humanSlashTicks = 3) hits ONLY on ticks 0, 1, 2
+//         and misses on ticks 3, 4, 5 (for both SLASH and KICK)!
+// ---------------------------------------------------------------------------
+for (const tc of [
+  { label: 'Strict Tick 0', D: 1650, expectHitTick: 0 },
+  { label: 'Strict Tick 1', D: 1900, expectHitTick: 1 },
+  { label: 'Strict Tick 2', D: 2150, expectHitTick: 2 },
+  { label: 'Strict Tick 3 (EXPIRED)', D: 2400, expectHitTick: -1 },
+  { label: 'Strict Tick 4 (EXPIRED)', D: 2650, expectHitTick: -1 },
+]) {
+  let st = setupDuelAtDistance(tc.D, 0, false, 3);
+  let hitTick = -1;
+  let swingCount = 0;
+  let swingTick = -1;
+  for (let tick = 0; tick < 8 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    for (const ev of st.events) {
+      if (ev.name === 'SWING' && ev.a === 0) {
+        swingCount++;
+        swingTick = tick;
+      }
+      if (ev.name === 'CUT' && ev.a === 0 && ev.b === 1) hitTick = tick;
+    }
+  }
+  assert(swingCount === 1 && swingTick === 0, `${tc.label}: expected 1 EV_SWING@tick0, got ${swingCount}@${swingTick}`);
+  assert(hitTick === tc.expectHitTick, `${tc.label}: expected hitTick=${tc.expectHitTick}, got ${hitTick}`);
+  console.log(`  [PASS] Human STRICT SLASH ${tc.label} -> hitTick=${hitTick}`);
+}
+
+for (const tc of [
+  { label: 'Strict Kick Tick 2', D: 2150, expectHitTick: 2 },
+  { label: 'Strict Kick Tick 3 (EXPIRED)', D: 2400, expectHitTick: -1 },
+]) {
+  let st = setupDuelAtDistance(tc.D, 0, true, 3);
+  let hitTick = -1;
+  for (let tick = 0; tick < 7 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    for (const ev of st.events) {
+      if (ev.name === 'KICKHIT' && ev.a === 0 && ev.b === 1 && hitTick < 0) hitTick = tick;
+    }
+  }
+  assert(hitTick === tc.expectHitTick, `${tc.label}: expected hitTick=${tc.expectHitTick}, got ${hitTick}`);
+  console.log(`  [PASS] Human STRICT KICK ${tc.label} -> hitTick=${hitTick}`);
+}
+
+// ---------------------------------------------------------------------------
+// Test 6: Human AI mode (humanSlashTicks = 0) matches AI 100%:
+//         has windup on tick 0 (NO swing/hit), fires ONLY 1 frame on tick 1, misses on tick 2+!
+// ---------------------------------------------------------------------------
+{
+  // Enemy in range on tick 0 -> windup on tick 0, hits ONLY on tick 1 with EV_SWING on tick 1
+  let st = setupDuelAtDistance(1650, 0, false, 0);
+  let hitTick = -1;
+  let swingTick = -1;
+  let swingCount = 0;
+  for (let tick = 0; tick < 8 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    for (const ev of st.events) {
+      if (ev.name === 'SWING' && ev.a === 0) {
+        swingCount++;
+        swingTick = tick;
+      }
+      if (ev.name === 'CUT' && ev.a === 0 && ev.b === 1) hitTick = tick;
+    }
+  }
+  assert(
+    swingCount === 1 && swingTick === 1 && hitTick === 1,
+    `Human AI-mode SLASH must windup tick 0 and fire ONLY tick 1, got swing=${swingCount}@${swingTick}, hit=${hitTick}`,
+  );
+
+  // Enemy enters on tick 2 -> MUST NOT hit in AI mode
+  st = setupDuelAtDistance(2150, 0, false, 0);
+  let lateHit = false;
+  for (let tick = 0; tick < 8 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    if (st.events.some((ev) => ev.name === 'CUT' && ev.a === 0)) lateHit = true;
+  }
+  assert(!lateHit, 'Human AI-mode SLASH must NOT hit on tick 2!');
+
+  // Empty-handed kick in AI mode -> windup tick 0, hits ONLY tick 1
+  st = setupDuelAtDistance(1650, 0, true, 0);
+  hitTick = -1;
+  swingTick = -1;
+  for (let tick = 0; tick < 7 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    for (const ev of st.events) {
+      if (ev.name === 'SWING' && ev.a === 0) swingTick = tick;
+      if (ev.name === 'KICKHIT' && ev.a === 0 && ev.b === 1) hitTick = tick;
+    }
+  }
+  assert(
+    swingTick === 1 && hitTick === 1,
+    `Human AI-mode KICK must fire ONLY on tick 1, got swing=${swingTick}, hit=${hitTick}`,
+  );
+
+  // Enemy enters on tick 2 in AI mode -> KICK must NOT hit
+  st = setupDuelAtDistance(2150, 0, true, 0);
+  let lateKick = false;
+  for (let tick = 0; tick < 7 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    if (st.events.some((ev) => ev.name === 'KICKHIT' && ev.a === 0)) lateKick = true;
+  }
+  assert(!lateKick, 'Human AI-mode KICK must NOT hit on tick 2!');
+
+  console.log('  [PASS] Human AI mode (ticks=0) matches AI 100%: windup tick 0 + 1-frame judgment on tick 1 only!');
+}
+
+console.log('ALL HUMAN SLASH JUDGMENT (NORMAL 5f / STRICT 3f / AI 1f) WASM TESTS PASSED!');

@@ -1,4 +1,5 @@
 export type GraphicsQualityOption = 'low' | 'high';
+export type SlashJudgmentOption = 'normal' | 'strict' | 'ai';
 export type ExportResolutionOption = '480p' | '720p' | '1080p' | '1440p';
 export type ExportBitrateOption = 2 | 4 | 8 | 12;
 export type ExportSpeedOption = 0.5 | 1.0 | 1.5 | 2.0;
@@ -29,6 +30,8 @@ export interface GameSettings {
   graphicsQuality: GraphicsQualityOption; // 'low' = lightweight instanced, 'high' = faithful open-source art
   lockFps: boolean; // true = monitor refresh rate (VSync), false = uncapped
   dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
+  cliffGuard: boolean; // Prevent walking off cliffs + dash-tail 25% cliff save
+  slashJudgment: SlashJudgmentOption; // 'normal' (5f) | 'strict' (3f) | 'ai' (windup + 1f)
   killCam: boolean; // Non-final kill slow-mo & eye-level camera (0.5x)
   finisherCam: boolean; // Final kill slow-mo & eye-level camera (0.25x)
   winnerCam: boolean; // Winner front close-up & periodic confetti shower
@@ -68,6 +71,25 @@ export const GRAPHICS_QUALITY_OPTIONS: { value: GraphicsQualityOption; label: st
   { value: 'low', label: '低' },
   { value: 'high', label: '高' },
 ];
+
+export const SLASH_JUDGMENT_OPTIONS: {
+  value: SlashJudgmentOption;
+  label: string;
+  ticks: number;
+  desc: string;
+}[] = [
+  { value: 'normal', label: '普通', ticks: 5, desc: '按下即生效，持续前 5 帧判定' },
+  { value: 'strict', label: '严格', ticks: 3, desc: '按下即生效，仅前 3 帧判定' },
+  { value: 'ai', label: 'AI', ticks: 0, desc: '与 AI 完全相同：有前摇，仅 1 帧判定' },
+];
+
+export function getSlashJudgmentTicks(mode: SlashJudgmentOption): number {
+  return SLASH_JUDGMENT_OPTIONS.find((o) => o.value === mode)?.ticks ?? 5;
+}
+
+export function getSlashJudgmentDesc(mode: SlashJudgmentOption): string {
+  return SLASH_JUDGMENT_OPTIONS.find((o) => o.value === mode)?.desc ?? SLASH_JUDGMENT_OPTIONS[0].desc;
+}
 
 export const EXPORT_RESOLUTION_OPTIONS: {
   value: ExportResolutionOption;
@@ -121,6 +143,8 @@ export function defaultSettings(): GameSettings {
     graphicsQuality: 'high',
     lockFps: true,
     dashInputBuffer: true,
+    cliffGuard: true,
+    slashJudgment: 'normal',
     killCam: true,
     finisherCam: true,
     winnerCam: true,
@@ -132,6 +156,7 @@ export function defaultSettings(): GameSettings {
 }
 
 const VALID_GRAPHICS_QUALITY = new Set<GraphicsQualityOption>(['low', 'high']);
+const VALID_SLASH_JUDGMENT = new Set<SlashJudgmentOption>(['normal', 'strict', 'ai']);
 const VALID_EXPORT_RES = new Set<ExportResolutionOption>(['480p', '720p', '1080p', '1440p']);
 const VALID_EXPORT_BITRATES = new Set<ExportBitrateOption>([2, 4, 8, 12]);
 const VALID_EXPORT_SPEEDS = new Set<ExportSpeedOption>([0.5, 1.0, 1.5, 2.0]);
@@ -252,6 +277,12 @@ export class SettingsStore {
             : def.lockFps;
       const dashInputBuffer =
         typeof parsed.dashInputBuffer === 'boolean' ? parsed.dashInputBuffer : def.dashInputBuffer;
+      const cliffGuard =
+        typeof parsed.cliffGuard === 'boolean' ? parsed.cliffGuard : def.cliffGuard;
+      const slashJudgment: SlashJudgmentOption =
+        parsed.slashJudgment !== undefined && VALID_SLASH_JUDGMENT.has(parsed.slashJudgment)
+          ? parsed.slashJudgment
+          : def.slashJudgment;
       const killCam =
         typeof parsed.killCam === 'boolean' ? parsed.killCam : def.killCam;
       const finisherCam =
@@ -296,6 +327,8 @@ export class SettingsStore {
         graphicsQuality,
         lockFps,
         dashInputBuffer,
+        cliffGuard,
+        slashJudgment,
         killCam,
         finisherCam,
         winnerCam,
@@ -361,6 +394,18 @@ export class SettingsStore {
   public setDashInputBuffer(enabled: boolean) {
     if (this.settings.dashInputBuffer === enabled) return;
     this.settings.dashInputBuffer = enabled;
+    this.emit();
+  }
+
+  public setCliffGuard(enabled: boolean) {
+    if (this.settings.cliffGuard === enabled) return;
+    this.settings.cliffGuard = enabled;
+    this.emit();
+  }
+
+  public setSlashJudgment(mode: SlashJudgmentOption) {
+    if (!VALID_SLASH_JUDGMENT.has(mode) || this.settings.slashJudgment === mode) return;
+    this.settings.slashJudgment = mode;
     this.emit();
   }
 

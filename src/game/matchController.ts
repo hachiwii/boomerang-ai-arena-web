@@ -117,6 +117,13 @@ export class MatchController {
     this.engineWorker?.postMessage({ type: 'set_cliff_guard', enabled });
   }
 
+  public setHumanSlashTicks(ticks: number) {
+    if (this.config) {
+      this.config.humanSlashTicks = ticks;
+    }
+    this.engineWorker?.postMessage({ type: 'set_slash_ticks', ticks });
+  }
+
   private rpc(worker: Worker, payload: Record<string, unknown>, timeoutMs = 15000): Promise<Record<string, unknown>> {
     return new Promise((resolve, reject) => {
       const reqId = this.reqCounter++;
@@ -185,6 +192,7 @@ export class MatchController {
       botSeats: this.botSeats,
       humanSeat: this.humanSeat,
       cliffGuard: config.cliffGuard,
+      humanSlashTicks: config.humanSlashTicks ?? 5,
     });
     if (this.stopped) return;
 

@@ -55,6 +55,7 @@ export class HumanInputController {
   constructor(canvas: HTMLCanvasElement, settings: SettingsStore) {
     this.canvas = canvas;
     this.settings = settings;
+    this.cliffGuard = settings.get().cliffGuard;
     this.bindEvents();
   }
 

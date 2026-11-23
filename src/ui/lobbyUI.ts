@@ -1,6 +1,6 @@
 import { CricketFormat, CricketStore, CricketTier } from '../game/cricketStore';
 import { LeaderboardStore } from '../game/leaderboard';
-import { formatDashSummary, formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
+import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore } from '../game/settings';
 import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { getTheme } from '../render/themes';
 import { LeaderboardPanel } from './leaderboardUI';
@@ -185,7 +185,6 @@ export class LobbyUI {
   private randomMap = false;
   private drafts: DraftSlot[];
   private randomizeOrder = true;
-  private cliffGuard = true;
   private gameSpeed = 1.0;
 
   private openSlotIdx: number | null = null;
@@ -407,10 +406,6 @@ export class LobbyUI {
     return this.maps.find((m) => m.id === this.selectedMapId) || this.maps[0];
   }
 
-  public setCliffGuard(enabled: boolean) {
-    this.cliffGuard = enabled;
-  }
-
   /**
    * Build a fresh Ranked match config using the player's LATEST Elo score,
    * nearest 4 (SOLO) / 6 (FFA) ranked opponents, and the mode's saved map pool
@@ -433,6 +428,7 @@ export class LobbyUI {
       [slots[i], slots[j]] = [slots[j], slots[i]];
     }
     const seed = Math.floor(Math.random() * 900000) + 1;
+    const s = this.settings.get();
 
     return {
       matchMode: mode === 'solo' ? 'ranked-solo' : 'ranked-ffa',
@@ -441,7 +437,8 @@ export class LobbyUI {
       slots,
       seed,
       speed: 1.0, // Fixed standard speed in Ranked
-      cliffGuard: this.cliffGuard,
+      cliffGuard: s.cliffGuard,
+      humanSlashTicks: getSlashJudgmentTicks(s.slashJudgment),
     };
   }
 
@@ -561,6 +558,7 @@ export class LobbyUI {
       }
     }
     const seed = Math.floor(Math.random() * 900000) + 1;
+    const s = this.settings.get();
     this.callbacks.onStartMatch({
       matchMode: 'custom',
       mapId: mapMeta.id,
@@ -568,7 +566,8 @@ export class LobbyUI {
       slots,
       seed,
       speed: this.gameSpeed,
-      cliffGuard: this.cliffGuard,
+      cliffGuard: s.cliffGuard,
+      humanSlashTicks: getSlashJudgmentTicks(s.slashJudgment),
     });
   }
 
@@ -963,18 +962,6 @@ export class LobbyUI {
             <span class="mpt-icon">🗺️</span>
             <span>地图选择</span>
             <span class="mpt-count" id="mappool-count-badge">${poolCount} / ${this.maps.length}</span>
-          </button>
-
-          <button
-            type="button"
-            class="rand-switch cg-switch ${this.cliffGuard ? 'is-on' : ''}"
-            id="btn-toggle-cliff-guard"
-            role="switch"
-            aria-checked="${this.cliffGuard}"
-            title="开启时人类不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点"
-          >
-            <span class="rand-track"><span class="rand-thumb"></span></span>
-            <span class="rand-label">🛡️ 跌落防护</span>
           </button>
         </div>
 
@@ -1456,24 +1443,6 @@ export class LobbyUI {
               .join('')}
           </div>
 
-          <div class="cliff-guard-bar ${isHumanPlaying ? '' : 'is-spectate'}">
-            <div class="cg-meta">
-              <span class="cg-title">🛡️ 跌落防护</span>
-              <span class="cg-desc">${isHumanPlaying ? '防走路坠崖 · 冲刺/塌陷/被踢不受影响' : '仅真人参战生效 · 防走路坠崖'}</span>
-            </div>
-            <button
-              type="button"
-              class="rand-switch cg-switch ${this.cliffGuard ? 'is-on' : ''}"
-              id="btn-toggle-cliff-guard"
-              role="switch"
-              aria-checked="${this.cliffGuard}"
-              title="开启时人类不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点"
-            >
-              <span class="rand-track"><span class="rand-thumb"></span></span>
-              <span class="rand-label">${this.cliffGuard ? '已开启' : '已关闭'}</span>
-            </button>
-          </div>
-
           ${this.renderControlsLegend()}
 
           <button class="start-btn" id="btn-start-match" ${this.loadingMessage ? 'disabled' : ''}>
@@ -1615,13 +1584,6 @@ export class LobbyUI {
         this.openMapPoolModal('ranked');
       });
 
-      const rankedCgBtn = this.container.querySelector<HTMLButtonElement>('#btn-toggle-cliff-guard');
-      rankedCgBtn?.addEventListener('click', () => {
-        this.cliffGuard = !this.cliffGuard;
-        rankedCgBtn.classList.toggle('is-on', this.cliffGuard);
-        rankedCgBtn.setAttribute('aria-checked', String(this.cliffGuard));
-      });
-
       this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {
         this.startRankedMatch();
       });
@@ -1696,15 +1658,6 @@ export class LobbyUI {
       this.randomizeOrder = !this.randomizeOrder;
       randOrderBtn.classList.toggle('is-on', this.randomizeOrder);
       randOrderBtn.setAttribute('aria-checked', String(this.randomizeOrder));
-    });
-
-    const customCgBtn = this.container.querySelector<HTMLButtonElement>('#btn-toggle-cliff-guard');
-    customCgBtn?.addEventListener('click', () => {
-      this.cliffGuard = !this.cliffGuard;
-      customCgBtn.classList.toggle('is-on', this.cliffGuard);
-      customCgBtn.setAttribute('aria-checked', String(this.cliffGuard));
-      const lbl = customCgBtn.querySelector<HTMLElement>('.rand-label');
-      if (lbl) lbl.textContent = this.cliffGuard ? '已开启' : '已关闭';
     });
 
     const speedSlider = this.container.querySelector<HTMLInputElement>('#speed-slider');

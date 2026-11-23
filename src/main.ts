@@ -9,7 +9,13 @@ import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { ReplayController } from './game/replayController';
-import { getCinematicOptions, GraphicsQualityOption, isBoundToAction, SettingsStore } from './game/settings';
+import {
+  getCinematicOptions,
+  getSlashJudgmentTicks,
+  GraphicsQualityOption,
+  isBoundToAction,
+  SettingsStore,
+} from './game/settings';
 import { CellType, EngineMapData, isRankedMatchMode, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
 import { GameRenderer } from './render/renderer';
 import { HistoryModal } from './ui/historyUI';
@@ -366,7 +372,6 @@ async function bootstrap() {
     pendingMatchElo = null;
     resultOverlayShown = false;
     lastFinishedBundle = null;
-    lobbyUI.setCliffGuard(input.isCliffGuard());
 
     let cfg: MatchConfig;
     if (isRanked) {
@@ -378,10 +383,12 @@ async function bootstrap() {
       cfg = lobbyUI.createRankedMatchConfig(rankedMode, prevBotIds);
     } else {
       // Custom R restart: exact same map, contestants, spawn order, seed, and speed
+      const s = settings.get();
       cfg = {
         ...activeConfig,
         slots: activeConfig.slots.map((s) => ({ ...s })),
-        cliffGuard: input.isCliffGuard(),
+        cliffGuard: s.cliffGuard,
+        humanSlashTicks: getSlashJudgmentTicks(s.slashJudgment),
       };
     }
 
@@ -460,6 +467,8 @@ async function bootstrap() {
 
   settings.onChange((s) => {
     sfx.applySettings(s.soundEnabled, s.volume);
+    controller.setCliffGuard(s.cliffGuard);
+    controller.setHumanSlashTicks(getSlashJudgmentTicks(s.slashJudgment));
     if (s.lockFps !== activeLockFps) {
       activeLockFps = s.lockFps;
       startRenderLoop();
@@ -503,12 +512,6 @@ async function bootstrap() {
     },
     onOpenSettings: () => {
       settingsModal.open();
-    },
-    onToggleCliffGuard: () => {
-      const next = !input.isCliffGuard();
-      controller.setCliffGuard(next);
-      lobbyUI.setCliffGuard(next);
-      return next;
     },
     onRankCue: (kind) => {
       if (kind === 'up') sfx.playRankUp();

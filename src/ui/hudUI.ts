@@ -12,7 +12,6 @@ export interface HudCallbacks {
   onRestartMatch: () => void;
   onWatchCurrentReplay?: () => void;
   onOpenSettings: () => void;
-  onToggleCliffGuard: () => boolean;
   onRankCue?: (kind: 'up' | 'down') => void;
   onReplayTogglePause?: () => void;
   onReplayRestart?: () => void;
@@ -71,7 +70,6 @@ export class HudUI {
   private humanSeat = -1;
   private isReplayMode = false;
   private replayBundle: MatchReplayBundle | null = null;
-  private cliffGuard = true;
   private lastTickState: TickSnapshot | null = null;
   private autoReturnTimer: number | null = null;
   private countdownInterval: number | null = null;
@@ -186,7 +184,6 @@ export class HudUI {
     this.slots = config.slots;
     this.matchMode = config.matchMode;
     this.humanSeat = humanSeat;
-    this.cliffGuard = config.cliffGuard;
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
@@ -229,12 +226,7 @@ export class HudUI {
 
       <div class="hud-actions">
         <div class="hud-action-btns">
-          ${
-            humanSeat >= 0
-              ? `<button class="hud-btn ${this.cliffGuard ? 'active' : ''}" id="hud-cliff-guard" title="跌落防护：开启时不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点">🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}</button>`
-              : ''
-          }
-          <button class="hud-btn" id="hud-settings" title="音效、帧率上限与键位设置">⚙️ 设置</button>
+          <button class="hud-btn" id="hud-settings" title="音效、辅助功能、帧率上限与键位设置">⚙️ 设置</button>
           <button class="hud-btn hud-exit" id="hud-exit">主界面 (ESC)</button>
         </div>
         <div class="hud-perf" id="hud-perf">20Hz · --Hz</div>
@@ -257,12 +249,6 @@ export class HudUI {
     });
     this.topBar.querySelector('#hud-settings')?.addEventListener('click', () => {
       this.callbacks.onOpenSettings();
-    });
-    this.topBar.querySelector('#hud-cliff-guard')?.addEventListener('click', (e) => {
-      this.cliffGuard = this.callbacks.onToggleCliffGuard();
-      const btn = e.currentTarget as HTMLButtonElement;
-      btn.classList.toggle('active', this.cliffGuard);
-      btn.textContent = `🛡️ 跌落防护: ${this.cliffGuard ? '开' : '关'}`;
     });
 
     this.lastTickState = null;

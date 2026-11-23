@@ -8,9 +8,12 @@ import {
   ExportResolutionOption,
   ExportSpeedOption,
   formatInputCode,
+  getSlashJudgmentDesc,
   GRAPHICS_QUALITY_OPTIONS,
   GraphicsQualityOption,
   SettingsStore,
+  SLASH_JUDGMENT_OPTIONS,
+  SlashJudgmentOption,
 } from '../game/settings';
 
 interface CaptureTarget {
@@ -215,6 +218,15 @@ export class SettingsModal {
     setSwitch('#settings-finishercam-toggle', s.finisherCam, s.finisherCam ? '已开启' : '已关闭');
     setSwitch('#settings-winnercam-toggle', s.winnerCam, s.winnerCam ? '已开启' : '已关闭');
     setSwitch('#settings-dash-buffer-toggle', s.dashInputBuffer, s.dashInputBuffer ? '已开启' : '已关闭');
+    setSwitch('#settings-cliff-guard-toggle', s.cliffGuard, s.cliffGuard ? '已开启' : '已关闭');
+
+    this.body.querySelectorAll<HTMLButtonElement>('[data-slash-judgment]').forEach((btn) => {
+      const active = btn.dataset.slashJudgment === s.slashJudgment;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-pressed', String(active));
+    });
+    const slashDescEl = this.body.querySelector<HTMLElement>('#settings-slash-desc');
+    if (slashDescEl) slashDescEl.textContent = getSlashJudgmentDesc(s.slashJudgment);
 
     this.body.querySelectorAll<HTMLButtonElement>('[data-export-res]').forEach((btn) => {
       const active = btn.dataset.exportRes === s.exportResolution;
@@ -408,6 +420,45 @@ export class SettingsModal {
             </div>
           </section>
 
+          <!-- Accessibility / Assist Section -->
+          <section class="settings-section">
+            <div class="settings-sec-head">
+              <span class="settings-sec-title">🛡️ 辅助功能</span>
+              <span class="settings-sec-hint">仅对真人玩家生效，不影响 AI 表现</span>
+            </div>
+            <div class="settings-toggle-stack">
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">跌落防护</div>
+                  <div class="settings-toggle-desc">不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${s.cliffGuard ? 'is-on' : ''}"
+                  id="settings-cliff-guard-toggle"
+                  role="switch"
+                  aria-checked="${s.cliffGuard}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${s.cliffGuard ? '已开启' : '已关闭'}</span>
+                </button>
+              </div>
+
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">挥砍判定</div>
+                  <div class="settings-toggle-desc" id="settings-slash-desc">${getSlashJudgmentDesc(s.slashJudgment)}</div>
+                </div>
+                <div class="slash-seg" role="group" aria-label="挥砍判定">
+                  ${SLASH_JUDGMENT_OPTIONS.map((opt) => {
+                    const active = s.slashJudgment === opt.value;
+                    return `<button type="button" class="fps-btn quality-seg-btn ${active ? 'active' : ''}" data-slash-judgment="${opt.value}" aria-pressed="${active}" title="${opt.desc}">${opt.label}</button>`;
+                  }).join('')}
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- Replay MP4 Export Settings Section -->
           <section class="settings-section">
             <div class="settings-sec-head">
@@ -516,6 +567,18 @@ export class SettingsModal {
     this.body.querySelector('#settings-dash-buffer-toggle')?.addEventListener('click', () => {
       this.store.setDashInputBuffer(!this.store.get().dashInputBuffer);
       this.syncControlsInPlace();
+    });
+
+    // Accessibility / Assist toggles (cliff guard & slash judgment)
+    this.body.querySelector('#settings-cliff-guard-toggle')?.addEventListener('click', () => {
+      this.store.setCliffGuard(!this.store.get().cliffGuard);
+      this.syncControlsInPlace();
+    });
+    this.body.querySelectorAll<HTMLButtonElement>('[data-slash-judgment]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.store.setSlashJudgment(btn.dataset.slashJudgment as SlashJudgmentOption);
+        this.syncControlsInPlace();
+      });
     });
 
     // Cinematic camera toggles (non-final kill, finisher kill, winner close-up)

@@ -95,6 +95,13 @@ void engine_set_human_seat(int seat) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void engine_set_human_slash_ticks(int ticks) {
+    if (g_game) {
+        g_game->human_slash_ticks = (ticks > 0) ? ticks : 0;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
 void engine_set_human_cliff_guard(int enabled) {
     if (g_game) {
         g_game->human_cliff_guard = (enabled != 0);
