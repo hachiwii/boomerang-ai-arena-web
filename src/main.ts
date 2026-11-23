@@ -82,6 +82,7 @@ async function bootstrap() {
   let activeConfig: MatchConfig | null = null;
   let activeMapData: EngineMapData | null = null;
   let replayMapData: EngineMapData | null = null;
+  let lastFinishedBundle: MatchReplayBundle | null = null;
   let matchOverTimer: number | null = null;
   let matchRecorded = false;
   let historyRecorded = false;
@@ -126,6 +127,7 @@ async function bootstrap() {
     if (ticks.length === 0) return;
     historyRecorded = true;
     const bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, eloResult, earlyExit);
+    lastFinishedBundle = bundle;
     void matchHistory.saveBundle(bundle);
   };
 
@@ -145,6 +147,7 @@ async function bootstrap() {
     activeConfig = null;
     activeMapData = null;
     replayMapData = null;
+    lastFinishedBundle = null;
     lobbyUI.show(opts?.openLeaderboard ? 'ranked' : undefined, opts);
     const m = lobbyUI.getSelectedMap();
     void renderer.loadPreviewMap(parseQuickPreviewMap(m), m.theme);
@@ -239,12 +242,7 @@ async function bootstrap() {
     });
   };
 
-  const startReplayById = async (matchId: string) => {
-    const bundle = await matchHistory.getReplayBundle(matchId);
-    if (!bundle) {
-      alert('未找到该场对局的回放数据（可能已被清理）。');
-      return;
-    }
+  const startReplayBundle = async (bundle: MatchReplayBundle, fallbackOpenHistory = false) => {
     clearMatchOverTimer();
     matchRecorded = false;
     historyRecorded = false;
@@ -259,6 +257,8 @@ async function bootstrap() {
     activeConfig = null;
     activeMapData = null;
     replayMapData = bundle.replay.mapData;
+    lastFinishedBundle = null;
+    hudUI.cancelResultOverlay(false, false);
     historyModal.close();
     lobbyUI.hide();
     mode = 'replay';
@@ -267,8 +267,17 @@ async function bootstrap() {
     } catch (err) {
       console.error('Failed to start replay:', err);
       alert(`回放加载失败：${err instanceof Error ? err.message : String(err)}`);
-      returnToLobby({ openHistory: true });
+      returnToLobby(fallbackOpenHistory ? { openHistory: true } : undefined);
     }
+  };
+
+  const startReplayById = async (matchId: string) => {
+    const bundle = await matchHistory.getReplayBundle(matchId);
+    if (!bundle) {
+      alert('未找到该场对局的回放数据（可能已被清理）。');
+      return;
+    }
+    await startReplayBundle(bundle, true);
   };
 
   const canQuickRestart = (): boolean => {
@@ -355,6 +364,7 @@ async function bootstrap() {
     historyRecorded = false;
     pendingMatchElo = null;
     resultOverlayShown = false;
+    lastFinishedBundle = null;
     lobbyUI.setCliffGuard(input.isCliffGuard());
 
     let cfg: MatchConfig;
@@ -479,6 +489,17 @@ async function bootstrap() {
   hudUI = new HudUI(uiRoot, settings, {
     onReturnToLobby: returnToLobby,
     onRestartMatch: restartCurrentMatch,
+    onWatchCurrentReplay: () => {
+      let bundle = lastFinishedBundle;
+      if (!bundle && activeConfig && activeMapData) {
+        const ticks = controller.getRecordedTicks().slice();
+        if (ticks.length > 0) {
+          bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, null, false);
+        }
+      }
+      if (!bundle) return;
+      void startReplayBundle(bundle, false);
+    },
     onOpenSettings: () => {
       settingsModal.open();
     },
@@ -703,6 +724,7 @@ async function bootstrap() {
       resultOverlayShown = false;
       restarting = false;
       replayIsLiveAi = false;
+      lastFinishedBundle = null;
       replayController.stop();
       renderer.resetCameraToOverview();
       historyModal.close();

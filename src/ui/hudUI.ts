@@ -10,6 +10,7 @@ import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConf
 export interface HudCallbacks {
   onReturnToLobby: (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => void;
   onRestartMatch: () => void;
+  onWatchCurrentReplay?: () => void;
   onOpenSettings: () => void;
   onToggleCliffGuard: () => boolean;
   onRankCue?: (kind: 'up' | 'down') => void;
@@ -957,11 +958,17 @@ export class HudUI {
       .sort((a, b) => a.p.rank - b.p.rank || b.p.kills - a.p.kills);
 
     const canRestart = this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive);
+    const canWatchReplay = this.humanSeat >= 0 && Boolean(this.callbacks.onWatchCurrentReplay);
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
 
     let remainSec = 4;
     this.resultOverlay.innerHTML = `
       <div class="result-card">
+        ${
+          canWatchReplay
+            ? `<button type="button" class="result-replay-corner-btn" id="btn-result-replay" title="立即观看本局回放">🎬 回放</button>`
+            : ''
+        }
         <div class="result-kicker">${winner ? '本局胜者' : '平局结束'}</div>
         ${
           winner
@@ -1004,6 +1011,11 @@ export class HudUI {
     this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-restart')?.addEventListener('click', () => {
       this.clearTimers();
       this.callbacks.onRestartMatch();
+    });
+
+    this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-replay')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onWatchCurrentReplay?.();
     });
 
     this.countdownInterval = window.setInterval(() => {
@@ -1142,7 +1154,14 @@ export class HudUI {
             <span class="rr-mode-pill">${modeLabel}</span>
             <span class="rr-outcome ${outcomeCls}">${outcomeText}</span>
           </div>
-          <button type="button" class="rr-lb-mini-btn" id="btn-result-lb">🏆 完整榜单</button>
+          <div class="rr-head-actions">
+            <button type="button" class="rr-lb-mini-btn" id="btn-result-lb">🏆 完整榜单</button>
+            ${
+              this.humanSeat >= 0 && this.callbacks.onWatchCurrentReplay
+                ? `<button type="button" class="rr-lb-mini-btn rr-replay-mini-btn" id="btn-result-replay" title="立即观看本局回放">🎬 回放</button>`
+                : ''
+            }
+          </div>
         </div>
 
         <div class="rr-hero">
@@ -1229,6 +1248,10 @@ export class HudUI {
     this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-lb')?.addEventListener('click', () => {
       this.clearTimers();
       this.callbacks.onReturnToLobby({ openLeaderboard: true, rankedMode: elo.mode });
+    });
+    this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-replay')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onWatchCurrentReplay?.();
     });
 
     // Choreographed score count-up + ladder row-swap + overtake reveal animation
