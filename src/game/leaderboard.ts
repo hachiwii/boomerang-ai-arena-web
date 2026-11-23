@@ -62,6 +62,7 @@ const STORAGE_KEY = 'boomerang_arena_leaderboard_v2';
 const INITIAL_HUMAN_ELO = 500;
 const MIN_HUMAN_ELO = 0;
 const ELO_K = 32;
+const ELO_GAIN_MULTIPLIER = 2;
 
 function emptyStats(): ModeStats {
   return {
@@ -234,7 +235,8 @@ export class LeaderboardStore {
     }
 
     const rawDelta = oppCount > 0 ? (ELO_K / oppCount) * sumDiff : 0;
-    const newRating = clampHumanElo(oldRating + rawDelta);
+    const adjustedDelta = rawDelta > 0 ? rawDelta * ELO_GAIN_MULTIPLIER : rawDelta;
+    const newRating = clampHumanElo(oldRating + adjustedDelta);
     const delta = newRating - oldRating;
     this.humanRatings[mode] = newRating;
 
