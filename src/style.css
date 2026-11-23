@@ -1518,11 +1518,11 @@ kbd {
   font-size: 12.5px;
   font-weight: 900;
   font-variant-numeric: tabular-nums;
-  padding: 3px 8px;
+  padding: 3px 9px;
   border-radius: 7px;
   background: rgba(255, 255, 255, 0.06);
-  min-width: 56px;
-  text-align: right;
+  min-width: 52px;
+  text-align: center;
 }
 
 .pk-score.elo-pos, .pm-score.elo-pos { color: #7ef0b1; background: rgba(74, 196, 128, 0.14); }
