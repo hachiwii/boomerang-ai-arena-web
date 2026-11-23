@@ -63,6 +63,7 @@ export class HistoryModal {
   private readonly settings: SettingsStore;
   private readonly callbacks: HistoryModalCallbacks;
   private readonly backdrop: HTMLDivElement;
+  private readonly card: HTMLDivElement;
 
   private openState = false;
   private filter: HistoryFilter = 'all';
@@ -84,7 +85,18 @@ export class HistoryModal {
 
     this.backdrop = document.createElement('div');
     this.backdrop.className = 'history-backdrop hidden';
+    this.card = document.createElement('div');
+    this.card.className = 'history-card';
+    this.card.setAttribute('role', 'dialog');
+    this.card.setAttribute('aria-label', '对局历史');
+    this.backdrop.appendChild(this.card);
     document.body.appendChild(this.backdrop);
+
+    this.backdrop.addEventListener('click', (e) => {
+      if (e.target === this.backdrop && !this.activeExport) {
+        this.close();
+      }
+    });
 
     this.store.onChange(() => {
       if (this.openState) {
@@ -406,8 +418,8 @@ export class HistoryModal {
       ? `<div class="history-notice ${this.statusNotice.kind === 'ok' ? 'is-ok' : 'is-err'}">${escapeHtml(this.statusNotice.text)}</div>`
       : '';
 
-    this.backdrop.innerHTML = `
-      <div class="history-card" role="dialog" aria-label="对局历史">
+    const prevScrollTop = this.card.querySelector<HTMLElement>('.history-body')?.scrollTop ?? 0;
+    this.card.innerHTML = `
         <div class="history-head">
           <div class="history-head-left">
             <h2>📜 对局历史</h2>
@@ -454,29 +466,24 @@ export class HistoryModal {
         <div class="history-body">
           ${bodyHtml}
         </div>
-      </div>
     `;
+    const bodyEl = this.card.querySelector<HTMLElement>('.history-body');
+    if (bodyEl) bodyEl.scrollTop = prevScrollTop;
 
-    this.backdrop.onclick = (e) => {
-      if (e.target === this.backdrop && !this.activeExport) {
-        this.close();
-      }
-    };
-
-    this.backdrop.querySelector('#history-close')?.addEventListener('click', () => {
+    this.card.querySelector('#history-close')?.addEventListener('click', () => {
       if (!this.activeExport) this.close();
     });
 
-    this.backdrop.querySelector('#history-open-export-settings')?.addEventListener('click', () => {
+    this.card.querySelector('#history-open-export-settings')?.addEventListener('click', () => {
       if (this.activeExport) return;
       this.callbacks.onOpenSettings();
     });
 
-    this.backdrop.querySelector('#history-export-cancel')?.addEventListener('click', () => {
+    this.card.querySelector('#history-export-cancel')?.addEventListener('click', () => {
       this.activeExport?.controller.abort();
     });
 
-    this.backdrop.querySelector('#history-clear-all')?.addEventListener('click', () => {
+    this.card.querySelector('#history-clear-all')?.addEventListener('click', () => {
       if (this.activeExport) return;
       if (!this.confirmClear) {
         this.confirmClear = true;
@@ -492,7 +499,7 @@ export class HistoryModal {
       void this.store.clearAll();
     });
 
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-hfilter]').forEach((btn) => {
+    this.card.querySelectorAll<HTMLButtonElement>('[data-hfilter]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const next = btn.dataset.hfilter as HistoryFilter;
         if (next === this.filter) return;
@@ -501,7 +508,7 @@ export class HistoryModal {
       });
     });
 
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-replay-id]').forEach((btn) => {
+    this.card.querySelectorAll<HTMLButtonElement>('[data-replay-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.replayId!;
         if (this.loadingReplayId !== null || this.activeExport !== null) return;
@@ -516,7 +523,7 @@ export class HistoryModal {
     });
 
     const summaryById = new Map(this.summaries.map((s) => [s.id, s]));
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-export-id]').forEach((btn) => {
+    this.card.querySelectorAll<HTMLButtonElement>('[data-export-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.exportId!;
         const s = summaryById.get(id);
@@ -525,7 +532,7 @@ export class HistoryModal {
       });
     });
 
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-delete-id]').forEach((btn) => {
+    this.card.querySelectorAll<HTMLButtonElement>('[data-delete-id]').forEach((btn) => {
       btn.addEventListener('click', () => {
         if (this.activeExport) return;
         const id = btn.dataset.deleteId!;

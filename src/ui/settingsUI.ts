@@ -22,6 +22,8 @@ interface CaptureTarget {
 export class SettingsModal {
   private readonly store: SettingsStore;
   private readonly backdrop: HTMLDivElement;
+  private readonly card: HTMLDivElement;
+  private readonly body: HTMLDivElement;
   private openState = false;
   private capturing: CaptureTarget | null = null;
   private noticeText: string | null = null;
@@ -47,7 +49,32 @@ export class SettingsModal {
 
     this.backdrop = document.createElement('div');
     this.backdrop.className = 'settings-backdrop hidden';
+
+    this.card = document.createElement('div');
+    this.card.className = 'settings-card';
+    this.card.setAttribute('role', 'dialog');
+    this.card.setAttribute('aria-label', '游戏设置');
+    this.card.innerHTML = `
+      <div class="settings-head">
+        <h2>⚙️ 游戏设置</h2>
+        <button type="button" class="settings-close-btn" id="settings-close" data-close-settings="1">完成</button>
+      </div>
+    `;
+    this.body = document.createElement('div');
+    this.body.className = 'settings-body';
+    this.card.appendChild(this.body);
+    this.backdrop.appendChild(this.card);
     document.body.appendChild(this.backdrop);
+
+    // Backdrop click & header close button bound ONCE on persistent shell (never flickers!)
+    this.backdrop.addEventListener('click', (e) => {
+      if (e.target === this.backdrop && !this.capturing) {
+        this.close();
+      }
+    });
+    this.card.querySelector('#settings-close')?.addEventListener('click', () => {
+      this.close();
+    });
 
     this.handleCaptureKeyDown = (e: KeyboardEvent) => {
       if (!this.openState) return;
@@ -109,6 +136,7 @@ export class SettingsModal {
     this.noticeText = null;
     this.render();
     this.backdrop.classList.remove('hidden');
+    this.body.scrollTop = 0;
     this.onOpenChange?.(true);
   }
 
@@ -185,14 +213,8 @@ export class SettingsModal {
         </div>`;
     };
 
-    this.backdrop.innerHTML = `
-      <div class="settings-card" role="dialog" aria-label="游戏设置">
-        <div class="settings-head">
-          <h2>⚙️ 游戏设置</h2>
-          <button type="button" class="settings-close-btn" id="settings-close" data-close-settings="1">完成</button>
-        </div>
-
-        <div class="settings-body">
+    const prevScrollTop = this.body.scrollTop;
+    this.body.innerHTML = `
           <!-- Audio Section -->
           <section class="settings-section">
             <div class="settings-sec-title">🔊 音效</div>
@@ -341,23 +363,11 @@ export class SettingsModal {
               ).join('')}
             </div>
           </section>
-        </div>
-      </div>
     `;
-
-    // Backdrop click closes (unless capturing)
-    this.backdrop.onclick = (e) => {
-      if (e.target === this.backdrop && !this.capturing) {
-        this.close();
-      }
-    };
-
-    this.backdrop.querySelector('#settings-close')?.addEventListener('click', () => {
-      this.close();
-    });
+    this.body.scrollTop = prevScrollTop;
 
     // Sound toggle
-    this.backdrop.querySelector('#settings-sound-toggle')?.addEventListener('click', () => {
+    this.body.querySelector('#settings-sound-toggle')?.addEventListener('click', () => {
       const next = !this.store.get().soundEnabled;
       this.store.setSoundEnabled(next);
       if (next) this.onTestSound?.();
@@ -365,8 +375,8 @@ export class SettingsModal {
     });
 
     // Volume slider
-    const volSlider = this.backdrop.querySelector<HTMLInputElement>('#settings-vol-slider');
-    const volVal = this.backdrop.querySelector<HTMLElement>('#settings-vol-val');
+    const volSlider = this.body.querySelector<HTMLInputElement>('#settings-vol-slider');
+    const volVal = this.body.querySelector<HTMLElement>('#settings-vol-val');
     volSlider?.addEventListener('input', () => {
       const v = Number(volSlider.value);
       this.store.setVolume(v);
@@ -380,7 +390,7 @@ export class SettingsModal {
     });
 
     // FPS cap selection
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-fps-cap]').forEach((btn) => {
+    this.body.querySelectorAll<HTMLButtonElement>('[data-fps-cap]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const raw = btn.dataset.fpsCap!;
         const parsed: FpsCapOption =
@@ -391,25 +401,25 @@ export class SettingsModal {
     });
 
     // Dash pre-input buffer toggle
-    this.backdrop.querySelector('#settings-dash-buffer-toggle')?.addEventListener('click', () => {
+    this.body.querySelector('#settings-dash-buffer-toggle')?.addEventListener('click', () => {
       this.store.setDashInputBuffer(!this.store.get().dashInputBuffer);
       this.render();
     });
 
     // Export MP4 option selectors
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-export-res]').forEach((btn) => {
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-res]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.store.setExportResolution(btn.dataset.exportRes as ExportResolutionOption);
         this.render();
       });
     });
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-export-bitrate]').forEach((btn) => {
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-bitrate]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.store.setExportBitrateMbps(Number(btn.dataset.exportBitrate) as ExportBitrateOption);
         this.render();
       });
     });
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-export-speed]').forEach((btn) => {
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-speed]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.store.setExportSpeed(Number(btn.dataset.exportSpeed) as ExportSpeedOption);
         this.render();
@@ -417,7 +427,7 @@ export class SettingsModal {
     });
 
     // Keybinding slot capture
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-bind-action]').forEach((btn) => {
+    this.body.querySelectorAll<HTMLButtonElement>('[data-bind-action]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const action = btn.dataset.bindAction as ActionBindKey;
         const slotIndex = Number(btn.dataset.bindSlot) as 0 | 1;
@@ -427,7 +437,7 @@ export class SettingsModal {
     });
 
     // Clear individual slot
-    this.backdrop.querySelectorAll<HTMLButtonElement>('[data-clear-action]').forEach((btn) => {
+    this.body.querySelectorAll<HTMLButtonElement>('[data-clear-action]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
         e.stopPropagation();
         const action = btn.dataset.clearAction as ActionBindKey;
@@ -438,7 +448,7 @@ export class SettingsModal {
     });
 
     // Reset default keybindings
-    this.backdrop.querySelector('#settings-reset-kb')?.addEventListener('click', () => {
+    this.body.querySelector('#settings-reset-kb')?.addEventListener('click', () => {
       this.capturing = null;
       this.store.resetKeybindings();
       this.showNotice('已恢复默认键位');
