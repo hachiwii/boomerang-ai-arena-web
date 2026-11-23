@@ -1,4 +1,5 @@
 import { HumanInputController } from './humanInput';
+import { CinematicDirector } from './killCamDirector';
 import {
   EngineMapData,
   LOGIC_DT_MS,
@@ -15,9 +16,13 @@ interface PendingBotDecision {
 export type CountdownStage = 3 | 2 | 1 | 'GO' | null;
 
 export interface MatchCallbacks {
-  onMapLoaded: (mapData: EngineMapData, initialState: TickSnapshot) => Promise<void> | void;
+  onMapLoaded: (
+    mapData: EngineMapData,
+    initialState: TickSnapshot,
+    director?: CinematicDirector | null,
+  ) => Promise<void> | void;
   onTick: (prevState: TickSnapshot, nextState: TickSnapshot, tickDurationMs: number) => void;
-  onMatchOver: (finalState: TickSnapshot) => void;
+  onMatchOver: (finalState: TickSnapshot, director?: CinematicDirector | null) => void;
   onCountdown?: (stage: CountdownStage) => void;
   onStatus?: (msg: string) => void;
   onError?: (err: string) => void;
@@ -40,6 +45,10 @@ export class MatchController {
 
   private currentState: TickSnapshot | null = null;
   private recordedTicks: TickSnapshot[] = [];
+  private precomputedTicks: TickSnapshot[] | null = null;
+  private precomputedIndex = 0;
+  private mapDataCache: EngineMapData | null = null;
+  private cinematicDirector: CinematicDirector | null = null;
   private tickIntervalMs = LOGIC_DT_MS;
   private gameSpeed = 1.0;
   private nextTickDeadline = 0;
@@ -75,6 +84,16 @@ export class MatchController {
 
   public isRunning(): boolean {
     return this.running;
+  }
+
+  public getCinematicDirector(): CinematicDirector | null {
+    return this.cinematicDirector;
+  }
+
+  public setKillCamEnabled(enabled: boolean): CinematicDirector | null {
+    if (!this.precomputedTicks || !this.mapDataCache) return null;
+    this.cinematicDirector = new CinematicDirector(this.precomputedTicks, this.mapDataCache, enabled);
+    return this.cinematicDirector;
   }
 
   public setCliffGuard(enabled: boolean) {
@@ -114,7 +133,7 @@ export class MatchController {
     });
   }
 
-  public async start(config: MatchConfig): Promise<void> {
+  public async start(config: MatchConfig, opts?: { killCam?: boolean }): Promise<void> {
     this.stop();
     this.stopped = false;
     this.config = config;
@@ -123,6 +142,10 @@ export class MatchController {
     this.tickTimes = [];
     this.actualLogicHz = LOGIC_HZ * this.gameSpeed;
     this.lastBotMaxMs = 0;
+    this.precomputedTicks = null;
+    this.precomputedIndex = 0;
+    this.mapDataCache = null;
+    this.cinematicDirector = null;
 
     this.humanSeat = config.slots.findIndex((s) => s.kind === 'human');
     this.botSeats = [];
@@ -181,9 +204,88 @@ export class MatchController {
     }
     if (this.stopped) return;
 
+    this.mapDataCache = mapData;
+    const useAcceleratedKillCam = this.humanSeat < 0 && Boolean(opts?.killCam);
+
+    if (useAcceleratedKillCam) {
+      // Pure AI spectator match with kill-cam enabled: accelerate full WASM simulation first
+      // so we know every upcoming kill 0.5s in advance for slow-mo eye-level camera choreography!
+      this.callbacks.onStatus?.('⚡ 高速推演 AI 对局中...');
+      const allTicks: TickSnapshot[] = [initialState];
+      let curObs = initialObs;
+      let curSnap = initialState;
+      const n = config.slots.length;
+      let lastYieldMs = performance.now();
+
+      while (!curSnap.over) {
+        if (this.stopped || !this.engineWorker) return;
+
+        this.dispatchBots(curObs);
+        const botResults = await Promise.all(
+          this.pendingBots.map(async (p) => ({ seat: p.seat, ...(await p.promise) })),
+        );
+        if (this.stopped || !this.engineWorker) return;
+
+        let maxMs = 0;
+        const actionLines: string[] = new Array(n).fill('0 0 0 0 0 0');
+        for (const r of botResults) {
+          actionLines[r.seat] = r.action;
+          if (r.ms > maxMs) maxMs = r.ms;
+        }
+        this.lastBotMaxMs = maxMs;
+
+        const stepRes = await this.rpc(this.engineWorker, {
+          type: 'step',
+          actionsText: actionLines.join('\n'),
+          botSeats: this.botSeats,
+          dashTarget: null,
+        });
+        if (this.stopped) return;
+
+        curSnap = stepRes.state as TickSnapshot;
+        curObs = stepRes.obs as Record<number, string>;
+        allTicks.push(curSnap);
+
+        const now = performance.now();
+        if (now - lastYieldMs >= 35) {
+          lastYieldMs = now;
+          this.callbacks.onStatus?.(`⚡ 高速推演 AI 对局中... (${(curSnap.t / 20).toFixed(1)}s)`);
+          await new Promise((r) => window.setTimeout(r, 0));
+        }
+      }
+      if (this.stopped) return;
+
+      // Free WASM workers immediately once simulation is complete!
+      this.terminateWorkers();
+
+      this.precomputedTicks = allTicks;
+      this.precomputedIndex = 0;
+      this.currentState = allTicks[0];
+      this.recordedTicks = allTicks;
+      this.cinematicDirector = new CinematicDirector(allTicks, mapData, true);
+
+      await this.callbacks.onMapLoaded(mapData, allTicks[0], this.cinematicDirector);
+      if (this.stopped) return;
+
+      this.input.reset();
+      this.input.setInputMode('off');
+      this.callbacks.onCountdown?.(null);
+
+      if (allTicks.length <= 1) {
+        this.running = false;
+        this.callbacks.onMatchOver(allTicks[0], this.cinematicDirector);
+        return;
+      }
+
+      this.running = true;
+      this.nextTickDeadline = performance.now() + 450;
+      this.scheduleNextTick();
+      return;
+    }
+
     this.currentState = initialState;
     this.recordedTicks = [initialState];
-    await this.callbacks.onMapLoaded(mapData, initialState);
+    await this.callbacks.onMapLoaded(mapData, initialState, null);
     if (this.stopped) return;
 
     // Configure human input timing & pre-dispatch tick 0 bot decisions immediately
@@ -261,8 +363,66 @@ export class MatchController {
     const now = performance.now();
     const wait = Math.max(0, this.nextTickDeadline - now);
     this.timerHandle = window.setTimeout(() => {
-      void this.executeTick();
+      if (this.precomputedTicks) {
+        this.executePrecomputedTick();
+      } else {
+        void this.executeTick();
+      }
     }, wait);
+  }
+
+  private getPrecomputedTickIntervalMs(tickIdx: number): number {
+    const scale = this.cinematicDirector?.getSpeedScaleAtSim(tickIdx * (LOGIC_DT_MS / 1000)) ?? 1.0;
+    return LOGIC_DT_MS / (this.gameSpeed * scale);
+  }
+
+  private executePrecomputedTick() {
+    if (!this.running || this.stopped || !this.precomputedTicks) return;
+    const ticks = this.precomputedTicks;
+    const maxIdx = ticks.length - 1;
+    if (this.precomputedIndex >= maxIdx) {
+      this.running = false;
+      this.callbacks.onMatchOver(ticks[maxIdx], this.cinematicDirector);
+      return;
+    }
+
+    const prevIdx = this.precomputedIndex;
+    const prev = ticks[prevIdx];
+    const intervalMs = this.getPrecomputedTickIntervalMs(prevIdx);
+    this.precomputedIndex++;
+    const curr = ticks[this.precomputedIndex];
+    const tickNow = performance.now();
+    curr.timestampMs = tickNow;
+
+    const scale = this.cinematicDirector?.getSpeedScaleAtSim(prevIdx * (LOGIC_DT_MS / 1000)) ?? 1.0;
+    this.actualLogicHz = LOGIC_HZ * this.gameSpeed * scale;
+    this.currentState = curr;
+    this.callbacks.onTick(prev, curr, intervalMs);
+
+    if (this.precomputedIndex >= maxIdx || curr.over) {
+      this.running = false;
+      this.callbacks.onMatchOver(curr, this.cinematicDirector);
+      return;
+    }
+
+    this.nextTickDeadline += intervalMs;
+    const maxLag = Math.max(250, intervalMs * 3);
+    if (tickNow - this.nextTickDeadline > maxLag) {
+      this.nextTickDeadline = tickNow + intervalMs;
+    }
+    this.scheduleNextTick();
+  }
+
+  private terminateWorkers() {
+    if (this.engineWorker) {
+      this.engineWorker.terminate();
+      this.engineWorker = null;
+    }
+    for (const w of this.botWorkers.values()) {
+      w.terminate();
+    }
+    this.botWorkers.clear();
+    this.pendingBots = [];
   }
 
   private async executeTick() {
@@ -367,16 +527,12 @@ export class MatchController {
       window.clearTimeout(this.timerHandle);
       this.timerHandle = null;
     }
-    if (this.engineWorker) {
-      this.engineWorker.terminate();
-      this.engineWorker = null;
-    }
-    for (const w of this.botWorkers.values()) {
-      w.terminate();
-    }
-    this.botWorkers.clear();
-    this.pendingBots = [];
+    this.terminateWorkers();
     this.currentState = null;
     this.recordedTicks = [];
+    this.precomputedTicks = null;
+    this.precomputedIndex = 0;
+    this.mapDataCache = null;
+    this.cinematicDirector = null;
   }
 }

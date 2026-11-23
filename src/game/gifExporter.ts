@@ -2,6 +2,7 @@ import { GIFEncoder, PaletteColor, quantize } from 'gifenc';
 import { SoundFX } from '../audio/sfx';
 import { GameRenderer } from '../render/renderer';
 import { VoxelModelData } from '../render/voxelBuilder';
+import { CinematicDirector } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
 import { drawBroadcastOverlay, loadImage, triggerMp4Download } from './mp4Exporter';
 import { LOGIC_DT_MS, TickSnapshot } from './types';
@@ -11,6 +12,8 @@ export interface GifClipExportOptions {
   endTickIndex: number;
   /** Maximum clip duration in seconds (default 10s). */
   maxDurationSec?: number;
+  /** Whether slow-motion kill-cam & winner front close-up is enabled. */
+  killCam?: boolean;
   sharedCharModelCache?: Map<string, VoxelModelData>;
   signal?: AbortSignal;
   onProgress?: (progress01: number, phaseText: string) => void;
@@ -77,19 +80,27 @@ export async function exportReplayClipToGif(
 
   const maxDurationSec = Math.max(1, options.maxDurationSec ?? DEFAULT_MAX_CLIP_SEC);
   const tickSec = LOGIC_DT_MS / 1000; // 0.05s per logic tick (20Hz)
-  const endPlaySec = endTickIndex * tickSec;
+  const director = new CinematicDirector(ticks, bundle.replay.mapData, Boolean(options.killCam));
+
+  const endPlaySimSec = endTickIndex * tickSec;
+  const endPlayRealSec = director.simToReal(endPlaySimSec);
   const atMatchEnd = endTickIndex >= maxTickIdx;
-  const outroSec = atMatchEnd ? END_OUTRO_SEC : 0;
-  const totalEndSec = endPlaySec + outroSec;
-  const startPlaySec = Math.max(0, totalEndSec - maxDurationSec);
-  const clipDurationSec = Math.max(tickSec, totalEndSec - startPlaySec);
+  const outroRealSec = atMatchEnd
+    ? director.isEnabled() && director.hasWinnerCloseup()
+      ? 2.55
+      : END_OUTRO_SEC
+    : 0;
+  const totalEndRealSec = endPlayRealSec + outroRealSec;
+  const startRealSec = Math.max(0, totalEndRealSec - maxDurationSec);
+  const clipDurationSec = Math.max(tickSec, totalEndRealSec - startRealSec);
+  const startPlaySimSec = director.realToSim(startRealSec);
   const totalFrames = Math.max(
     2,
     Math.min(Math.round(maxDurationSec * GIF_FPS), Math.round(clipDurationSec * GIF_FPS)),
   );
   const frameDt = 1 / GIF_FPS;
 
-  const startTickIdx = Math.max(0, Math.min(maxTickIdx, Math.floor(startPlaySec / tickSec)));
+  const startTickIdx = Math.max(0, Math.min(maxTickIdx, Math.floor(startPlaySimSec / tickSec)));
   const warmupStartIdx = Math.max(0, startTickIdx - WARMUP_TICKS);
 
   options.onProgress?.(0.02, '初始化 720p 离线渲染器...');
@@ -133,17 +144,19 @@ export async function exportReplayClipToGif(
       throw new DOMException('已取消导出', 'AbortError');
     }
 
+    offRenderer.setCinematicDirector(director);
+
     /**
      * Resets renderer to warmupStartIdx and fast-forwards simulation state (without GPU render)
-     * up to `startPlaySec` so frame 0 has seamless terrain collapse, FX trails, and camera shake.
+     * up to `startPlaySimSec` so frame 0 has seamless terrain collapse, FX trails, and camera shake.
      */
-    const resetAndWarmup = (): number => {
+    const resetAndWarmup = (): { processedIdx: number; prevSimSec: number } => {
       offRenderer.seekToReplayTick(ticks, warmupStartIdx);
       let processedIdx = warmupStartIdx;
       const warmStartSec = warmupStartIdx * tickSec;
-      if (startPlaySec > warmStartSec + 1e-4) {
-        const warmSteps = Math.max(1, Math.ceil((startPlaySec - warmStartSec) * GIF_FPS));
-        const stepDt = (startPlaySec - warmStartSec) / warmSteps;
+      if (startPlaySimSec > warmStartSec + 1e-4) {
+        const warmSteps = Math.max(1, Math.ceil((startPlaySimSec - warmStartSec) * GIF_FPS));
+        const stepDt = (startPlaySimSec - warmStartSec) / warmSteps;
         for (let s = 1; s <= warmSteps; s++) {
           const simSec = warmStartSec + s * stepDt;
           const rawTickFloat = simSec / tickSec;
@@ -164,15 +177,20 @@ export async function exportReplayClipToGif(
           });
         }
       }
-      return processedIdx;
+      return { processedIdx, prevSimSec: startPlaySimSec };
     };
+
+    const matchEndRealSec = director.simToReal(maxTickIdx * tickSec);
 
     const stepAndRenderFrame = (
       f: number,
-      processedIdxRef: { value: number },
+      stateRef: { processedIdx: number; prevSimSec: number },
       skipRender: boolean,
     ): void => {
-      const simSec = Math.min(totalEndSec, startPlaySec + f * frameDt);
+      const realSec = Math.min(totalEndRealSec, startRealSec + f * frameDt);
+      const simSec = director.realToSim(realSec);
+      const frameDtSim = Math.max(1e-4, f === 0 ? frameDt * director.getSpeedScaleAtSim(simSec) : simSec - stateRef.prevSimSec);
+      stateRef.prevSimSec = simSec;
       const rawTickFloat = simSec / tickSec;
 
       let prevSnap: TickSnapshot;
@@ -183,30 +201,32 @@ export async function exportReplayClipToGif(
 
       if (rawTickFloat < maxTickIdx) {
         const targetIdx = Math.min(maxTickIdx, Math.floor(rawTickFloat) + 1);
-        while (processedIdxRef.value < targetIdx) {
-          const nextIdx = processedIdxRef.value + 1;
+        while (stateRef.processedIdx < targetIdx) {
+          const nextIdx = stateRef.processedIdx + 1;
           offRenderer.processOfflineTickEvents(ticks[nextIdx - 1], ticks[nextIdx], nextIdx * tickSec);
-          processedIdxRef.value = nextIdx;
+          stateRef.processedIdx = nextIdx;
         }
         prevSnap = ticks[targetIdx - 1];
         currSnap = ticks[targetIdx];
         alpha = Math.max(0, Math.min(1, rawTickFloat - (targetIdx - 1)));
         gt = prevSnap.t + alpha;
       } else {
-        while (processedIdxRef.value < maxTickIdx) {
-          const nextIdx = processedIdxRef.value + 1;
+        while (stateRef.processedIdx < maxTickIdx) {
+          const nextIdx = stateRef.processedIdx + 1;
           offRenderer.processOfflineTickEvents(ticks[nextIdx - 1], ticks[nextIdx], nextIdx * tickSec);
-          processedIdxRef.value = nextIdx;
+          stateRef.processedIdx = nextIdx;
         }
-        const extraSec = Math.max(0, simSec - maxTickIdx * tickSec);
+        const extraSimSec = Math.max(0, simSec - maxTickIdx * tickSec);
+        const extraRealSec = Math.max(0, realSec - matchEndRealSec);
         prevSnap = ticks[maxTickIdx];
         currSnap = ticks[maxTickIdx];
         alpha = 1.0;
-        gt = currSnap.t + extraSec / tickSec;
-        outroAlpha = Math.max(0, Math.min(1, (extraSec - 0.12) / 0.3));
+        gt = currSnap.t + extraSimSec / tickSec;
+        const bannerDelay = director.hasWinnerCloseup() ? 0.72 : 0.12;
+        outroAlpha = Math.max(0, Math.min(1, (extraRealSec - bannerDelay) / 0.35));
       }
 
-      const nameplates = offRenderer.renderOfflineFrame(prevSnap, currSnap, alpha, gt, frameDt, simSec, {
+      const nameplates = offRenderer.renderOfflineFrame(prevSnap, currSnap, alpha, gt, frameDtSim, simSec, {
         pauseClouds: true,
         hideAmbient: true,
         skipRender,
@@ -228,7 +248,8 @@ export async function exportReplayClipToGif(
       }
     };
 
-    // Pass 1: Sample up to 14 evenly spaced frames to build an accurate 255-color global palette
+    // Pass 1: Sample up to 14 evenly spaced frames uniformly (stride 4) so overview,
+    // eye-level kill-cam, and winner close-up all receive equal palette coverage!
     options.onProgress?.(0.06, '采样画面色彩并生成调色板...');
     const sampleCount = Math.min(14, totalFrames);
     const sampleFrameSet = new Set<number>();
@@ -237,12 +258,12 @@ export async function exportReplayClipToGif(
       sampleFrameSet.add(fi);
     }
 
-    const maxSamplePixels = 720_000;
-    const sampleBuf = new Uint8Array(maxSamplePixels * 4);
+    const stride = 4;
+    const pixelsPerSample = Math.ceil(GIF_WIDTH / stride) * Math.ceil(GIF_HEIGHT / stride);
+    const sampleBuf = new Uint8Array(sampleCount * pixelsPerSample * 4);
     let samplePtr = 0;
-    let baseSampleFrame: Uint8ClampedArray | null = null;
 
-    const pass1Idx = { value: resetAndWarmup() };
+    const pass1State = resetAndWarmup();
     let lastYieldMs = performance.now();
 
     for (let f = 0; f < totalFrames; f++) {
@@ -250,45 +271,18 @@ export async function exportReplayClipToGif(
         throw new DOMException('已取消导出', 'AbortError');
       }
       const wantSample = sampleFrameSet.has(f);
-      stepAndRenderFrame(f, pass1Idx, !wantSample);
+      stepAndRenderFrame(f, pass1State, !wantSample);
 
       if (wantSample) {
         const imgData = compCtx.getImageData(0, 0, GIF_WIDTH, GIF_HEIGHT).data;
-        if (!baseSampleFrame) {
-          baseSampleFrame = new Uint8ClampedArray(imgData);
-          // Frame 0: uniform 4x4 grid captures full static map, sky, clouds, HUD
-          for (let y = 0; y < GIF_HEIGHT; y += 4) {
-            for (let x = 0; x < GIF_WIDTH; x += 4) {
-              if (samplePtr + 4 > sampleBuf.length) break;
-              const p = (y * GIF_WIDTH + x) << 2;
-              sampleBuf[samplePtr++] = imgData[p];
-              sampleBuf[samplePtr++] = imgData[p + 1];
-              sampleBuf[samplePtr++] = imgData[p + 2];
-              sampleBuf[samplePtr++] = 255;
-            }
-          }
-        } else {
-          // Subsequent samples: sparse background (stride 6) + denser changed regions (stride 2)
-          // so boomerang trails, hit sparks, collapse warnings, and winner banners get crisp colors
-          for (let y = 0; y < GIF_HEIGHT; y += 2) {
-            const bgRow = y % 6 === 0;
-            for (let x = 0; x < GIF_WIDTH; x += 2) {
-              if (samplePtr + 4 > sampleBuf.length) break;
-              const p = (y * GIF_WIDTH + x) << 2;
-              const r = imgData[p];
-              const g = imgData[p + 1];
-              const b = imgData[p + 2];
-              const changed =
-                Math.abs(r - baseSampleFrame[p]) > 12 ||
-                Math.abs(g - baseSampleFrame[p + 1]) > 12 ||
-                Math.abs(b - baseSampleFrame[p + 2]) > 12;
-              if (changed || (bgRow && x % 6 === 0)) {
-                sampleBuf[samplePtr++] = r;
-                sampleBuf[samplePtr++] = g;
-                sampleBuf[samplePtr++] = b;
-                sampleBuf[samplePtr++] = 255;
-              }
-            }
+        for (let y = 0; y < GIF_HEIGHT; y += stride) {
+          for (let x = 0; x < GIF_WIDTH; x += stride) {
+            if (samplePtr + 4 > sampleBuf.length) break;
+            const p = (y * GIF_WIDTH + x) << 2;
+            sampleBuf[samplePtr++] = imgData[p];
+            sampleBuf[samplePtr++] = imgData[p + 1];
+            sampleBuf[samplePtr++] = imgData[p + 2];
+            sampleBuf[samplePtr++] = 255;
           }
         }
 
@@ -356,7 +350,7 @@ export async function exportReplayClipToGif(
     const cropBuf = new Uint8Array(numPixels);
 
     const gif = GIFEncoder({ initialCapacity: 6 * 1024 * 1024 });
-    const pass2Idx = { value: resetAndWarmup() };
+    const pass2State = resetAndWarmup();
     lastYieldMs = performance.now();
 
     for (let f = 0; f < totalFrames; f++) {
@@ -364,7 +358,7 @@ export async function exportReplayClipToGif(
         throw new DOMException('已取消导出', 'AbortError');
       }
 
-      stepAndRenderFrame(f, pass2Idx, false);
+      stepAndRenderFrame(f, pass2State, false);
 
       const img = compCtx.getImageData(0, 0, GIF_WIDTH, GIF_HEIGHT);
       const rgba = img.data;
@@ -472,7 +466,7 @@ export async function exportReplayClipToGif(
     gif.finish();
     const outBytes = gif.bytes();
     const blob = new Blob([outBytes], { type: 'image/gif' });
-    const filename = buildGifFilename(bundle, startPlaySec, endPlaySec);
+    const filename = buildGifFilename(bundle, startPlaySimSec, endPlaySimSec);
     options.onProgress?.(1.0, '导出完成');
 
     return {
@@ -482,8 +476,8 @@ export async function exportReplayClipToGif(
       height: GIF_HEIGHT,
       fps: GIF_FPS,
       frameCount: totalFrames,
-      startSec: startPlaySec,
-      endSec: endPlaySec,
+      startSec: startPlaySimSec,
+      endSec: endPlaySimSec,
       durationSec: clipDurationSec,
       sizeBytes: blob.size,
     };

@@ -481,8 +481,13 @@ export class ArenaMap3D {
   /**
    * Update collapsing tiles, grass sway, drifting clouds, and ambient petals/snow at 240Hz+.
    */
-  public update(gt: number, elapsedSec: number, opts?: { pauseClouds?: boolean; hideAmbient?: boolean }) {
+  public update(
+    gt: number,
+    elapsedSec: number,
+    opts?: { pauseClouds?: boolean; hideAmbient?: boolean; freezeCollapseAtTick?: number },
+  ) {
     const { waveSteps, colWarn } = this.mapData;
+    const freezeT = opts?.freezeCollapseAtTick;
 
     const updateGroup = (
       mesh: THREE.InstancedMesh | null,
@@ -499,7 +504,11 @@ export class ArenaMap3D {
         const w = ti.wave;
         const fallStep = w >= 0 && w < waveSteps.length ? waveSteps[w] : -1;
 
-        if (fallStep >= 0 && gt >= fallStep) {
+        // Once the match/replay has ended (freezeT !== undefined), tiles that had NOT yet
+        // fallen at freezeT stop warning/collapsing completely, while tiles already mid-fall
+        // smoothly finish dropping into the clouds.
+        const alreadyFalling = fallStep >= 0 && (freezeT !== undefined ? fallStep <= freezeT : gt >= fallStep);
+        if (alreadyFalling && gt >= fallStep) {
           // Falling into the cloud sea!
           ti.modified = true;
           const u = gt - fallStep;
@@ -526,7 +535,7 @@ export class ArenaMap3D {
           continue;
         }
 
-        if (fallStep >= 0 && gt >= fallStep - colWarn) {
+        if (freezeT === undefined && fallStep >= 0 && gt >= fallStep - colWarn) {
           // Collapse warning: shake + urgent orange-red pulse!
           ti.modified = true;
           const prog = (gt - (fallStep - colWarn)) / Math.max(1, colWarn);

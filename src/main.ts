@@ -170,7 +170,7 @@ async function bootstrap() {
     lobbyUI.hide();
     mode = 'replay';
     try {
-      await replayController.start(bundle, 1.0);
+      await replayController.start(bundle, 1.0, settings.get().killCam);
     } catch (err) {
       console.error('Failed to start replay:', err);
       alert(`回放加载失败：${err instanceof Error ? err.message : String(err)}`);
@@ -242,7 +242,7 @@ async function bootstrap() {
 
     activeConfig = cfg;
     void controller
-      .start(cfg)
+      .start(cfg, { killCam: settings.get().killCam })
       .catch((err) => {
         console.error(err);
         alert(`重开失败：${err instanceof Error ? err.message : String(err)}`);
@@ -327,6 +327,15 @@ async function bootstrap() {
       activeFpsCap = s.fpsCap;
       startRenderLoop();
     }
+    if (mode === 'replay') {
+      replayController.setKillCamEnabled(s.killCam);
+    } else if (mode === 'playing') {
+      const updatedDir = controller.setKillCamEnabled(s.killCam);
+      if (updatedDir) {
+        renderer.setCinematicDirector(updatedDir);
+        renderer.setPlaybackSpeed(activeConfig?.speed ?? 1.0);
+      }
+    }
   });
 
   hudUI = new HudUI(uiRoot, settings, {
@@ -365,6 +374,7 @@ async function bootstrap() {
         speed: s.exportSpeed,
         soundEnabled: s.soundEnabled,
         volumePct: s.volume,
+        killCam: s.killCam,
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
         onProgress,
@@ -373,9 +383,11 @@ async function bootstrap() {
       return result;
     },
     onReplayExportGif: async (bundle, endTickIndex, signal, onProgress) => {
+      const s = settings.get();
       const result = await exportReplayClipToGif(bundle, {
         endTickIndex,
         maxDurationSec: 10.0,
+        killCam: s.killCam,
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
         onProgress,
@@ -418,6 +430,7 @@ async function bootstrap() {
         speed: s.exportSpeed,
         soundEnabled: s.soundEnabled,
         volumePct: s.volume,
+        killCam: s.killCam,
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
         onProgress,
@@ -443,23 +456,24 @@ async function bootstrap() {
         sfx.playCountdownGo();
       }
     },
-    onMapLoaded: async (mapData, initialState) => {
+    onMapLoaded: async (mapData, initialState, director) => {
       if (!activeConfig) return;
       activeMapData = mapData;
       const cfg = activeConfig;
       const hSeat = controller.getHumanSeat();
       await renderer.setupMatch(mapData, cfg.mapMeta.theme, cfg.slots, initialState, hSeat, cfg.speed);
       if (activeConfig !== cfg) return;
+      renderer.setCinematicDirector(director ?? null);
       mode = 'playing';
       lobbyUI.hide();
       hudUI.showMatch(cfg, hSeat);
       hudUI.updateTick(initialState, mapData.colStart, mapData.colEvery);
     },
-    onTick: (prev, next) => {
-      renderer.pushTick(prev, next);
+    onTick: (prev, next, tickDurationMs) => {
+      renderer.pushTick(prev, next, tickDurationMs);
       hudUI.updateTick(next, activeMapData?.colStart, activeMapData?.colEvery);
     },
-    onMatchOver: (finalState) => {
+    onMatchOver: (finalState, director) => {
       hudUI.updateTick(finalState, activeMapData?.colStart, activeMapData?.colEvery);
       let eloResult: EloUpdateResult | null = null;
       if (activeConfig && !matchRecorded) {
@@ -482,8 +496,13 @@ async function bootstrap() {
         }
       }
       persistCurrentMatchHistory(eloResult, false);
-      // Wait 1.6s so players see the victory celebration & confetti, then show result card + auto return!
+      // Wait for victory celebration (extended smoothly when cinematic winner close-up is active!)
       clearMatchOverTimer();
+      const baseSpeed = Math.max(0.25, activeConfig?.speed ?? 1.0);
+      const celebrateMs =
+        director && director.isEnabled()
+          ? Math.round((director.getRecommendedOutroRealSec(1.6) / baseSpeed) * 1000)
+          : 1600;
       matchOverTimer = window.setTimeout(() => {
         matchOverTimer = null;
         if (mode === 'playing') {
@@ -491,7 +510,7 @@ async function bootstrap() {
           pendingMatchElo = null;
           hudUI.showMatchResult(finalState, eloResult);
         }
-      }, 1600);
+      }, celebrateMs);
     },
     onError: (err) => {
       console.error('Match error:', err);
@@ -518,7 +537,7 @@ async function bootstrap() {
       historyModal.close();
       activeConfig = config;
       lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
-      void controller.start(config).catch((err) => {
+      void controller.start(config, { killCam: settings.get().killCam }).catch((err) => {
         console.error(err);
         lobbyUI.setLoading(null);
         alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);

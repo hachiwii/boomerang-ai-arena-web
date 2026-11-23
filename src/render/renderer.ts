@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { SoundFX } from '../audio/sfx';
 import { HumanInputController } from '../game/humanInput';
+import { CinematicCameraPose, CinematicDirector } from '../game/killCamDirector';
 import { CountdownStage } from '../game/matchController';
 import {
   CauseType,
@@ -102,6 +103,8 @@ export class GameRenderer {
   private shakeAmp = 0;
   private previewMode = true;
   private previewAngle = 0;
+  private cinematicDirector: CinematicDirector | null = null;
+  private overElapsedSimSec = 0;
 
   // Raycasting scratch (zero allocation per frame)
   private readonly _raycaster = new THREE.Raycaster();
@@ -341,6 +344,8 @@ export class GameRenderer {
     this.playbackPaused = false;
     this.pausedAlpha = 1.0;
     this.shakeAmp = 0;
+    this.overElapsedSimSec = 0;
+    this.cinematicDirector = null;
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;
 
@@ -487,9 +492,19 @@ export class GameRenderer {
     this.camDist = Math.max(22, distForW, distForH);
   }
 
-  public pushTick(prev: TickSnapshot, next: TickSnapshot) {
+  public setCinematicDirector(director: CinematicDirector | null) {
+    this.cinematicDirector = director;
+  }
+
+  public pushTick(prev: TickSnapshot, next: TickSnapshot, tickDurationMs?: number) {
     this.prevState = prev;
     this.currState = next;
+    if (tickDurationMs && tickDurationMs > 0) {
+      this.tickIntervalMs = tickDurationMs;
+    }
+    if (!next.over) {
+      this.overElapsedSimSec = 0;
+    }
     this.tickReceivedAtMs = performance.now();
     this.pausedAlpha = 1.0;
     this.processEvents(prev, next, next.events);
@@ -497,7 +512,9 @@ export class GameRenderer {
 
   public setPlaybackSpeed(speed: number) {
     const nextSpeed = Math.max(0.1, Math.min(4.0, speed || 1.0));
-    const nextInterval = LOGIC_DT_MS / nextSpeed;
+    const curSimSec = this.currState ? this.currState.t * 0.05 : 0;
+    const cineScale = this.cinematicDirector?.getSpeedScaleAtSim(curSimSec) ?? 1.0;
+    const nextInterval = LOGIC_DT_MS / (nextSpeed * cineScale);
     const now = performance.now();
     if (!this.playbackPaused && this.currState && !this.currState.over) {
       const curAlpha = Math.max(0, Math.min(1, (now - this.tickReceivedAtMs) / this.tickIntervalMs));
@@ -593,6 +610,7 @@ export class GameRenderer {
 
     this.prevState = ticks[Math.max(0, idx - 1)];
     this.currState = ticks[idx];
+    this.overElapsedSimSec = 0;
     this.tickReceivedAtMs = performance.now();
     this.pausedAlpha = 1.0;
   }
@@ -833,6 +851,55 @@ export class GameRenderer {
     return -1;
   }
 
+  private applyCameraWithOptionalCinematic(
+    simSec: number,
+    frameDt: number,
+    explicitPose?: CinematicCameraPose | null,
+  ): CinematicCameraPose | null {
+    const ovPos = {
+      x: this.camTargetX,
+      y: this.camDist * Math.sin(PITCH_RAD),
+      z: this.camTargetZ + this.camDist * Math.cos(PITCH_RAD) - 0.35,
+    };
+    const ovLook = {
+      x: this.camTargetX,
+      y: 0,
+      z: this.camTargetZ - 0.35,
+    };
+
+    const pose =
+      explicitPose !== undefined
+        ? explicitPose
+        : this.cinematicDirector?.isEnabled()
+          ? this.cinematicDirector.evaluate(simSec, ovPos, ovLook)
+          : null;
+
+    const camPos = pose ? pose.pos : ovPos;
+    const camLook = pose ? pose.lookAt : ovLook;
+
+    // Scale camera shake proportionally to camera distance so close-up shots stay dramatic without jarring jumps
+    let sx = 0;
+    let sz = 0;
+    if (this.shakeAmp > 0.002) {
+      const distNow = Math.hypot(
+        camPos.x - camLook.x,
+        camPos.y - camLook.y,
+        camPos.z - camLook.z,
+      );
+      const shakeScale = Math.max(0.18, Math.min(1.0, distNow / Math.max(1, this.camDist)));
+      sx = Math.sin(this.elapsedSec * 72) * this.shakeAmp * shakeScale;
+      sz = Math.cos(this.elapsedSec * 64) * this.shakeAmp * shakeScale;
+      this.shakeAmp *= Math.exp(-frameDt * 12);
+    } else {
+      this.shakeAmp = 0;
+    }
+
+    this.camera.position.set(camPos.x + sx, camPos.y, camPos.z + sz);
+    this.camera.lookAt(camLook.x + sx * 0.4, camLook.y, camLook.z + sz * 0.4);
+    this.camera.updateMatrixWorld();
+    return pose;
+  }
+
   /**
    * Render one frame (called directly inside requestAnimationFrame for 240Hz+ / 360Hz+!).
    */
@@ -840,9 +907,6 @@ export class GameRenderer {
     const tWork0 = performance.now();
     const frameDt = Math.min(0.05, Math.max(0.0005, (tWork0 - this.lastFrameMs) / 1000));
     this.lastFrameMs = tWork0;
-    if (this.previewMode || !this.playbackPaused) {
-      this.elapsedSec += frameDt * (this.previewMode ? 1.0 : this.gameSpeed);
-    }
 
     // Measure actual Render Hz (rolling 0.5s window)
     this.frameTimes.push(tWork0);
@@ -856,6 +920,7 @@ export class GameRenderer {
 
     // Update camera
     if (this.previewMode && this.arena) {
+      this.elapsedSec += frameDt;
       this.previewAngle += frameDt * 0.14;
       const dist = this.camDist * 0.96;
       const rHoriz = dist * Math.cos(PITCH_RAD);
@@ -868,40 +933,39 @@ export class GameRenderer {
       this.camera.lookAt(this.camTargetX, 0, this.camTargetZ);
       this.arena.update(0, this.elapsedSec);
     } else if (this.arena && this.prevState && this.currState) {
-      // Smooth sub-tick interpolation factor [0..1] adapted to current game speed (0.1x..2.0x)!
+      // Smooth sub-tick interpolation factor [0..1] adapted to current game speed & kill-cam slow-mo!
       const sameTick = this.prevState === this.currState || this.prevState.t === this.currState.t;
       const alpha = this.playbackPaused
         ? this.pausedAlpha
         : this.currState.over || sameTick
           ? 1.0
           : Math.max(0, Math.min(1, (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs));
-      const gt = this.playbackPaused
-        ? sameTick || this.currState.over
-          ? this.currState.t
-          : this.prevState.t + alpha
-        : this.currState.over
-          ? this.currState.t + (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs
+
+      let gt: number;
+      let liveScale = 1.0;
+      if (this.playbackPaused) {
+        gt = this.currState.over
+          ? this.currState.t + this.overElapsedSimSec * 20
           : sameTick
             ? this.currState.t
             : this.prevState.t + alpha;
-
-      // Subtle camera shake decay
-      let sx = 0;
-      let sz = 0;
-      if (this.shakeAmp > 0.002) {
-        sx = Math.sin(this.elapsedSec * 72) * this.shakeAmp;
-        sz = Math.cos(this.elapsedSec * 64) * this.shakeAmp;
-        this.shakeAmp *= Math.exp(-frameDt * 12);
+        liveScale = this.cinematicDirector?.getSpeedScaleAtSim(gt * 0.05) ?? 1.0;
+      } else if (this.currState.over) {
+        const curOverSim = this.currState.t * 0.05 + this.overElapsedSimSec;
+        liveScale = this.cinematicDirector?.getSpeedScaleAtSim(curOverSim) ?? 1.0;
+        this.overElapsedSimSec += frameDt * this.gameSpeed * liveScale;
+        gt = this.currState.t + this.overElapsedSimSec * 20;
       } else {
-        this.shakeAmp = 0;
+        gt = sameTick ? this.currState.t : this.prevState.t + alpha;
+        liveScale = this.cinematicDirector?.getSpeedScaleAtSim(gt * 0.05) ?? 1.0;
       }
 
-      // Slight vertical offset so top HUD has breathing room
-      const camY = this.camDist * Math.sin(PITCH_RAD);
-      const camZ = this.camTargetZ + this.camDist * Math.cos(PITCH_RAD) - 0.35;
-      this.camera.position.set(this.camTargetX + sx, camY, camZ + sz);
-      this.camera.lookAt(this.camTargetX + sx * 0.4, 0, this.camTargetZ - 0.35 + sz * 0.4);
-      this.camera.updateMatrixWorld();
+      const simFrameDt = frameDt * this.gameSpeed * liveScale;
+      if (!this.playbackPaused) {
+        this.elapsedSec += simFrameDt;
+      }
+
+      const cinePose = this.applyCameraWithOptionalCinematic(gt * 0.05, simFrameDt);
 
       // Update hardware-plane tactical crosshair cursor (0ms OS cursor latency):
       // Blue = holding dart, Yellow = dart flying/recalled, Red = dart on ground (+ growing center dot while channeling recall)
@@ -947,8 +1011,10 @@ export class GameRenderer {
         }
       }
 
-      // Update arena collapsing tiles, grass sway, clouds
-      this.arena.update(gt, this.elapsedSec);
+      // Update arena collapsing tiles, grass sway, clouds (freeze collapse once match is over!)
+      this.arena.update(gt, this.elapsedSec, {
+        freezeCollapseAtTick: this.currState.over ? this.currState.t : undefined,
+      });
 
       // Play escalating crumbling-gravel SFX when the human player stands on an impending-collapse tile
       const warnUrgency = this.getHumanCollapseWarnUrgency();
@@ -1005,10 +1071,11 @@ export class GameRenderer {
           hiddenFromHuman,
           inGrassStealth,
           onGround,
-          frameDt,
+          simFrameDt,
+          cinePose?.winnerFaceYaw,
         );
 
-        // Update floating nameplate
+        // Update floating nameplate (hide if behind close-up camera or fading cleanly during winner portrait)
         const np = this.nameplates[k];
         if (np) {
           if (!currP.alive || hiddenFromHuman) {
@@ -1016,10 +1083,21 @@ export class GameRenderer {
           } else {
             this._projVec.set(interpXMm / 1000, 1.52, interpYMm / 1000);
             this._projVec.project(this.camera);
-            const sxPx = (this._projVec.x * 0.5 + 0.5) * screenW;
-            const syPx = (-this._projVec.y * 0.5 + 0.5) * screenH;
-            np.style.opacity = inGrassStealth ? '0.52' : '0.96';
-            np.style.transform = `translate3d(${sxPx.toFixed(1)}px, ${syPx.toFixed(1)}px, 0) translate(-50%, -100%)`;
+            const behindCam = this._projVec.z > 1.0 || this._projVec.z < -1.0;
+            const winFade =
+              this.currState.over && this.currState.winner === k && cinePose
+                ? Math.max(0, 1 - cinePose.winnerBlend * 1.4)
+                : 1;
+            const baseOp = inGrassStealth ? 0.52 : 0.96;
+            const finalOp = behindCam ? 0 : baseOp * winFade;
+            if (finalOp <= 0.02) {
+              np.style.opacity = '0';
+            } else {
+              const sxPx = (this._projVec.x * 0.5 + 0.5) * screenW;
+              const syPx = (-this._projVec.y * 0.5 + 0.5) * screenH;
+              np.style.opacity = finalOp.toFixed(2);
+              np.style.transform = `translate3d(${sxPx.toFixed(1)}px, ${syPx.toFixed(1)}px, 0) translate(-50%, -100%)`;
+            }
           }
         }
       }
@@ -1151,29 +1229,24 @@ export class GameRenderer {
     gt: number,
     frameDt: number,
     elapsedSec: number,
-    opts?: { pauseClouds?: boolean; hideAmbient?: boolean; skipRender?: boolean },
+    opts?: {
+      pauseClouds?: boolean;
+      hideAmbient?: boolean;
+      skipRender?: boolean;
+      cameraPose?: CinematicCameraPose | null;
+    },
   ): ProjectedNameplate[] {
     this.elapsedSec = elapsedSec;
     const out: ProjectedNameplate[] = [];
     if (!this.arena) return out;
 
-    let sx = 0;
-    let sz = 0;
-    if (this.shakeAmp > 0.002) {
-      sx = Math.sin(this.elapsedSec * 72) * this.shakeAmp;
-      sz = Math.cos(this.elapsedSec * 64) * this.shakeAmp;
-      this.shakeAmp *= Math.exp(-frameDt * 12);
-    } else {
-      this.shakeAmp = 0;
-    }
+    const cinePose = this.applyCameraWithOptionalCinematic(gt * 0.05, frameDt, opts?.cameraPose);
 
-    const camY = this.camDist * Math.sin(PITCH_RAD);
-    const camZ = this.camTargetZ + this.camDist * Math.cos(PITCH_RAD) - 0.35;
-    this.camera.position.set(this.camTargetX + sx, camY, camZ + sz);
-    this.camera.lookAt(this.camTargetX + sx * 0.4, 0, this.camTargetZ - 0.35 + sz * 0.4);
-    this.camera.updateMatrixWorld();
-
-    this.arena.update(gt, elapsedSec, opts);
+    this.arena.update(gt, elapsedSec, {
+      pauseClouds: opts?.pauseClouds,
+      hideAmbient: opts?.hideAmbient,
+      freezeCollapseAtTick: curr.over ? curr.t : undefined,
+    });
 
     const { width: screenW, height: screenH } = this.getViewportSize();
     for (let k = 0; k < this.rigs.length; k++) {
@@ -1206,6 +1279,7 @@ export class GameRenderer {
         inGrassStealth,
         onGround,
         frameDt,
+        cinePose?.winnerFaceYaw,
       );
 
       if (!currP.alive) {
@@ -1213,12 +1287,18 @@ export class GameRenderer {
       } else {
         this._projVec.set(interpXMm / 1000, 1.52, interpYMm / 1000);
         this._projVec.project(this.camera);
+        const behindCam = this._projVec.z > 1.0 || this._projVec.z < -1.0;
+        const winFade =
+          curr.over && curr.winner === k && cinePose
+            ? Math.max(0, 1 - cinePose.winnerBlend * 1.4)
+            : 1;
+        const finalOp = behindCam ? 0 : (inGrassStealth ? 0.56 : 0.96) * winFade;
         out.push({
           seat: k,
           x: (this._projVec.x * 0.5 + 0.5) * screenW,
           y: (-this._projVec.y * 0.5 + 0.5) * screenH,
-          visible: true,
-          opacity: inGrassStealth ? 0.56 : 0.96,
+          visible: finalOp > 0.02,
+          opacity: finalOp,
           inGrassStealth,
         });
       }
@@ -1270,6 +1350,8 @@ export class GameRenderer {
     this.currState = null;
     this.playbackPaused = false;
     this.pausedAlpha = 1.0;
+    this.overElapsedSimSec = 0;
+    this.cinematicDirector = null;
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;
   }

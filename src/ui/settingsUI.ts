@@ -295,6 +295,29 @@ export class SettingsModal {
             </div>
           </section>
 
+          <!-- Kill-Cam Cinematic Section -->
+          <section class="settings-section">
+            <div class="settings-sec-title">🎥 击杀特写</div>
+            <div class="settings-toggle-row">
+              <div class="settings-toggle-meta">
+                <div class="settings-toggle-title">击杀慢动作与平视特写镜头</div>
+                <div class="settings-toggle-desc">
+                  开启后，回放、纯 AI 观战对局以及导出的 MP4 / GIF 将在每次击杀前 0.5s 自动 0.25x 慢放并平滑切至平视镜头（飞镖击杀跟随飞镖，近战/坠崖锁定冲突视角），决出胜者后切至获胜者正面特写
+                </div>
+              </div>
+              <button
+                type="button"
+                class="rand-switch ${s.killCam ? 'is-on' : ''}"
+                id="settings-killcam-toggle"
+                role="switch"
+                aria-checked="${s.killCam}"
+              >
+                <span class="rand-track"><span class="rand-thumb"></span></span>
+                <span class="rand-label">${s.killCam ? '已开启' : '已关闭'}</span>
+              </button>
+            </div>
+          </section>
+
           <!-- Replay MP4 Export Settings Section -->
           <section class="settings-section">
             <div class="settings-sec-head">
@@ -403,6 +426,12 @@ export class SettingsModal {
     // Dash pre-input buffer toggle
     this.body.querySelector('#settings-dash-buffer-toggle')?.addEventListener('click', () => {
       this.store.setDashInputBuffer(!this.store.get().dashInputBuffer);
+      this.render();
+    });
+
+    // Kill-cam cinematic toggle
+    this.body.querySelector('#settings-killcam-toggle')?.addEventListener('click', () => {
+      this.store.setKillCam(!this.store.get().killCam);
       this.render();
     });
 

@@ -1,4 +1,5 @@
 import { GameRenderer } from '../render/renderer';
+import { CinematicDirector } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
 import { LOGIC_DT_MS, TickSnapshot } from './types';
 
@@ -26,6 +27,8 @@ export class ReplayController {
   private readonly callbacks: ReplayCallbacks;
 
   private bundle: MatchReplayBundle | null = null;
+  private director: CinematicDirector | null = null;
+  private killCamEnabled = true;
   private tickIndex = 0;
   private speed = 1.0;
   private paused = false;
@@ -64,7 +67,25 @@ export class ReplayController {
     };
   }
 
-  public async start(bundle: MatchReplayBundle, initialSpeed = 1.0): Promise<void> {
+  private getTickIntervalMs(tickIdx = this.tickIndex): number {
+    const scale = this.director?.getSpeedScaleAtSim(tickIdx * (LOGIC_DT_MS / 1000)) ?? 1.0;
+    return LOGIC_DT_MS / (this.speed * scale);
+  }
+
+  public setKillCamEnabled(enabled: boolean) {
+    this.killCamEnabled = enabled;
+    if (!this.active || !this.bundle) return;
+    this.director = new CinematicDirector(this.bundle.replay.ticks, this.bundle.replay.mapData, enabled);
+    this.renderer.setCinematicDirector(this.director);
+    this.renderer.setPlaybackSpeed(this.speed);
+    if (!this.paused && !this.finished) {
+      this.clearTimer();
+      this.nextTickDeadline = performance.now() + this.getTickIntervalMs();
+      this.scheduleNextTick();
+    }
+  }
+
+  public async start(bundle: MatchReplayBundle, initialSpeed = 1.0, killCamEnabled?: boolean): Promise<void> {
     this.stop();
     const mySeq = ++this.sessionSeq;
     const ticks = bundle.replay.ticks;
@@ -72,6 +93,9 @@ export class ReplayController {
       throw new Error('回放数据为空');
     }
 
+    if (killCamEnabled !== undefined) {
+      this.killCamEnabled = killCamEnabled;
+    }
     this.bundle = bundle;
     this.speed = Math.max(0.25, Math.min(2.0, initialSpeed || 1.0));
     this.tickIndex = 0;
@@ -89,6 +113,10 @@ export class ReplayController {
       this.speed,
     );
     if (this.sessionSeq !== mySeq || !this.active) return;
+
+    this.director = new CinematicDirector(ticks, bundle.replay.mapData, this.killCamEnabled);
+    this.renderer.setCinematicDirector(this.director);
+    this.renderer.setPlaybackSpeed(this.speed);
 
     const st = this.getState();
     this.callbacks.onLoaded(bundle, st);
@@ -117,7 +145,7 @@ export class ReplayController {
     if (!this.paused) return;
     this.paused = false;
     this.renderer.setPlaybackPaused(false);
-    this.nextTickDeadline = performance.now() + LOGIC_DT_MS / this.speed;
+    this.nextTickDeadline = performance.now() + this.getTickIntervalMs();
     this.scheduleNextTick();
     this.callbacks.onStateChange(this.getState());
   }
@@ -139,7 +167,7 @@ export class ReplayController {
     this.renderer.setPlaybackSpeed(this.speed);
     if (!this.paused && !this.finished) {
       this.clearTimer();
-      this.nextTickDeadline = performance.now() + LOGIC_DT_MS / this.speed;
+      this.nextTickDeadline = performance.now() + this.getTickIntervalMs();
       this.scheduleNextTick();
     }
     this.callbacks.onStateChange(this.getState());
@@ -155,6 +183,7 @@ export class ReplayController {
     this.tickIndex = clamped;
     this.finished = clamped >= maxIndex;
     this.renderer.seekToReplayTick(ticks, clamped);
+    this.renderer.setPlaybackSpeed(this.speed);
 
     if (this.finished) {
       this.paused = false;
@@ -163,7 +192,7 @@ export class ReplayController {
       this.renderer.setPlaybackPaused(true);
     } else {
       this.renderer.setPlaybackPaused(false);
-      this.nextTickDeadline = performance.now() + LOGIC_DT_MS / this.speed;
+      this.nextTickDeadline = performance.now() + this.getTickIntervalMs();
       this.scheduleNextTick();
     }
 
@@ -205,10 +234,12 @@ export class ReplayController {
       return;
     }
 
-    const prev = ticks[this.tickIndex];
+    const prevIdx = this.tickIndex;
+    const prev = ticks[prevIdx];
+    const intervalMs = this.getTickIntervalMs(prevIdx);
     this.tickIndex++;
     const curr = ticks[this.tickIndex];
-    this.renderer.pushTick(prev, curr);
+    this.renderer.pushTick(prev, curr, intervalMs);
 
     if (this.tickIndex >= maxIndex) {
       this.finished = true;
@@ -218,10 +249,9 @@ export class ReplayController {
       return;
     }
 
-    const intervalMs = LOGIC_DT_MS / this.speed;
     const now = performance.now();
     this.nextTickDeadline += intervalMs;
-    if (now - this.nextTickDeadline > Math.max(150, intervalMs * 3)) {
+    if (now - this.nextTickDeadline > Math.max(250, intervalMs * 3)) {
       this.nextTickDeadline = now + intervalMs;
     }
 
@@ -243,7 +273,9 @@ export class ReplayController {
     this.paused = false;
     this.finished = false;
     this.bundle = null;
+    this.director = null;
     this.tickIndex = 0;
+    this.renderer.setCinematicDirector(null);
     this.renderer.setPlaybackPaused(false);
   }
 }

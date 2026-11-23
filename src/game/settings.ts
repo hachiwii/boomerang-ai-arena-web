@@ -22,6 +22,7 @@ export interface GameSettings {
   volume: number; // 0..100
   fpsCap: FpsCapOption;
   dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
+  killCam: boolean; // Slow-motion eye-level kill-cam & winner front close-up (replay / AI match / MP4 / GIF)
   exportResolution: ExportResolutionOption;
   exportBitrateMbps: ExportBitrateOption;
   exportSpeed: ExportSpeedOption;
@@ -107,6 +108,7 @@ export function defaultSettings(): GameSettings {
     volume: 100,
     fpsCap: 'vsync',
     dashInputBuffer: true,
+    killCam: true,
     exportResolution: '1080p',
     exportBitrateMbps: 4,
     exportSpeed: 1.0,
@@ -227,6 +229,8 @@ export class SettingsStore {
         parsed.fpsCap !== undefined && VALID_FPS_CAPS.has(parsed.fpsCap) ? parsed.fpsCap : def.fpsCap;
       const dashInputBuffer =
         typeof parsed.dashInputBuffer === 'boolean' ? parsed.dashInputBuffer : def.dashInputBuffer;
+      const killCam =
+        typeof parsed.killCam === 'boolean' ? parsed.killCam : def.killCam;
       const exportResolution: ExportResolutionOption =
         parsed.exportResolution !== undefined && VALID_EXPORT_RES.has(parsed.exportResolution)
           ? parsed.exportResolution
@@ -256,6 +260,7 @@ export class SettingsStore {
         volume,
         fpsCap,
         dashInputBuffer,
+        killCam,
         exportResolution,
         exportBitrateMbps,
         exportSpeed,
@@ -312,6 +317,12 @@ export class SettingsStore {
   public setDashInputBuffer(enabled: boolean) {
     if (this.settings.dashInputBuffer === enabled) return;
     this.settings.dashInputBuffer = enabled;
+    this.emit();
+  }
+
+  public setKillCam(enabled: boolean) {
+    if (this.settings.killCam === enabled) return;
+    this.settings.killCam = enabled;
     this.emit();
   }
 

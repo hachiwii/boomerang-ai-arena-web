@@ -337,6 +337,7 @@ export class CharacterRig {
     inGrassStealth: boolean,
     onGround: boolean,
     frameDt: number,
+    winnerFaceYaw?: number | null,
   ) {
     // 1. Update flying / ground boomerang
     this.updateDart(prevD, currD, alpha, gt, hiddenFromHuman);
@@ -402,7 +403,7 @@ export class CharacterRig {
     let targetYaw = Math.PI * 0.5 - (interpDeg * Math.PI) / 180;
 
     if (matchOver && isWinner) {
-      targetYaw = 0; // Turn toward camera to celebrate!
+      targetYaw = winnerFaceYaw ?? 0; // Turn toward camera to celebrate!
     }
 
     let dYaw = ((targetYaw - this.smoothedYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;

@@ -2,6 +2,7 @@ import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
 import { SoundFX } from '../audio/sfx';
 import { GameRenderer, ProjectedNameplate } from '../render/renderer';
 import { VoxelModelData } from '../render/voxelBuilder';
+import { CinematicDirector } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
 import {
   ExportBitrateOption,
@@ -17,6 +18,7 @@ export interface Mp4ExportOptions {
   speed: ExportSpeedOption;
   soundEnabled: boolean;
   volumePct: number;
+  killCam?: boolean;
   sharedCharModelCache?: Map<string, VoxelModelData>;
   signal?: AbortSignal;
   onProgress?: (progress01: number, phaseText: string) => void;
@@ -472,9 +474,14 @@ export async function exportReplayToMp4(
   const audioConfig = wantAudio ? await pickSupportedAudioConfig() : null;
   const hasAudio = audioConfig !== null;
 
-  const tickDurationSec = (LOGIC_DT_MS / 1000) / speed;
-  const playDurationSec = Math.max(0, ticks.length - 1) * tickDurationSec;
-  const totalDurationSec = LEAD_IN_SEC + playDurationSec + OUTRO_SEC;
+  const director = new CinematicDirector(ticks, bundle.replay.mapData, Boolean(options.killCam));
+  const tickSec = LOGIC_DT_MS / 1000;
+  const matchEndSimSec = Math.max(0, ticks.length - 1) * tickSec;
+  const playDurationSec = director.simToReal(matchEndSimSec) / speed;
+  const outroDurationSec = director.isEnabled()
+    ? Math.max(OUTRO_SEC, director.getRecommendedOutroRealSec(OUTRO_SEC) / Math.min(speed, 1.5))
+    : OUTRO_SEC;
+  const totalDurationSec = LEAD_IN_SEC + playDurationSec + outroDurationSec;
   const totalFrames = Math.max(1, Math.ceil(totalDurationSec * EXPORT_FPS));
 
   const target = new ArrayBufferTarget();
@@ -563,9 +570,11 @@ export async function exportReplayToMp4(
       throw new DOMException('已取消导出', 'AbortError');
     }
 
+    offRenderer.setCinematicDirector(director);
+
     const frameDtReal = 1 / EXPORT_FPS;
-    const frameDtSim = frameDtReal * speed;
     let processedTickIdx = 0;
+    let prevSimSec = 0;
     let lastYieldMs = performance.now();
 
     for (let f = 0; f < totalFrames; f++) {
@@ -575,36 +584,44 @@ export async function exportReplayToMp4(
       }
 
       const videoTimeSec = f / EXPORT_FPS;
-      const elapsedSimSec = videoTimeSec * speed;
 
       let prevSnap: TickSnapshot;
       let currSnap: TickSnapshot;
       let alpha = 1.0;
       let gt = ticks[0].t;
       let outroAlpha = 0;
+      let frameDtSim = frameDtReal * speed;
+      let elapsedSimSec = videoTimeSec * speed;
 
       if (videoTimeSec < LEAD_IN_SEC || ticks.length === 1) {
         prevSnap = ticks[0];
         currSnap = ticks[0];
         alpha = 1.0;
         gt = ticks[0].t;
+        prevSimSec = 0;
       } else {
-        const playT = videoTimeSec - LEAD_IN_SEC;
-        const rawTickFloat = playT / tickDurationSec;
+        const playReal1xSec = (videoTimeSec - LEAD_IN_SEC) * speed;
+        const simSec = director.realToSim(playReal1xSec);
+        frameDtSim = Math.max(1e-4, simSec - prevSimSec);
+        prevSimSec = simSec;
+        elapsedSimSec = LEAD_IN_SEC * speed + simSec;
+
+        const rawTickFloat = simSec / tickSec;
         const maxTickIdx = ticks.length - 1;
 
         if (rawTickFloat < maxTickIdx) {
           const targetIdx = Math.min(maxTickIdx, Math.floor(rawTickFloat) + 1);
           while (processedTickIdx < targetIdx) {
             const nextIdx = processedTickIdx + 1;
-            const eventVideoTime = LEAD_IN_SEC + (nextIdx - 1) * tickDurationSec;
+            const eventSimSec = (nextIdx - 1) * tickSec;
+            const eventVideoTime = LEAD_IN_SEC + director.simToReal(eventSimSec) / speed;
             if (offlineAudioCtx) {
               offlineSfx.setOfflineTarget(offlineAudioCtx, eventVideoTime);
             }
             offRenderer.processOfflineTickEvents(
               ticks[nextIdx - 1],
               ticks[nextIdx],
-              eventVideoTime * speed,
+              LEAD_IN_SEC * speed + eventSimSec,
             );
             processedTickIdx = nextIdx;
           }
@@ -616,23 +633,26 @@ export async function exportReplayToMp4(
           // Ensure final tick events (including victory confetti + fanfare) have fired
           while (processedTickIdx < maxTickIdx) {
             const nextIdx = processedTickIdx + 1;
-            const eventVideoTime = LEAD_IN_SEC + (nextIdx - 1) * tickDurationSec;
+            const eventSimSec = (nextIdx - 1) * tickSec;
+            const eventVideoTime = LEAD_IN_SEC + director.simToReal(eventSimSec) / speed;
             if (offlineAudioCtx) {
               offlineSfx.setOfflineTarget(offlineAudioCtx, eventVideoTime);
             }
             offRenderer.processOfflineTickEvents(
               ticks[nextIdx - 1],
               ticks[nextIdx],
-              eventVideoTime * speed,
+              LEAD_IN_SEC * speed + eventSimSec,
             );
             processedTickIdx = nextIdx;
           }
-          const extraSec = playT - playDurationSec;
+          const extraSimSec = Math.max(0, simSec - matchEndSimSec);
+          const extraVideoSec = Math.max(0, videoTimeSec - LEAD_IN_SEC - playDurationSec);
           prevSnap = ticks[maxTickIdx];
           currSnap = ticks[maxTickIdx];
           alpha = 1.0;
-          gt = currSnap.t + extraSec / tickDurationSec;
-          outroAlpha = Math.max(0, Math.min(1, (extraSec - 0.2) / 0.35));
+          gt = currSnap.t + extraSimSec / tickSec;
+          const bannerDelaySec = director.hasWinnerCloseup() ? 0.72 / Math.min(speed, 1.5) : 0.2;
+          outroAlpha = Math.max(0, Math.min(1, (extraVideoSec - bannerDelaySec) / 0.35));
         }
       }
 
