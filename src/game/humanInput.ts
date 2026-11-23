@@ -36,6 +36,9 @@ export class HumanInputController {
   private queuedMeleeAt = -1;
   private queuedDashAt = -1;
   private queuedDashToMouseAt = -1;
+  private queuedDashTargetX = 0;
+  private queuedDashTargetY = 0;
+  private queuedDashHasTarget = false;
 
   private bufferMs = 140;
   private recallHoldDelayMs = 160;
@@ -79,6 +82,7 @@ export class HumanInputController {
       this.queuedMeleeAt = -1;
       this.queuedDashAt = -1;
       this.queuedDashToMouseAt = -1;
+      this.queuedDashHasTarget = false;
     }
   }
 
@@ -108,6 +112,7 @@ export class HumanInputController {
       this.queuedMeleeAt = -1;
       this.queuedDashAt = -1;
       this.queuedDashToMouseAt = -1;
+      this.queuedDashHasTarget = false;
     }
   }
 
@@ -123,6 +128,7 @@ export class HumanInputController {
     this.queuedMeleeAt = -1;
     this.queuedDashAt = -1;
     this.queuedDashToMouseAt = -1;
+    this.queuedDashHasTarget = false;
   }
 
   private isActionHeld(action: ActionBindKey): boolean {
@@ -164,7 +170,13 @@ export class HumanInputController {
         }
         if (isBoundToAction(kb, 'dashToMouse', code)) {
           if (code === 'Space') e.preventDefault();
-          if (!e.repeat) this.queuedDashToMouseAt = now;
+          if (!e.repeat) {
+            this.refreshAimFromPointer();
+            this.queuedDashToMouseAt = now;
+            this.queuedDashHasTarget = this.hasMouse;
+            this.queuedDashTargetX = this.aimWorldMmX;
+            this.queuedDashTargetY = this.aimWorldMmY;
+          }
           this.pressedCodes.add(code);
         }
         if (isBoundToAction(kb, 'melee', code)) {
@@ -247,6 +259,9 @@ export class HumanInputController {
         e.preventDefault();
         this.pressedCodes.add(code);
         this.queuedDashToMouseAt = now;
+        this.queuedDashHasTarget = this.hasMouse;
+        this.queuedDashTargetX = this.aimWorldMmX;
+        this.queuedDashTargetY = this.aimWorldMmY;
       }
     });
 
@@ -329,13 +344,33 @@ export class HumanInputController {
       return { mx, my, act: ActType.MELEE, ax: aimX, ay: aimY, msg: 0 };
     }
 
-    // 2. Priority: Dash (movement-direction dash or dash toward mouse cursor)
+    // 2. Priority: Dash (movement-direction dash or exact-target dash toward mouse cursor)
     if ((hasBufferedDash || hasBufferedDashToMouse) && canStartNew && me.cd === 0) {
       const useMouseDir =
         hasBufferedDashToMouse && (!hasBufferedDash || this.queuedDashToMouseAt >= this.queuedDashAt);
+      const hasSnapTarget = useMouseDir && this.queuedDashHasTarget;
+      const targetX = this.queuedDashTargetX;
+      const targetY = this.queuedDashTargetY;
       this.queuedDashAt = -1;
       this.queuedDashToMouseAt = -1;
-      const [dx, dy] = useMouseDir ? [aimX, aimY] : mx !== 0 || my !== 0 ? [mx, my] : [aimX, aimY];
+      this.queuedDashHasTarget = false;
+
+      if (useMouseDir) {
+        let dx = aimX;
+        let dy = aimY;
+        if (hasSnapTarget) {
+          const rx = targetX - me.x;
+          const ry = targetY - me.y;
+          const len = Math.hypot(rx, ry);
+          if (len > 10) {
+            dx = Math.round((rx / len) * 1000);
+            dy = Math.round((ry / len) * 1000);
+          }
+          return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0, dashTargetX: targetX, dashTargetY: targetY };
+        }
+        return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
+      }
+      const [dx, dy] = mx !== 0 || my !== 0 ? [mx, my] : [aimX, aimY];
       return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
     }
 

@@ -23,6 +23,7 @@ const engineMod = await createEngineModule({ printErr: () => {} });
 const engineInit = engineMod.cwrap('engine_init', 'number', ['string', 'number', 'number']);
 const engineSetHumanSeat = engineMod.cwrap('engine_set_human_seat', null, ['number']);
 const engineSetHumanCliffGuard = engineMod.cwrap('engine_set_human_cliff_guard', null, ['number']);
+const engineSetHumanDashTarget = engineMod.cwrap('engine_set_human_dash_target', null, ['number', 'number', 'number']);
 const engineGetMap = engineMod.cwrap('engine_get_map_json', 'string', []);
 const engineStep = engineMod.cwrap('engine_step', 'number', ['string']);
 const engineGetState = engineMod.cwrap('engine_get_state_json', 'string', []);
@@ -423,4 +424,92 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
   console.log('  [TEST 10 PASS] Gap-dash overshoot onto narrow island (75%=pit, 80..96%=land, 100%=pit) saved at exact farthest safe point x=4500!');
 }
 
-console.log('ALL 10 CLIFF-GUARD WASM PHYSICS TESTS PASSED!');
+// ---------------------------------------------------------------------------
+// Test 11: Exact mouse-target dash within range (0mm error), wall blocking,
+// beyond-range full dash + 25% cliff guard, and short targeted dash 25% cliff guard!
+// ---------------------------------------------------------------------------
+{
+  // Open test arena (24x16 cells, CELL=500mm -> x=500..11500, y=500..7500 solid, with one vertical wall at col 14)
+  const rows = [];
+  for (let r = 0; r < 16; r++) {
+    let line = '';
+    for (let c = 0; c < 24; c++) {
+      if (r === 0 || r === 15 || c === 0 || c === 23) line += '~';
+      else if (c === 14 && r >= 4 && r <= 11) line += '#';
+      else line += '.';
+    }
+    rows.push(line);
+  }
+  const openMap = [
+    'NAME target_dash_test',
+    'MODES 0',
+    'SPAWN 0 4.0 4.0 10.0 4.0',
+    'GRID 24 16',
+    ...rows,
+  ].join('\n');
+
+  const dashTo = (startX, startY, tx, ty, cliffGuard = true) => {
+    const custom = openMap.replace('SPAWN 0 4.0 4.0 10.0 4.0', `SPAWN 0 ${(startX / 1000).toFixed(3)} ${(startY / 1000).toFixed(3)} 10.5 7.0`);
+    assert(engineInit(custom, 2, 0), 'openMap init failed');
+    engineSetHumanSeat(0);
+    engineSetHumanCliffGuard(cliffGuard ? 1 : 0);
+    let st = JSON.parse(engineGetState());
+    const dx = tx - st.players[0].x;
+    const dy = ty - st.players[0].y;
+    const d = Math.hypot(dx, dy) || 1;
+    const ax = Math.round((dx / d) * 1000);
+    const ay = Math.round((dy / d) * 1000);
+    engineSetHumanDashTarget(1, tx, ty);
+    engineStep(`0 0 3 ${ax} ${ay} 0\n0 0 0 0 0 0`);
+    engineSetHumanDashTarget(0, 0, 0);
+    for (let i = 0; i < 10; i++) {
+      engineStep('0 0 0 0 0 0\n0 0 0 0 0 0');
+      st = JSON.parse(engineGetState());
+      if (st.over) break;
+    }
+    return st;
+  };
+
+  // 11a: Short horizontal dash (423mm) -> lands at EXACT (4423, 4000)!
+  let st = dashTo(4000, 4000, 4423, 4000, true);
+  assert(st.players[0].alive === 1 && st.players[0].x === 4423 && st.players[0].y === 4000,
+    `11a short dash: expected (4423, 4000), got (${st.players[0].x}, ${st.players[0].y})`);
+
+  // 11b: Mid-range diagonal dash (dx=1234, dy=-987 -> dist=1580mm) -> lands at EXACT (5234, 3013)!
+  st = dashTo(4000, 4000, 5234, 3013, true);
+  assert(st.players[0].alive === 1 && st.players[0].x === 5234 && st.players[0].y === 3013,
+    `11b diag dash: expected (5234, 3013), got (${st.players[0].x}, ${st.players[0].y})`);
+
+  // 11c: Near-max diagonal dash (dx=2100, dy=2100 -> dist=2969.8 <= 3000) -> lands at EXACT (6100, 6100)!
+  st = dashTo(4000, 4000, 6100, 6100, true);
+  assert(st.players[0].alive === 1 && st.players[0].x === 6100 && st.players[0].y === 6100,
+    `11c near-max diag dash: expected (6100, 6100), got (${st.players[0].x}, ${st.players[0].y})`);
+
+  // 11d: Wall blocking (wall at col 14 => x=7000..7500, body_r=400 => max safe x before wall is 6600)
+  // Start at (5500, 4000), click behind wall at (7800, 4000) (dist=2300 <= 3000) -> must stop against wall at x=6600!
+  st = dashTo(5500, 4000, 7800, 4000, true);
+  assert(st.players[0].alive === 1 && st.players[0].x === 6600 && st.players[0].y === 4000,
+    `11d wall block: expected stopped at wall x=6600, got (${st.players[0].x}, ${st.players[0].y})`);
+
+  // 11e: Target BEYOND max dash range (click 5000mm left from x=3000 -> tx=-2000, dist=5000 > 3000)
+  // Full 3000mm dash overshoots x=500 rim by 500mm (within final 25% = 750mm) -> 25% cliff guard saves at x=500!
+  st = dashTo(3000, 4000, -2000, 4000, true);
+  assert(st.players[0].alive === 1 && st.players[0].x === 500,
+    `11e beyond-range + 25% cliff guard: expected saved at x=500, got alive=${st.players[0].alive} x=${st.players[0].x}`);
+
+  // 11f: Target INSIDE range (dist=2400mm from x=2700 -> tx=300, overshooting x=500 rim by 200mm;
+  // final 25% of 2400mm is 600mm [x=900..300], spanning back across the final short step [450..300] into step 3 [900..450]!)
+  // Multi-segment 25% backtrack must save at exact x=500!
+  st = dashTo(2700, 4000, 300, 4000, true);
+  assert(st.players[0].alive === 1 && st.players[0].x === 500,
+    `11f short targeted dash 25% cliff guard: expected saved at x=500, got alive=${st.players[0].alive} x=${st.players[0].x}`);
+
+  // Same 11f with cliffGuard OFF -> lands at x=300 (pit) and falls!
+  st = dashTo(2700, 4000, 300, 4000, false);
+  assert(st.players[0].alive === 0 && st.players[0].cause === 3,
+    `11f with cliffGuard OFF must fall at x=300, got alive=${st.players[0].alive}`);
+
+  console.log('  [TEST 11 PASS] Exact mouse-target dash: 0mm error (423mm, diag 1580mm, diag 2970mm), wall block (x=6600), beyond-range 25% guard, and short targeted 25% guard all passed!');
+}
+
+console.log('ALL 11 CLIFF-GUARD & MOUSE-DASH WASM PHYSICS TESTS PASSED!');

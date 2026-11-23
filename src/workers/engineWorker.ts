@@ -7,6 +7,7 @@ interface EngineWasmModule {
 let engineInit: ((mapText: string, nPlayers: number, seed: number) => number) | null = null;
 let engineSetHumanSeat: ((seat: number) => void) | null = null;
 let engineSetHumanCliffGuard: ((enabled: number) => void) | null = null;
+let engineSetHumanDashTarget: ((active: number, tx: number, ty: number) => void) | null = null;
 let engineLastErr: (() => string) | null = null;
 let engineGetHeader: ((seat: number) => string) | null = null;
 let engineGetObs: ((seat: number) => string) | null = null;
@@ -28,6 +29,7 @@ async function ensureLoaded(origin: string, buildId?: string) {
   engineInit = mod.cwrap('engine_init', 'number', ['string', 'number', 'number']) as (m: string, n: number, s: number) => number;
   engineSetHumanSeat = mod.cwrap('engine_set_human_seat', null, ['number']) as (s: number) => void;
   engineSetHumanCliffGuard = mod.cwrap('engine_set_human_cliff_guard', null, ['number']) as (e: number) => void;
+  engineSetHumanDashTarget = mod.cwrap('engine_set_human_dash_target', null, ['number', 'number', 'number']) as (a: number, tx: number, ty: number) => void;
   engineLastErr = mod.cwrap('engine_last_error', 'string', []) as () => string;
   engineGetHeader = mod.cwrap('engine_get_header', 'string', ['number']) as (s: number) => string;
   engineGetObs = mod.cwrap('engine_get_obs', 'string', ['number']) as (s: number) => string;
@@ -73,11 +75,17 @@ self.onmessage = async (ev: MessageEvent) => {
         engineSetHumanCliffGuard(msg.enabled ? 1 : 0);
       }
     } else if (msg.type === 'step') {
-      const { reqId, actionsText, botSeats } = msg as {
+      const { reqId, actionsText, botSeats, dashTarget } = msg as {
         reqId: number;
         actionsText: string;
         botSeats: number[];
+        dashTarget?: [number, number] | null;
       };
+      if (dashTarget && dashTarget.length === 2) {
+        engineSetHumanDashTarget!(1, Math.round(dashTarget[0]), Math.round(dashTarget[1]));
+      } else {
+        engineSetHumanDashTarget!(0, 0, 0);
+      }
       engineStep!(actionsText);
       const state = JSON.parse(engineGetStateJson!());
       const obs: Record<number, string> = {};

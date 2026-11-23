@@ -190,4 +190,6 @@ export interface HumanAction {
   ax: number;
   ay: number;
   msg: number;
+  dashTargetX?: number;
+  dashTargetY?: number;
 }

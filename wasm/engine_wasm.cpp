@@ -102,6 +102,15 @@ void engine_set_human_cliff_guard(int enabled) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void engine_set_human_dash_target(int active, int tx, int ty) {
+    if (g_game) {
+        g_game->human_dash_target_active = (active != 0);
+        g_game->human_dash_target_x = tx;
+        g_game->human_dash_target_y = ty;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
 const char* engine_get_header(int seat) {
     if (!g_game || seat < 0 || seat >= g_game->n) {
         g_ret_buf.clear();
