@@ -120,7 +120,7 @@ export class MatchController {
     const origin = window.location.origin;
 
     this.callbacks.onStatus?.('加载地图与引擎 WASM...');
-    const mapResp = await fetch(`${origin}/assets/maps/${config.mapId}.txt`);
+    const mapResp = await fetch(`${origin}/assets/maps/${config.mapId}.txt?v=${__BUILD_ID__}`);
     if (!mapResp.ok) throw new Error(`无法加载地图 ${config.mapId}`);
     const mapText = await mapResp.text();
     if (this.stopped) return;
@@ -129,6 +129,7 @@ export class MatchController {
     const initRes = await this.rpc(this.engineWorker, {
       type: 'init',
       origin,
+      buildId: __BUILD_ID__,
       mapText,
       nPlayers: config.slots.length,
       seed: config.seed,
@@ -154,6 +155,7 @@ export class MatchController {
           const res = await this.rpc(w, {
             type: 'init',
             origin,
+            buildId: __BUILD_ID__,
             botId: slot.botId!,
             header: headers[seat],
           });

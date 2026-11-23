@@ -1,6 +1,11 @@
 import { defineConfig } from 'vite';
 
+const buildId = Date.now().toString(36);
+
 export default defineConfig({
+  define: {
+    __BUILD_ID__: JSON.stringify(buildId),
+  },
   server: {
     port: 5173,
     headers: {

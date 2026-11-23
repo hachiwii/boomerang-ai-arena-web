@@ -9,10 +9,10 @@ let botDecideFn: ((obs: string) => string) | null = null;
 let loadedBotId = '';
 const moduleCache = new Map<string, (opts: Record<string, unknown>) => Promise<BotWasmModule>>();
 
-async function getFactory(origin: string, botId: string) {
+async function getFactory(origin: string, botId: string, q: string) {
   let factory = moduleCache.get(botId);
   if (!factory) {
-    const url = `${origin}/wasm/bots/${botId}.js`;
+    const url = `${origin}/wasm/bots/${botId}.js${q}`;
     const imported = await import(/* @vite-ignore */ url);
     factory = imported.default as (opts: Record<string, unknown>) => Promise<BotWasmModule>;
     moduleCache.set(botId, factory);
@@ -24,16 +24,18 @@ self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      const { reqId, origin, botId, header } = msg as {
+      const { reqId, origin, buildId, botId, header } = msg as {
         reqId: number;
         origin: string;
+        buildId?: string;
         botId: string;
         header: string;
       };
+      const q = buildId ? `?v=${encodeURIComponent(buildId)}` : '';
       // Always instantiate a fresh WASM module instance per match so static/global state is 100% clean
-      const factory = await getFactory(origin, botId);
+      const factory = await getFactory(origin, botId, q);
       const mod = await factory({
-        locateFile: (file: string) => `${origin}/wasm/bots/${file}`,
+        locateFile: (file: string) => `${origin}/wasm/bots/${file}${q}`,
         print: () => {},
         printErr: () => {},
       });

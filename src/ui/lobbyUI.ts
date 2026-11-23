@@ -981,6 +981,10 @@ export class LobbyUI {
 
   private render() {
     this.closeDropdown();
+    const icpNumber = (import.meta.env.VITE_ICP_NUMBER || '').trim();
+    const icpFooterHtml = icpNumber
+      ? `<footer class="icp-footer"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">${icpNumber.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] || c)}</a></footer>`
+      : '';
 
     this.container.innerHTML = `
       <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''}">
@@ -999,6 +1003,7 @@ export class LobbyUI {
 
         ${this.activeTab === 'ranked' ? this.renderRankedBody() : this.renderCustomBody()}
       </div>
+      ${icpFooterHtml}
     `;
 
     // Bind top tabs & settings button

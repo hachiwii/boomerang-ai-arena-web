@@ -176,7 +176,7 @@ export class GameRenderer {
   public async loadCharModel(charKey: string): Promise<VoxelModelData> {
     const cached = this.charModelCache.get(charKey);
     if (cached) return cached;
-    const resp = await fetch(`/assets/chars/${charKey}.json`);
+    const resp = await fetch(`/assets/chars/${charKey}.json?v=${__BUILD_ID__}`);
     if (!resp.ok) throw new Error(`Failed to load character model ${charKey}`);
     const data = (await resp.json()) as VoxelModelData;
     this.charModelCache.set(charKey, data);

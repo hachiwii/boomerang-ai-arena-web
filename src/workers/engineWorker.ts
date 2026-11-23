@@ -13,13 +13,14 @@ let engineStep: ((actionsText: string) => number) | null = null;
 let engineGetMapJson: (() => string) | null = null;
 let engineGetStateJson: (() => string) | null = null;
 
-async function ensureLoaded(origin: string) {
+async function ensureLoaded(origin: string, buildId?: string) {
   if (engineInit) return;
-  const url = `${origin}/wasm/engine.js`;
+  const q = buildId ? `?v=${encodeURIComponent(buildId)}` : '';
+  const url = `${origin}/wasm/engine.js${q}`;
   const imported = await import(/* @vite-ignore */ url);
   const factory = imported.default as (opts: Record<string, unknown>) => Promise<EngineWasmModule>;
   const mod = await factory({
-    locateFile: (file: string) => `${origin}/wasm/${file}`,
+    locateFile: (file: string) => `${origin}/wasm/${file}${q}`,
     print: () => {},
     printErr: () => {},
   });
@@ -37,16 +38,17 @@ self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      const { reqId, origin, mapText, nPlayers, seed, botSeats, humanSeat } = msg as {
+      const { reqId, origin, buildId, mapText, nPlayers, seed, botSeats, humanSeat } = msg as {
         reqId: number;
         origin: string;
+        buildId?: string;
         mapText: string;
         nPlayers: number;
         seed: number;
         botSeats: number[];
         humanSeat?: number;
       };
-      await ensureLoaded(origin);
+      await ensureLoaded(origin, buildId);
       const ok = engineInit!(mapText, nPlayers, seed);
       if (!ok) {
         self.postMessage({ type: 'error', reqId, error: engineLastErr!() });

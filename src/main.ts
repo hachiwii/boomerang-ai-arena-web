@@ -53,8 +53,8 @@ async function bootstrap() {
   const uiRoot = document.getElementById('ui-root') as HTMLDivElement;
 
   const [mapsResp, rosterResp] = await Promise.all([
-    fetch('/assets/maps/manifest.json'),
-    fetch('/assets/chars/roster.json'),
+    fetch(`/assets/maps/manifest.json?v=${__BUILD_ID__}`),
+    fetch(`/assets/chars/roster.json?v=${__BUILD_ID__}`),
   ]);
   const maps = (await mapsResp.json()) as MapMeta[];
   const roster = (await rosterResp.json()) as RosterEntry[];
