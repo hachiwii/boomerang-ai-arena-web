@@ -970,7 +970,7 @@ export class HudUI {
     });
   }
 
-  public showEloToast(rank: number, eloResult: EloUpdateResult) {
+  public showEloToast(rank: number, eloResult: EloUpdateResult, outcome: 'win' | 'draw' | 'loss' = 'loss') {
     if (this.eloToastTimer !== null) {
       window.clearTimeout(this.eloToastTimer);
       this.eloToastTimer = null;
@@ -978,12 +978,20 @@ export class HudUI {
     const modeLabel = eloResult.mode === 'solo' ? 'SOLO' : '混战';
     const deltaStr = `${eloResult.delta >= 0 ? '+' : ''}${eloResult.delta}`;
     const cls = eloResult.delta > 0 ? 'elo-up' : eloResult.delta < 0 ? 'elo-down' : '';
+    const outcomeHtml =
+      outcome === 'win'
+        ? '上局 <strong>🏆 胜利</strong>'
+        : outcome === 'draw'
+          ? '上局 <strong>🤝 平局</strong>'
+          : `上局第 <strong>#${rank}</strong> 名`;
+    this.eloToastEl.className = 'hud-elo-toast hidden';
+    void this.eloToastEl.offsetWidth;
     this.eloToastEl.className = `hud-elo-toast ${cls}`;
-    this.eloToastEl.innerHTML = `上局第 <strong>#${rank}</strong> 名 · ${modeLabel} ELO ${eloResult.oldRating} → <strong>${eloResult.newRating}</strong> <span class="het-delta">(${deltaStr})</span>`;
+    this.eloToastEl.innerHTML = `${outcomeHtml} · ${modeLabel} ELO ${eloResult.oldRating} → <strong>${eloResult.newRating}</strong> <span class="het-delta">(${deltaStr})</span>`;
     this.eloToastTimer = window.setTimeout(() => {
       this.eloToastTimer = null;
       this.eloToastEl.classList.add('hidden');
-    }, 2600);
+    }, 3000);
   }
 
   public cancelResultOverlay(restarting = false, isRanked = false) {

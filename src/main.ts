@@ -79,6 +79,8 @@ async function bootstrap() {
   let matchOverTimer: number | null = null;
   let matchRecorded = false;
   let historyRecorded = false;
+  let pendingMatchElo: { rank: number; outcome: 'win' | 'draw' | 'loss'; elo: EloUpdateResult } | null = null;
+  let resultOverlayShown = false;
   let restarting = false;
 
   // Frame-rate cap driven directly by SettingsStore ('vsync' | 60..360 | 'uncapped')
@@ -125,6 +127,8 @@ async function bootstrap() {
     clearMatchOverTimer();
     matchRecorded = false;
     historyRecorded = false;
+    pendingMatchElo = null;
+    resultOverlayShown = false;
     restarting = false;
     controller.stop();
     replayController.stop();
@@ -151,6 +155,8 @@ async function bootstrap() {
     clearMatchOverTimer();
     matchRecorded = false;
     historyRecorded = false;
+    pendingMatchElo = null;
+    resultOverlayShown = false;
     restarting = false;
     controller.stop();
     replayController.stop();
@@ -197,16 +203,22 @@ async function bootstrap() {
         matchRecorded = true;
         const eloResult = leaderboard.recordHumanEarlyExit(activeConfig, st);
         if (eloResult) {
-          hudUI.showEloToast(st.players[hSeat].rank, eloResult);
+          hudUI.showEloToast(st.players[hSeat].rank, eloResult, 'loss');
           persistCurrentMatchHistory(eloResult, true);
         }
       }
+    } else if (!resultOverlayShown && pendingMatchElo) {
+      // Match already ended (e.g. SOLO win/loss/draw or FFA finish) and player pressed R early
+      // before the 1.6s result card popped up -> show the Elo settlement toast!
+      hudUI.showEloToast(pendingMatchElo.rank, pendingMatchElo.elo, pendingMatchElo.outcome);
     }
 
     const isRanked = activeConfig.matchMode !== 'custom';
     hudUI.cancelResultOverlay(true, isRanked);
     matchRecorded = false;
     historyRecorded = false;
+    pendingMatchElo = null;
+    resultOverlayShown = false;
     lobbyUI.setCliffGuard(input.isCliffGuard());
 
     let cfg: MatchConfig;
@@ -403,6 +415,21 @@ async function bootstrap() {
       if (activeConfig && !matchRecorded) {
         matchRecorded = true;
         eloResult = leaderboard.recordMatch(activeConfig, finalState);
+        if (eloResult) {
+          const hSeat = controller.getHumanSeat();
+          const hp = hSeat >= 0 ? finalState.players[hSeat] : null;
+          const outcome: 'win' | 'draw' | 'loss' =
+            finalState.winner >= 0 && finalState.winner === hSeat
+              ? 'win'
+              : finalState.winner === -1 && hp?.rank === 1
+                ? 'draw'
+                : 'loss';
+          pendingMatchElo = {
+            rank: hp?.rank ?? activeConfig.slots.length,
+            outcome,
+            elo: eloResult,
+          };
+        }
       }
       persistCurrentMatchHistory(eloResult, false);
       // Wait 1.6s so players see the victory celebration & confetti, then show result card + auto return!
@@ -410,6 +437,8 @@ async function bootstrap() {
       matchOverTimer = window.setTimeout(() => {
         matchOverTimer = null;
         if (mode === 'playing') {
+          resultOverlayShown = true;
+          pendingMatchElo = null;
           hudUI.showMatchResult(finalState, eloResult);
         }
       }, 1600);
@@ -432,6 +461,8 @@ async function bootstrap() {
       clearMatchOverTimer();
       matchRecorded = false;
       historyRecorded = false;
+      pendingMatchElo = null;
+      resultOverlayShown = false;
       restarting = false;
       replayController.stop();
       historyModal.close();
