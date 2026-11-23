@@ -406,13 +406,11 @@ export class GameRenderer {
     this.previewMode = true;
     this.activeMapData = mapData;
     this.activeThemeName = themeName;
+    this.resetCameraToOverview({ nx: mapData.nx, ny: mapData.ny, cell: mapData.cell });
     this.applyThemeLighting(themeName);
     this.arena = this.createArenaInstance(mapData, themeName);
     this.scene.add(this.arena.root);
     this.positionSunForArena();
-    this.camTargetX = this.arena.widthM * 0.5;
-    this.camTargetZ = this.arena.heightM * 0.5;
-    this.recomputeCameraFit();
   }
 
   public async setupMatch(
@@ -432,12 +430,13 @@ export class GameRenderer {
     this.gameSpeed = Math.max(0.1, Math.min(2.0, speed || 1.0));
     this.tickIntervalMs = LOGIC_DT_MS / this.gameSpeed;
 
+    // Reset camera to the new map's clean overhead overview BEFORE building & mounting the new arena
+    this.resetCameraToOverview({ nx: mapData.nx, ny: mapData.ny, cell: mapData.cell });
+
     this.applyThemeLighting(themeName);
     this.arena = this.createArenaInstance(mapData, themeName);
     this.scene.add(this.arena.root);
 
-    const cx = this.arena.widthM * 0.5;
-    const cz = this.arena.heightM * 0.5;
     this.positionSunForArena();
 
     // Load voxel character models & construct rigs
@@ -477,9 +476,7 @@ export class GameRenderer {
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;
 
-    this.camTargetX = cx;
-    this.camTargetZ = cz;
-    this.recomputeCameraFit();
+    this.resetCameraToOverview({ nx: mapData.nx, ny: mapData.ny, cell: mapData.cell });
   }
 
   public setCountdownStage(stage: CountdownStage) {
@@ -619,11 +616,10 @@ export class GameRenderer {
     else eyeEl.innerHTML = '';
   }
 
-  private recomputeCameraFit() {
-    if (!this.arena) return;
+  private recomputeCameraFitForSize(widthM: number, heightM: number) {
     const { width: vw, height: vh } = this.getViewportSize();
-    const w = this.arena.widthM + 2.2;
-    const h = this.arena.heightM + 2.4;
+    const w = widthM + 2.2;
+    const h = heightM + 2.4;
     const aspect = Math.max(0.7, vw / Math.max(1, vh));
     const vFovRad = (CAM_FOV * Math.PI) / 180;
     const tanV = Math.tan(vFovRad * 0.5);
@@ -633,6 +629,47 @@ export class GameRenderer {
     const distForW = (w * 0.5) / (tanH * 0.86);
     const distForH = ((h * 0.5) * Math.sin(PITCH_RAD)) / (tanV * 0.78);
     this.camDist = Math.max(22, distForW, distForH);
+  }
+
+  private recomputeCameraFit() {
+    if (!this.arena) return;
+    this.recomputeCameraFitForSize(this.arena.widthM, this.arena.heightM);
+  }
+
+  /**
+   * Immediately clears any active close-up cinematic / screen shake / foreground fade and
+   * snaps the camera back to the clean overhead overview framing BEFORE loading a new map.
+   */
+  public resetCameraToOverview(mapDims?: { nx: number; ny: number; cell?: number }) {
+    this.cinematicDirector = null;
+    this.shakeAmp = 0;
+    this.overElapsedSimSec = 0;
+    this.nextWinnerRibbonSec = -1;
+    this.winnerRibbonWave = 0;
+
+    if (mapDims) {
+      const cs = (mapDims.cell ?? 500) / 1000;
+      const widthM = mapDims.nx * cs;
+      const heightM = mapDims.ny * cs;
+      this.camTargetX = widthM * 0.5;
+      this.camTargetZ = heightM * 0.5;
+      this.recomputeCameraFitForSize(widthM, heightM);
+    } else if (this.arena) {
+      this.camTargetX = this.arena.widthM * 0.5;
+      this.camTargetZ = this.arena.heightM * 0.5;
+      this.recomputeCameraFit();
+    }
+
+    const y = this.camDist * Math.sin(PITCH_RAD);
+    const z = this.camTargetZ + this.camDist * Math.cos(PITCH_RAD) - 0.35;
+    this.camera.position.set(this.camTargetX, y, z);
+    this.camera.lookAt(this.camTargetX, 0, this.camTargetZ - 0.35);
+    this.camera.updateMatrixWorld();
+
+    if (this.arena) {
+      this._focusVec.set(this.camTargetX, 0, this.camTargetZ);
+      this.arena.updateCloseupOcclusion(this.camera.position, this._focusVec, 0, 1);
+    }
   }
 
   public setCinematicDirector(director: CinematicDirector | null) {

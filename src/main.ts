@@ -161,6 +161,7 @@ async function bootstrap() {
     resultOverlayShown = false;
     controller.stop();
     replayController.stop();
+    renderer.resetCameraToOverview();
     input.setEnabled(false);
     historyModal.close();
     activeConfig = cfg;
@@ -253,6 +254,7 @@ async function bootstrap() {
     replayIsLiveAi = false;
     controller.stop();
     replayController.stop();
+    renderer.resetCameraToOverview();
     input.setEnabled(false);
     activeConfig = null;
     activeMapData = null;
@@ -373,6 +375,7 @@ async function bootstrap() {
     }
 
     activeConfig = cfg;
+    renderer.resetCameraToOverview();
     void controller
       .start(cfg, { cinematic: getCinematicOptions(settings.get()) })
       .catch((err) => {
@@ -701,6 +704,7 @@ async function bootstrap() {
       restarting = false;
       replayIsLiveAi = false;
       replayController.stop();
+      renderer.resetCameraToOverview();
       historyModal.close();
       activeConfig = config;
       lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
