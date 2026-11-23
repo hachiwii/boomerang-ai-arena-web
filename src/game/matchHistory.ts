@@ -1,7 +1,16 @@
 import { EloUpdateResult } from './leaderboard';
 import { EngineMapData, MatchConfig, MatchMode, SlotConfig, TickSnapshot } from './types';
 
-export const MAX_HISTORY_RECORDS = 50;
+export const MAX_HISTORY_PER_MODE = 50;
+export const HISTORY_MODE_BUCKETS = ['ranked', 'cricket', 'custom'] as const;
+export type HistoryModeBucket = (typeof HISTORY_MODE_BUCKETS)[number];
+export const MAX_HISTORY_RECORDS = MAX_HISTORY_PER_MODE * HISTORY_MODE_BUCKETS.length;
+
+export function getHistoryModeBucket(matchMode: MatchMode): HistoryModeBucket {
+  if (matchMode === 'ranked-solo' || matchMode === 'ranked-ffa') return 'ranked';
+  if (matchMode === 'cricket') return 'cricket';
+  return 'custom';
+}
 
 const DB_NAME = 'boomerang_arena_history_v1';
 const DB_VERSION = 1;
@@ -121,8 +130,8 @@ export function buildMatchHistoryBundle(
 }
 
 /**
- * Local IndexedDB-backed match history store retaining the latest 50 matches
- * (Ranked SOLO, Ranked FFA, and Custom) with full tick snapshots for instant
+ * Local IndexedDB-backed match history store retaining up to 50 matches per mode
+ * (Ranked, Cricket, and Custom) with full tick snapshots for instant
  * spectator-perspective replay & timeline scrubbing.
  */
 export class MatchHistoryStore {
@@ -210,13 +219,10 @@ export class MatchHistoryStore {
         const allReq = sumStore.getAll();
         allReq.onsuccess = () => {
           const rows = (allReq.result as MatchHistorySummary[]) || [];
-          if (rows.length > MAX_HISTORY_RECORDS) {
-            rows.sort((a, b) => b.playedAt - a.playedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
-            const stale = rows.slice(MAX_HISTORY_RECORDS);
-            for (const old of stale) {
-              sumStore.delete(old.id);
-              repStore.delete(old.id);
-            }
+          const staleIds = this.findOverflowIds(rows);
+          for (const oldId of staleIds) {
+            sumStore.delete(oldId);
+            repStore.delete(oldId);
           }
         };
 
@@ -237,10 +243,50 @@ export class MatchHistoryStore {
     return rows.sort((a, b) => b.playedAt - a.playedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   }
 
+  private findOverflowIds(rows: MatchHistorySummary[]): string[] {
+    const byBucket: Record<HistoryModeBucket, MatchHistorySummary[]> = {
+      ranked: [],
+      cricket: [],
+      custom: [],
+    };
+    for (const r of rows) {
+      byBucket[getHistoryModeBucket(r.matchMode)].push(r);
+    }
+    const staleIds: string[] = [];
+    for (const bucket of HISTORY_MODE_BUCKETS) {
+      const list = byBucket[bucket];
+      if (list.length <= MAX_HISTORY_PER_MODE) continue;
+      this.sortSummaries(list);
+      for (const old of list.slice(MAX_HISTORY_PER_MODE)) {
+        staleIds.push(old.id);
+      }
+    }
+    return staleIds;
+  }
+
+  private trimRowsPerMode(rows: MatchHistorySummary[]): MatchHistorySummary[] {
+    const byBucket: Record<HistoryModeBucket, MatchHistorySummary[]> = {
+      ranked: [],
+      cricket: [],
+      custom: [],
+    };
+    for (const r of rows) {
+      byBucket[getHistoryModeBucket(r.matchMode)].push(r);
+    }
+    const kept: MatchHistorySummary[] = [];
+    for (const bucket of HISTORY_MODE_BUCKETS) {
+      const list = byBucket[bucket];
+      if (list.length === 0) continue;
+      this.sortSummaries(list);
+      kept.push(...list.slice(0, MAX_HISTORY_PER_MODE));
+    }
+    return this.sortSummaries(kept);
+  }
+
   public async listSummaries(): Promise<MatchHistorySummary[]> {
     const db = await this.openDb();
     if (!db) {
-      return this.sortSummaries(Array.from(this.memSummaries.values())).slice(0, MAX_HISTORY_RECORDS);
+      return this.trimRowsPerMode(Array.from(this.memSummaries.values()));
     }
 
     try {
@@ -254,9 +300,9 @@ export class MatchHistoryStore {
       const byId = new Map<string, MatchHistorySummary>();
       for (const r of rows) byId.set(r.id, r);
       for (const r of this.memSummaries.values()) byId.set(r.id, r);
-      return this.sortSummaries(Array.from(byId.values())).slice(0, MAX_HISTORY_RECORDS);
+      return this.trimRowsPerMode(Array.from(byId.values()));
     } catch {
-      return this.sortSummaries(Array.from(this.memSummaries.values())).slice(0, MAX_HISTORY_RECORDS);
+      return this.trimRowsPerMode(Array.from(this.memSummaries.values()));
     }
   }
 
@@ -333,11 +379,10 @@ export class MatchHistoryStore {
   }
 
   private pruneMemory() {
-    if (this.memSummaries.size <= MAX_HISTORY_RECORDS) return;
-    const sorted = this.sortSummaries(Array.from(this.memSummaries.values()));
-    for (const old of sorted.slice(MAX_HISTORY_RECORDS)) {
-      this.memSummaries.delete(old.id);
-      this.memReplays.delete(old.id);
+    const staleIds = this.findOverflowIds(Array.from(this.memSummaries.values()));
+    for (const oldId of staleIds) {
+      this.memSummaries.delete(oldId);
+      this.memReplays.delete(oldId);
     }
   }
 }

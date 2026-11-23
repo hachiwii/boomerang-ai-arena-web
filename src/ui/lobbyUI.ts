@@ -1516,7 +1516,7 @@ export class LobbyUI {
               <button class="lobby-tab ${this.activeTab === 'cricket' ? 'active' : ''}" id="tab-cricket">🦗 斗蛐蛐</button>
               <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">🎛️ 自定义对局</button>
             </div>
-            <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看最近 50 场对局历史与观战回放">📜 对局历史</button>
+            <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）">📜 对局历史</button>
             <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、帧率上限与键位设置">⚙️ 设置</button>
             <a
               class="lobby-github-btn"

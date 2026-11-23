@@ -1,7 +1,8 @@
 import {
+  getHistoryModeBucket,
   MatchHistoryStore,
   MatchHistorySummary,
-  MAX_HISTORY_RECORDS,
+  MAX_HISTORY_PER_MODE,
 } from '../game/matchHistory';
 import { Mp4ExportResult } from '../game/mp4Exporter';
 import { SettingsStore } from '../game/settings';
@@ -103,7 +104,7 @@ export class HistoryModal {
       <div class="history-head">
         <div class="history-head-left">
           <h2>📜 对局历史</h2>
-          <span class="history-count-pill" id="history-count-pill">已保存 0 / ${MAX_HISTORY_RECORDS} 场</span>
+          <span class="history-count-pill" id="history-count-pill">已保存 0 场 · 各模式上限 ${MAX_HISTORY_PER_MODE}</span>
         </div>
         <div class="history-head-right">
           <button type="button" class="history-clear-btn hidden" id="history-clear-all">清空历史</button>
@@ -294,7 +295,13 @@ export class HistoryModal {
   private syncHeaderControls() {
     const totalCount = this.summaries.length;
     const busy = this.activeExport !== null;
-    this.countPillEl.textContent = `已保存 ${totalCount} / ${MAX_HISTORY_RECORDS} 场`;
+    if (this.filter === 'all') {
+      this.countPillEl.textContent = `已保存 ${totalCount} 场 · 各模式上限 ${MAX_HISTORY_PER_MODE}`;
+    } else {
+      const modeName = this.filter === 'ranked' ? '排位赛' : this.filter === 'cricket' ? '斗蛐蛐' : '自定义';
+      const modeCount = this.filteredSummaries().length;
+      this.countPillEl.textContent = `${modeName} ${modeCount} / ${MAX_HISTORY_PER_MODE} 场`;
+    }
     this.clearAllBtn.classList.toggle('hidden', totalCount === 0);
     this.clearAllBtn.classList.toggle('confirm', this.confirmClear);
     this.clearAllBtn.textContent = this.confirmClear ? '确认清空全部？' : '清空历史';
@@ -316,16 +323,8 @@ export class HistoryModal {
   }
 
   private filteredSummaries(): MatchHistorySummary[] {
-    if (this.filter === 'ranked') {
-      return this.summaries.filter((m) => m.matchMode === 'ranked-solo' || m.matchMode === 'ranked-ffa');
-    }
-    if (this.filter === 'cricket') {
-      return this.summaries.filter((m) => m.matchMode === 'cricket');
-    }
-    if (this.filter === 'custom') {
-      return this.summaries.filter((m) => m.matchMode === 'custom');
-    }
-    return this.summaries;
+    if (this.filter === 'all') return this.summaries;
+    return this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === this.filter);
   }
 
   private updateExportProgressDom() {
@@ -499,9 +498,9 @@ export class HistoryModal {
 
   private render() {
     const totalCount = this.summaries.length;
-    const rankedCount = this.summaries.filter((m) => m.matchMode === 'ranked-solo' || m.matchMode === 'ranked-ffa').length;
-    const cricketCount = this.summaries.filter((m) => m.matchMode === 'cricket').length;
-    const customCount = this.summaries.filter((m) => m.matchMode === 'custom').length;
+    const rankedCount = this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === 'ranked').length;
+    const cricketCount = this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === 'cricket').length;
+    const customCount = this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === 'custom').length;
     const visible = this.filteredSummaries();
     const presetLabel = this.getExportPresetLabel();
 
@@ -527,7 +526,7 @@ export class HistoryModal {
     } else if (visible.length === 0) {
       const emptyHint =
         totalCount === 0
-          ? `完成任意排位赛或自定义对局后，将自动保存最近 ${MAX_HISTORY_RECORDS} 场的完整观战回放。`
+          ? `完成任意排位赛、斗蛐蛐或自定义对局后，每个模式各自动保存最近 ${MAX_HISTORY_PER_MODE} 场的完整观战回放。`
           : '当前筛选条件下暂无对局记录，试试切换到「全部」。';
       bodyHtml = `
         <div class="history-empty">
