@@ -196,7 +196,9 @@ export class HudUI {
         ? `${config.mapMeta.title} · SOLO 排位`
         : config.matchMode === 'ranked-ffa'
           ? `${config.mapMeta.title} · 混战排位`
-          : `${config.mapMeta.title}${humanSeat < 0 ? ' · 观战' : ''}${Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${config.speed.toFixed(1)}x` : ''}`;
+          : config.matchMode === 'cricket'
+            ? `${config.mapMeta.title} · 斗蛐蛐`
+            : `${config.mapMeta.title}${humanSeat < 0 ? ' · 观战' : ''}${Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${config.speed.toFixed(1)}x` : ''}`;
 
     this.topBar.innerHTML = `
       <div class="hud-players">
@@ -346,12 +348,22 @@ export class HudUI {
     this.nameplateLayer.classList.remove('hidden');
     this.root.classList.remove('hidden');
 
+    const isCricket = summary.matchMode === 'cricket';
     const modeTag =
       summary.matchMode === 'ranked-solo'
         ? 'SOLO 排位'
         : summary.matchMode === 'ranked-ffa'
           ? '混战排位'
-          : '自定义';
+          : isCricket
+            ? summary.slots.length === 2
+              ? '1v1'
+              : '4人混战'
+            : '自定义';
+    const replayBadge = this.replayIsLiveAi
+      ? isCricket
+        ? '🦗 斗蛐蛐'
+        : '🤖 AI 观战'
+      : '🎬 观战回放';
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
 
     this.topBar.innerHTML = `
@@ -375,16 +387,16 @@ export class HudUI {
       </div>
 
       <div class="hud-center-pill hud-replay-pill">
-        <div class="hud-map-label"><span class="hud-replay-tag">${this.replayIsLiveAi ? '🤖 AI 观战' : '🎬 观战回放'}</span> ${summary.mapTitle} · ${modeTag}</div>
+        <div class="hud-map-label"><span class="hud-replay-tag">${replayBadge}</span> ${summary.mapTitle} · ${modeTag}</div>
         <div class="hud-timer" id="hud-timer">40.0s</div>
         <div class="hud-collapse" id="hud-collapse">塌陷倒计时 12s</div>
       </div>
 
       <div class="hud-actions">
-        <div class="hud-perf" id="hud-perf">${this.replayIsLiveAi ? 'AI 观战' : '回放'} ${playback.speed.toFixed(1)}x</div>
+        <div class="hud-perf" id="hud-perf">${this.replayIsLiveAi ? (isCricket ? '斗蛐蛐' : 'AI 观战') : '回放'} ${playback.speed.toFixed(1)}x</div>
         ${
           this.replayIsLiveAi
-            ? `<button class="hud-btn" id="hud-ai-restart" title="使用当前配置重新开局 (${rstKey})">↺ 重开 (${rstKey})</button>`
+            ? `<button class="hud-btn" id="hud-ai-restart" title="${isCricket ? `按当前规则重新抽图和选手 (${rstKey})` : `使用当前配置重新开局 (${rstKey})`}">${isCricket ? `🎲 重抽 (${rstKey})` : `↺ 重开 (${rstKey})`}</button>`
             : ''
         }
         <button class="hud-btn" id="hud-replay-history" title="返回对局历史列表">📜 对局历史</button>
@@ -772,7 +784,11 @@ export class HudUI {
     computing = false,
   ) {
     if (!this.perfEl || !this.isReplayMode) return;
-    const prefix = this.replayIsLiveAi ? 'AI 观战' : '观战回放';
+    const prefix = this.replayIsLiveAi
+      ? this.matchMode === 'cricket'
+        ? '斗蛐蛐'
+        : 'AI 观战'
+      : '观战回放';
     const spdStr = paused ? '已暂停' : `${speed === 1 ? '1.0' : speed}x`;
     const simTag = computing ? ' · 推演中' : '';
     this.perfEl.textContent = `${prefix} ${spdStr}${simTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms)`;
@@ -879,7 +895,7 @@ export class HudUI {
       if (this.humanHintMove) this.humanHintMove.style.display = 'none';
       if (this.humanHintLeft) {
         this.humanHintLeft.innerHTML =
-          this.matchMode !== 'custom'
+          this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa'
             ? `已出局观战中 · 按 <kbd>${rst}</kbd> 重新匹配下一局`
             : `已出局观战中 · 按 <kbd>${rst}</kbd> 立即原配置重开`;
         this.humanHintLeft.classList.add('spectate-pill');
@@ -921,7 +937,7 @@ export class HudUI {
 
   public showMatchResult(finalState: TickSnapshot, eloResult: EloUpdateResult | null = null) {
     this.clearTimers();
-    const isRanked = this.matchMode !== 'custom';
+    const isRanked = this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa';
     if (isRanked && eloResult) {
       this.showRankedMatchResult(finalState, eloResult);
       return;

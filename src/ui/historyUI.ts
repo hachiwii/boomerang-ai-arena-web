@@ -6,7 +6,7 @@ import {
 import { Mp4ExportResult } from '../game/mp4Exporter';
 import { SettingsStore } from '../game/settings';
 
-type HistoryFilter = 'all' | 'ranked' | 'custom';
+type HistoryFilter = 'all' | 'ranked' | 'cricket' | 'custom';
 
 export interface HistoryModalCallbacks {
   onReplay: (matchId: string) => Promise<void> | void;
@@ -194,7 +194,10 @@ export class HistoryModal {
 
   private filteredSummaries(): MatchHistorySummary[] {
     if (this.filter === 'ranked') {
-      return this.summaries.filter((m) => m.matchMode !== 'custom');
+      return this.summaries.filter((m) => m.matchMode === 'ranked-solo' || m.matchMode === 'ranked-ffa');
+    }
+    if (this.filter === 'cricket') {
+      return this.summaries.filter((m) => m.matchMode === 'cricket');
     }
     if (this.filter === 'custom') {
       return this.summaries.filter((m) => m.matchMode === 'custom');
@@ -259,14 +262,16 @@ export class HistoryModal {
   }
 
   private renderRow(m: MatchHistorySummary): string {
-    const isRanked = m.matchMode !== 'custom';
+    const isRanked = m.matchMode === 'ranked-solo' || m.matchMode === 'ranked-ffa';
     const modeLabel =
       m.matchMode === 'ranked-solo'
         ? '⚔️ SOLO 排位'
         : m.matchMode === 'ranked-ffa'
           ? '👑 混战排位'
-          : `🎛️ 自定义${Math.abs((m.speed || 1) - 1) > 0.01 ? ` ${m.speed.toFixed(1)}x` : ''}`;
-    const modeCls = isRanked ? 'hm-mode-ranked' : 'hm-mode-custom';
+          : m.matchMode === 'cricket'
+            ? `🦗 斗蛐蛐 ${m.slots.length === 2 ? '1v1' : '4P'}`
+            : `🎛️ 自定义${Math.abs((m.speed || 1) - 1) > 0.01 ? ` ${m.speed.toFixed(1)}x` : ''}`;
+    const modeCls = isRanked ? 'hm-mode-ranked' : m.matchMode === 'cricket' ? 'hm-mode-cricket' : 'hm-mode-custom';
 
     const humanP = m.humanSeat >= 0 ? m.players[m.humanSeat] : null;
     let outcomeText = '';
@@ -371,8 +376,9 @@ export class HistoryModal {
 
   private render() {
     const totalCount = this.summaries.length;
-    const rankedCount = this.summaries.filter((m) => m.matchMode !== 'custom').length;
-    const customCount = totalCount - rankedCount;
+    const rankedCount = this.summaries.filter((m) => m.matchMode === 'ranked-solo' || m.matchMode === 'ranked-ffa').length;
+    const cricketCount = this.summaries.filter((m) => m.matchMode === 'cricket').length;
+    const customCount = this.summaries.filter((m) => m.matchMode === 'custom').length;
     const visible = this.filteredSummaries();
     const busy = this.activeExport !== null;
     const presetLabel = this.getExportPresetLabel();
@@ -444,6 +450,9 @@ export class HistoryModal {
             </button>
             <button type="button" class="history-filter-btn ${this.filter === 'ranked' ? 'active' : ''}" data-hfilter="ranked">
               🏆 排位赛 <span>${rankedCount}</span>
+            </button>
+            <button type="button" class="history-filter-btn ${this.filter === 'cricket' ? 'active' : ''}" data-hfilter="cricket">
+              🦗 斗蛐蛐 <span>${cricketCount}</span>
             </button>
             <button type="button" class="history-filter-btn ${this.filter === 'custom' ? 'active' : ''}" data-hfilter="custom">
               🎛️ 自定义 <span>${customCount}</span>

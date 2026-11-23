@@ -55,7 +55,9 @@ function buildGifFilename(bundle: MatchReplayBundle, startSec: number, endSec: n
       ? 'solo'
       : summary.matchMode === 'ranked-ffa'
         ? 'ffa'
-        : 'custom';
+        : summary.matchMode === 'cricket'
+          ? 'cricket'
+          : 'custom';
   const sTag = `${startSec.toFixed(1)}s`;
   const eTag = `${endSec.toFixed(1)}s`;
   return `boomerang_${modeTag}_${summary.mapId}_${stamp}_${sTag}-${eTag}_720p_${GIF_FPS}fps.gif`;

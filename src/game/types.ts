@@ -61,7 +61,11 @@ export interface MapMeta {
 }
 
 export type RankedMode = 'solo' | 'ffa';
-export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'custom';
+export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'cricket' | 'custom';
+
+export function isRankedMatchMode(mode: MatchMode): boolean {
+  return mode === 'ranked-solo' || mode === 'ranked-ffa';
+}
 
 export interface RosterEntry {
   id: string;

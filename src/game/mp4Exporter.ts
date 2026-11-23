@@ -170,7 +170,9 @@ function buildExportFilename(
       ? 'solo'
       : summary.matchMode === 'ranked-ffa'
         ? 'ffa'
-        : 'custom';
+        : summary.matchMode === 'cricket'
+          ? 'cricket'
+          : 'custom';
   const spdTag = speed === 1 ? '1x' : `${speed}x`;
   return `boomerang_${modeTag}_${summary.mapId}_${stamp}_${resolution}_${spdTag}.mp4`;
 }
@@ -339,7 +341,9 @@ export function drawBroadcastOverlay(
       ? 'SOLO 排位'
       : summary.matchMode === 'ranked-ffa'
         ? '混战排位'
-        : '自定义';
+        : summary.matchMode === 'cricket'
+          ? '斗蛐蛐'
+          : '自定义';
   const topTitle = `${summary.mapTitle} · ${modeTag}`;
   const remSec = Math.max(0, (800 - state.t) / 20);
   const timerStr = `${remSec.toFixed(1)}s`;
@@ -409,7 +413,11 @@ export function drawBroadcastOverlay(
         ? `🏆 胜者：${winnerSlot.displayName}`
         : '🤝 平局结束';
     let subline = `${summary.mapTitle} · 用时 ${(summary.durationTicks / 20).toFixed(1)}s`;
-    if (summary.matchMode !== 'custom' && summary.eloDelta !== null && summary.eloAfter !== null) {
+    if (
+      (summary.matchMode === 'ranked-solo' || summary.matchMode === 'ranked-ffa') &&
+      summary.eloDelta !== null &&
+      summary.eloAfter !== null
+    ) {
       const sign = summary.eloDelta >= 0 ? `+${summary.eloDelta}` : `${summary.eloDelta}`;
       subline += ` · ELO ${sign} → ${summary.eloAfter}`;
     }

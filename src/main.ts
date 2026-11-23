@@ -1,5 +1,6 @@
 import './style.css';
 import { SoundFX } from './audio/sfx';
+import { CricketStore } from './game/cricketStore';
 import { HumanInputController } from './game/humanInput';
 import { CinematicDirector } from './game/killCamDirector';
 import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
@@ -9,7 +10,7 @@ import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from '.
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { ReplayController } from './game/replayController';
 import { getCinematicOptions, GraphicsQualityOption, isBoundToAction, SettingsStore } from './game/settings';
-import { CellType, EngineMapData, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
+import { CellType, EngineMapData, isRankedMatchMode, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
 import { GameRenderer } from './render/renderer';
 import { HistoryModal } from './ui/historyUI';
 import { HudUI } from './ui/hudUI';
@@ -73,6 +74,7 @@ async function bootstrap() {
   const renderer = new GameRenderer(canvas, sfx, undefined, undefined, settings.get().graphicsQuality);
   input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
   const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
+  const cricketStore = new CricketStore(maps, roster);
   const matchHistory = new MatchHistoryStore();
 
   let mode: 'lobby' | 'playing' | 'replay' = 'lobby';
@@ -174,6 +176,17 @@ async function bootstrap() {
       if (savedHistory || !liveBundle) return;
       savedHistory = true;
       historyRecorded = true;
+      if (cfg.matchMode === 'cricket') {
+        const finalSum = liveBundle.summary;
+        cricketStore.recordMatchResult(
+          finalSum.players.map((p, seat) => ({
+            botId: p.botId,
+            kills: p.kills,
+            alive: p.alive,
+            won: finalSum.winner >= 0 && finalSum.winner === seat,
+          })),
+        );
+      }
       void matchHistory.saveBundle(liveBundle);
     };
 
@@ -266,7 +279,7 @@ async function bootstrap() {
     const st = controller.getCurrentState();
     if (!st) return false;
     // Once a ranked match is finished (result screen), R can also launch New Match
-    if (st.over && activeConfig.matchMode !== 'custom') return true;
+    if (st.over && isRankedMatchMode(activeConfig.matchMode)) return true;
     // During live match, only allowed once human is eliminated (spectating)
     const me = st.players[hSeat];
     return !!me && !me.alive;
@@ -276,6 +289,25 @@ async function bootstrap() {
     if (!activeConfig || restarting) return;
     restarting = true;
     clearMatchOverTimer();
+
+    if (activeConfig.matchMode === 'cricket') {
+      const freshCfg = lobbyUI.createCricketMatchConfig();
+      if (!freshCfg) {
+        restarting = false;
+        returnToLobby();
+        return;
+      }
+      void startCustomAiSpectator(freshCfg)
+        .catch((err) => {
+          console.error(err);
+          alert(`重抽失败：${err instanceof Error ? err.message : String(err)}`);
+          returnToLobby();
+        })
+        .finally(() => {
+          restarting = false;
+        });
+      return;
+    }
 
     const isPureCustomAi =
       activeConfig.matchMode === 'custom' && activeConfig.slots.every((s) => s.kind === 'bot');
@@ -315,7 +347,7 @@ async function bootstrap() {
       hudUI.showEloToast(pendingMatchElo.rank, pendingMatchElo.elo, pendingMatchElo.outcome);
     }
 
-    const isRanked = activeConfig.matchMode !== 'custom';
+    const isRanked = isRankedMatchMode(activeConfig.matchMode);
     hudUI.cancelResultOverlay(true, isRanked);
     matchRecorded = false;
     historyRecorded = false;
@@ -642,16 +674,17 @@ async function bootstrap() {
     },
   });
 
-  lobbyUI = new LobbyUI(uiRoot, maps, roster, leaderboard, settings, {
+  lobbyUI = new LobbyUI(uiRoot, maps, roster, leaderboard, cricketStore, settings, {
     onSelectMap: (map) => {
       if (mode === 'lobby') {
         void renderer.loadPreviewMap(parseQuickPreviewMap(map), map.theme);
       }
     },
     onStartMatch: (config) => {
-      const isPureCustomAi =
-        config.matchMode === 'custom' && config.slots.every((s) => s.kind === 'bot');
-      if (isPureCustomAi) {
+      const isPureAiSpectator =
+        (config.matchMode === 'custom' || config.matchMode === 'cricket') &&
+        config.slots.every((s) => s.kind === 'bot');
+      if (isPureAiSpectator) {
         void startCustomAiSpectator(config).catch((err) => {
           console.error(err);
           lobbyUI.setLoading(null);

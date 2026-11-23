@@ -1,3 +1,4 @@
+import { CricketFormat, CricketStore, CricketTier } from '../game/cricketStore';
 import { LeaderboardStore } from '../game/leaderboard';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
 import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
@@ -20,7 +21,7 @@ export interface LobbyCallbacks {
   onOpenSettings: () => void;
 }
 
-export type LobbyTab = 'ranked' | 'custom';
+export type LobbyTab = 'ranked' | 'cricket' | 'custom';
 
 /**
  * Generates an inline SVG avatar for the built-in generic humanoid (Human & Sparring hoodies)
@@ -148,6 +149,7 @@ export class LobbyUI {
   private readonly maps: MapMeta[];
   private readonly roster: RosterEntry[];
   private readonly leaderboard: LeaderboardStore;
+  private readonly cricket: CricketStore;
   private readonly settings: SettingsStore;
   private readonly leaderboardPanel: LeaderboardPanel;
   private readonly callbacks: LobbyCallbacks;
@@ -156,7 +158,16 @@ export class LobbyUI {
   private rankedMode: RankedMode = 'solo';
   private showLeaderboard = false;
   private mapPoolOpen = false;
+  private mapPoolTarget: 'ranked' | 'cricket' = 'ranked';
   private mapPoolWarnText: string | null = null;
+
+  // Cricket mode transient UI states
+  private draggingBotId: string | null = null;
+  private cricketNotice: { text: string; kind: 'warn' | 'ok' } | null = null;
+  private cricketNoticeTimer: number | null = null;
+  private cricketConfirmReset = false;
+  private cricketConfirmTimer: number | null = null;
+  private cricketShakeInvited = false;
 
   // Separate saved map pools for Ranked SOLO and Ranked FFA (default: all maps enabled)
   private rankedMapPools: Record<RankedMode, Set<string>>;
@@ -179,12 +190,14 @@ export class LobbyUI {
     maps: MapMeta[],
     roster: RosterEntry[],
     leaderboard: LeaderboardStore,
+    cricket: CricketStore,
     settings: SettingsStore,
     callbacks: LobbyCallbacks,
   ) {
     this.maps = maps;
     this.roster = roster;
     this.leaderboard = leaderboard;
+    this.cricket = cricket;
     this.settings = settings;
     this.callbacks = callbacks;
     this.selectedMapId = maps[0]?.id || 'twinlakes';
@@ -366,12 +379,18 @@ export class LobbyUI {
     this.loadingMessage = msg;
     const btn = this.container.querySelector<HTMLButtonElement>('#btn-start-match');
     if (btn) {
-      btn.disabled = msg !== null;
       if (msg) {
+        btn.disabled = true;
         btn.textContent = msg;
       } else if (this.activeTab === 'ranked') {
+        btn.disabled = false;
         btn.textContent = '开始对战';
+      } else if (this.activeTab === 'cricket') {
+        const ready = this.cricket.canStartMatch();
+        btn.disabled = !ready.ok;
+        btn.textContent = '🦗 开始斗蛐蛐';
       } else {
+        btn.disabled = false;
         btn.textContent = this.hasHuman() ? '开始对战' : '开始 AI 观战';
       }
     }
@@ -423,6 +442,61 @@ export class LobbyUI {
     if (this.loadingMessage) return;
     const cfg = this.createRankedMatchConfig(this.rankedMode);
     this.callbacks.onStartMatch(cfg);
+  }
+
+  /**
+   * Build a fresh Cricket ("斗蛐蛐") match config from the current map pool and bot pool:
+   * - Draw 1 map from the Cricket map pool
+   * - Include ALL invited bots + random draw from lottery to fill 2 (1v1) or 4 (4P FFA) seats
+   * - Randomize spawn seats
+   */
+  public createCricketMatchConfig(): MatchConfig | null {
+    const check = this.cricket.canStartMatch();
+    if (!check.ok) return null;
+
+    const pool = this.cricket.getMapPoolMetas();
+    const mapMeta = this.pickRandomMap(pool);
+    this.recordPlayedMap(mapMeta.id);
+
+    const botIds = this.cricket.drawMatchBotIds();
+    const drafts: DraftSlot[] = botIds.map((botId) => ({ kind: 'bot', botId }));
+    const slots = resolveSlots(drafts, this.roster);
+    const seed = (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0;
+
+    return {
+      matchMode: 'cricket',
+      mapId: mapMeta.id,
+      mapMeta,
+      slots,
+      seed: seed || 1,
+      speed: 1.0,
+      cliffGuard: false,
+    };
+  }
+
+  private startCricketMatch() {
+    if (this.loadingMessage) return;
+    const check = this.cricket.canStartMatch();
+    if (!check.ok) {
+      this.showCricketNotice(check.reason || '当前配置无法开局', 'warn');
+      return;
+    }
+    const cfg = this.createCricketMatchConfig();
+    if (!cfg) return;
+    this.callbacks.onStartMatch(cfg);
+  }
+
+  private showCricketNotice(text: string, kind: 'warn' | 'ok') {
+    this.cricketNotice = { text, kind };
+    if (this.cricketNoticeTimer !== null) window.clearTimeout(this.cricketNoticeTimer);
+    this.cricketNoticeTimer = window.setTimeout(() => {
+      this.cricketNotice = null;
+      this.cricketNoticeTimer = null;
+      if (this.activeTab === 'cricket' && !this.container.classList.contains('hidden')) {
+        this.render();
+      }
+    }, 2800);
+    this.render();
   }
 
   private startCustomMatch() {
@@ -579,7 +653,8 @@ export class LobbyUI {
     });
   }
 
-  private openMapPoolModal() {
+  private openMapPoolModal(target: 'ranked' | 'cricket' = 'ranked') {
+    this.mapPoolTarget = target;
     this.mapPoolOpen = true;
     this.mapPoolWarnText = null;
     this.renderMapPoolModal();
@@ -594,20 +669,22 @@ export class LobbyUI {
   }
 
   private renderMapPoolModal() {
+    const isCricket = this.mapPoolTarget === 'cricket';
     const mode = this.rankedMode;
-    const poolSet = this.rankedMapPools[mode];
-    const modeName = mode === 'solo' ? 'SOLO' : '四人混战';
+    const poolSet = isCricket ? this.cricket.getMapPoolSet() : this.rankedMapPools[mode];
+    const titleName = isCricket ? '斗蛐蛐图池' : `${mode === 'solo' ? 'SOLO' : '四人混战'} 地图池`;
 
     this.mapPoolModal.innerHTML = `
-      <div class="mappool-card" role="dialog" aria-label="排位赛地图池">
+      <div class="mappool-card" role="dialog" aria-label="${titleName}">
         <div class="mappool-head">
           <div>
-            <h3>${modeName} 地图池</h3>
+            <h3>${titleName}</h3>
             <p class="mappool-sub">已选 <strong>${poolSet.size}</strong> / ${this.maps.length} 张地图${poolSet.size > 3 ? ' · 最近 3 场不重复' : ''}</p>
           </div>
           <div class="mappool-head-actions">
             <button type="button" class="mappool-quick-btn" id="mp-select-all">全选</button>
             <button type="button" class="mappool-quick-btn" id="mp-select-std">仅标准图</button>
+            <button type="button" class="mappool-quick-btn" id="mp-select-large">仅大图</button>
             <button type="button" class="mappool-close-btn" id="mp-close">完成</button>
           </div>
         </div>
@@ -648,41 +725,55 @@ export class LobbyUI {
       this.render();
     });
 
-    this.mapPoolModal.querySelector('#mp-select-all')?.addEventListener('click', () => {
-      this.rankedMapPools[mode] = new Set(this.maps.map((m) => m.id));
+    const applyPoolIds = (ids: string[]) => {
+      if (ids.length === 0) return;
+      if (isCricket) {
+        this.cricket.setMapPool(ids);
+      } else {
+        this.rankedMapPools[mode] = new Set(ids);
+        this.saveMapPools();
+      }
       this.mapPoolWarnText = null;
-      this.saveMapPools();
       this.renderMapPoolModal();
       this.render();
+    };
+
+    this.mapPoolModal.querySelector('#mp-select-all')?.addEventListener('click', () => {
+      applyPoolIds(this.maps.map((m) => m.id));
     });
 
     this.mapPoolModal.querySelector('#mp-select-std')?.addEventListener('click', () => {
-      const std = this.maps.filter((m) => m.category === 'standard').map((m) => m.id);
-      if (std.length > 0) {
-        this.rankedMapPools[mode] = new Set(std);
-        this.mapPoolWarnText = null;
-        this.saveMapPools();
-        this.renderMapPoolModal();
-        this.render();
-      }
+      applyPoolIds(this.maps.filter((m) => m.category === 'standard').map((m) => m.id));
+    });
+
+    this.mapPoolModal.querySelector('#mp-select-large')?.addEventListener('click', () => {
+      applyPoolIds(this.maps.filter((m) => m.category === 'large').map((m) => m.id));
     });
 
     this.mapPoolModal.querySelectorAll<HTMLButtonElement>('[data-pool-map]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const id = btn.dataset.poolMap!;
-        const set = this.rankedMapPools[mode];
-        if (set.has(id)) {
-          if (set.size <= 1) {
+        if (isCricket) {
+          if (!this.cricket.toggleMap(id)) {
             this.mapPoolWarnText = '图池内至少保留 1 张地图';
             this.renderMapPoolModal();
             return;
           }
-          set.delete(id);
         } else {
-          set.add(id);
+          const set = this.rankedMapPools[mode];
+          if (set.has(id)) {
+            if (set.size <= 1) {
+              this.mapPoolWarnText = '图池内至少保留 1 张地图';
+              this.renderMapPoolModal();
+              return;
+            }
+            set.delete(id);
+          } else {
+            set.add(id);
+          }
+          this.saveMapPools();
         }
         this.mapPoolWarnText = null;
-        this.saveMapPools();
         this.renderMapPoolModal();
         this.render();
       });
@@ -803,6 +894,312 @@ export class LobbyUI {
         ${this.renderControlsLegend('ranked-controls-legend')}
       </div>
     `;
+  }
+
+  private renderCricketCard(entry: RosterEntry, tier: CricketTier): string {
+    const elo = this.cricket.getFixedElo(entry);
+    const st = this.cricket.getBotStats(entry.id);
+    const hasGames = st.matches > 0;
+    const winPct = hasGames ? `${Math.round((st.wins / st.matches) * 100)}%` : '--';
+    const kdNum = st.deaths === 0 ? st.kills : st.kills / st.deaths;
+    const kdStr = hasGames ? kdNum.toFixed(2) : '--';
+    const eloHtml =
+      elo !== null
+        ? `<span class="cc-elo" title="固定 ELO 分数">${elo}</span>`
+        : `<span class="cc-elo is-sparring" title="陪练角色">陪练</span>`;
+    const tooltip = `${entry.name}${elo !== null ? ` · 固定 ELO ${elo}` : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
+
+    return `
+      <div
+        class="cricket-card is-tier-${tier}"
+        draggable="true"
+        data-bot-id="${entry.id}"
+        data-bot-tier="${tier}"
+        title="${tooltip}"
+      >
+        <div class="cc-top">
+          <img class="cc-avatar" src="${avatarForBotEntry(entry)}" alt="${entry.shortName}" style="border-color:${entry.color}" draggable="false" />
+          <div class="cc-name-wrap">
+            <span class="cc-name">${entry.shortName}</span>
+          </div>
+          ${eloHtml}
+        </div>
+        <div class="cc-metrics">
+          <span class="cc-metric ${hasGames ? '' : 'is-empty'}">胜率 <strong>${winPct}</strong></span>
+          <span class="cc-metric ${hasGames ? '' : 'is-empty'}">KD <strong>${kdStr}</strong></span>
+        </div>
+      </div>
+    `;
+  }
+
+  private renderCricketBody(): string {
+    const fmt = this.cricket.getFormat();
+    const maxP = this.cricket.getMaxPlayers();
+    const poolCount = this.cricket.getMapPoolMetas().length;
+    const invitedIds = this.cricket.getTierIds('invited');
+    const lotteryIds = this.cricket.getTierIds('lottery');
+    const excludedIds = this.cricket.getTierIds('excluded');
+    const rosterById = new Map(this.roster.map((r) => [r.id, r]));
+    const ready = this.cricket.canStartMatch();
+    const remainDraw = Math.max(0, maxP - invitedIds.length);
+    const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
+
+    const renderList = (ids: string[], tier: CricketTier) =>
+      ids
+        .map((id) => rosterById.get(id))
+        .filter((e): e is RosterEntry => Boolean(e))
+        .map((e) => this.renderCricketCard(e, tier))
+        .join('');
+
+    const emptyInvitedSlots = Array.from({ length: remainDraw }, (_, i) => `
+      <div class="cricket-empty-slot" aria-hidden="true">
+        <span>+ 拖拽角色设为直邀 (${invitedIds.length + i + 1}/${maxP})</span>
+      </div>
+    `).join('');
+
+    const noticeHtml = this.cricketNotice
+      ? `<div class="cricket-notice is-${this.cricketNotice.kind}">${this.cricketNotice.text}</div>`
+      : !ready.ok && ready.reason
+        ? `<div class="cricket-notice is-warn">${ready.reason}</div>`
+        : '';
+
+    return `
+      <div class="cricket-panel">
+        <div class="cricket-toolbar">
+          <div class="cricket-toolbar-left">
+            <div class="cricket-format-seg" role="tablist" aria-label="斗蛐蛐赛制">
+              <button type="button" class="cricket-fmt-btn ${fmt === '1v1' ? 'active' : ''}" data-cricket-format="1v1">
+                ⚔️ 1v1 <span>2人</span>
+              </button>
+              <button type="button" class="cricket-fmt-btn ${fmt === 'ffa4' ? 'active' : ''}" data-cricket-format="ffa4">
+                👑 4人混战 <span>4人</span>
+              </button>
+            </div>
+            <button type="button" class="mappool-trigger-btn cricket-mappool-btn" id="btn-open-cricket-mappool">
+              <span class="mpt-icon">🗺️</span>
+              <span>图池</span>
+              <span class="mpt-count">${poolCount} / ${this.maps.length}</span>
+            </button>
+          </div>
+          <div class="cricket-toolbar-right">
+            <button
+              type="button"
+              class="start-btn cricket-start-btn"
+              id="btn-start-match"
+              ${this.loadingMessage || !ready.ok ? 'disabled' : ''}
+            >
+              ${this.loadingMessage || '🦗 开始斗蛐蛐'}
+            </button>
+          </div>
+        </div>
+
+        ${noticeHtml}
+
+        <div class="cricket-board">
+          <section
+            class="cricket-zone cricket-zone-invited ${invitedIds.length >= maxP ? 'is-at-cap' : ''} ${this.cricketShakeInvited ? 'is-shake' : ''}"
+            data-drop-tier="invited"
+          >
+            <div class="cz-head">
+              <div class="cz-title-group">
+                <span class="cz-dot"></span>
+                <h3>直邀</h3>
+                <span class="cz-count">${invitedIds.length} / ${maxP}</span>
+              </div>
+              <span class="cz-sub">全部出战 · 不可超过总人数</span>
+            </div>
+            <div class="cricket-invited-row" style="--max-invited:${maxP}">
+              ${renderList(invitedIds, 'invited')}
+              ${emptyInvitedSlots}
+            </div>
+          </section>
+
+          <div class="cricket-bottom-split">
+            <section class="cricket-zone cricket-zone-lottery" data-drop-tier="lottery">
+              <div class="cz-head">
+                <div class="cz-title-group">
+                  <span class="cz-dot"></span>
+                  <h3>抽签</h3>
+                  <span class="cz-count">${lotteryIds.length}</span>
+                </div>
+                <span class="cz-sub">${remainDraw > 0 ? `随机抽取 ${remainDraw} 名补齐` : '名额已由直邀占满'}</span>
+              </div>
+              <div class="cricket-card-grid">
+                ${lotteryIds.length > 0 ? renderList(lotteryIds, 'lottery') : '<div class="cricket-zone-empty">拖拽角色卡到此处加入抽签池</div>'}
+              </div>
+            </section>
+
+            <section class="cricket-zone cricket-zone-excluded" data-drop-tier="excluded">
+              <div class="cz-head">
+                <div class="cz-title-group">
+                  <span class="cz-dot"></span>
+                  <h3>落选</h3>
+                  <span class="cz-count">${excludedIds.length}</span>
+                </div>
+                <span class="cz-sub">不参与本轮抽签</span>
+              </div>
+              <div class="cricket-card-grid">
+                ${excludedIds.length > 0 ? renderList(excludedIds, 'excluded') : '<div class="cricket-zone-empty">拖拽角色卡到此处移出本轮</div>'}
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <div class="cricket-footer">
+          <span class="cricket-footer-hint">拖拽角色卡在三区自由移动 · 随机抽图并随机站位 · 对局中按 <kbd>${rstKey}</kbd> 按相同规则重抽</span>
+          <div class="cricket-reset-wrap">
+            ${
+              this.cricketConfirmReset
+                ? `<button type="button" class="cricket-reset-btn confirm" id="btn-cricket-reset-confirm">确认重置胜率/KD？</button>
+                   <button type="button" class="cricket-reset-cancel" id="btn-cricket-reset-cancel">取消</button>`
+                : `<button type="button" class="cricket-reset-btn" id="btn-cricket-reset" title="重置所有角色胜率与 KD，保留固定 ELO 分数">↺ 重置数据</button>`
+            }
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  private bindCricketEvents() {
+    this.container.querySelectorAll<HTMLButtonElement>('[data-cricket-format]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const next = btn.dataset.cricketFormat as CricketFormat;
+        if (next === this.cricket.getFormat()) return;
+        const demoted = this.cricket.setFormat(next);
+        if (demoted > 0) {
+          this.showCricketNotice(`切换至 1v1，已将超出的 ${demoted} 名直邀移入抽签池`, 'ok');
+        } else {
+          this.cricketNotice = null;
+          this.render();
+        }
+      });
+    });
+
+    this.container.querySelector('#btn-open-cricket-mappool')?.addEventListener('click', () => {
+      this.openMapPoolModal('cricket');
+    });
+
+    this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {
+      this.startCricketMatch();
+    });
+
+    this.container.querySelector('#btn-cricket-reset')?.addEventListener('click', () => {
+      this.cricketConfirmReset = true;
+      if (this.cricketConfirmTimer !== null) window.clearTimeout(this.cricketConfirmTimer);
+      this.cricketConfirmTimer = window.setTimeout(() => {
+        this.cricketConfirmReset = false;
+        this.cricketConfirmTimer = null;
+        if (this.activeTab === 'cricket') this.render();
+      }, 5000);
+      this.render();
+    });
+
+    this.container.querySelector('#btn-cricket-reset-cancel')?.addEventListener('click', () => {
+      this.cricketConfirmReset = false;
+      if (this.cricketConfirmTimer !== null) {
+        window.clearTimeout(this.cricketConfirmTimer);
+        this.cricketConfirmTimer = null;
+      }
+      this.render();
+    });
+
+    this.container.querySelector('#btn-cricket-reset-confirm')?.addEventListener('click', () => {
+      this.cricketConfirmReset = false;
+      if (this.cricketConfirmTimer !== null) {
+        window.clearTimeout(this.cricketConfirmTimer);
+        this.cricketConfirmTimer = null;
+      }
+      this.cricket.resetStats();
+      this.showCricketNotice('已重置战绩数据（固定 ELO 分数已保留）', 'ok');
+    });
+
+    const clearDragVisuals = () => {
+      this.container.querySelectorAll('.cricket-zone').forEach((z) => {
+        z.classList.remove('is-drag-over', 'is-drag-full');
+      });
+      this.container.querySelectorAll('.cricket-card').forEach((c) => {
+        c.classList.remove('is-dragging', 'is-drop-before');
+      });
+    };
+
+    this.container.querySelectorAll<HTMLElement>('.cricket-card').forEach((card) => {
+      card.addEventListener('dragstart', (e) => {
+        const botId = card.dataset.botId;
+        if (!botId) return;
+        this.draggingBotId = botId;
+        if (e.dataTransfer) {
+          e.dataTransfer.setData('text/plain', botId);
+          e.dataTransfer.effectAllowed = 'move';
+        }
+        window.requestAnimationFrame(() => card.classList.add('is-dragging'));
+      });
+
+      card.addEventListener('dragend', () => {
+        this.draggingBotId = null;
+        clearDragVisuals();
+      });
+    });
+
+    this.container.querySelectorAll<HTMLElement>('.cricket-zone').forEach((zoneEl) => {
+      const targetTier = zoneEl.dataset.dropTier as CricketTier;
+
+      zoneEl.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        const botId = this.draggingBotId;
+        const maxP = this.cricket.getMaxPlayers();
+        const isFull =
+          targetTier === 'invited' &&
+          this.cricket.getTierIds('invited').length >= maxP &&
+          (!botId || this.cricket.getBotTier(botId) !== 'invited');
+
+        if (e.dataTransfer) {
+          e.dataTransfer.dropEffect = 'move';
+        }
+        zoneEl.classList.toggle('is-drag-full', isFull);
+        zoneEl.classList.toggle('is-drag-over', !isFull);
+
+        this.container.querySelectorAll('.cricket-card.is-drop-before').forEach((c) => {
+          c.classList.remove('is-drop-before');
+        });
+        if (!isFull) {
+          const overCard = (e.target as Element | null)?.closest<HTMLElement>('.cricket-card');
+          if (overCard && overCard.dataset.botId && overCard.dataset.botId !== botId) {
+            overCard.classList.add('is-drop-before');
+          }
+        }
+      });
+
+      zoneEl.addEventListener('dragleave', (e) => {
+        const rel = e.relatedTarget as Node | null;
+        if (rel && zoneEl.contains(rel)) return;
+        zoneEl.classList.remove('is-drag-over', 'is-drag-full');
+        zoneEl.querySelectorAll('.cricket-card.is-drop-before').forEach((c) => {
+          c.classList.remove('is-drop-before');
+        });
+      });
+
+      zoneEl.addEventListener('drop', (e) => {
+        e.preventDefault();
+        const botId = this.draggingBotId || e.dataTransfer?.getData('text/plain') || '';
+        this.draggingBotId = null;
+        clearDragVisuals();
+        if (!botId) return;
+
+        const overCard = (e.target as Element | null)?.closest<HTMLElement>('.cricket-card');
+        const beforeId = overCard && overCard.dataset.botId !== botId ? overCard.dataset.botId : null;
+        const res = this.cricket.moveBot(botId, targetTier, beforeId);
+        if (!res.ok && res.reason === 'invited_full') {
+          this.cricketShakeInvited = true;
+          this.showCricketNotice(`直邀数量不能超过比赛总人数（当前上限 ${this.cricket.getMaxPlayers()} 人）`, 'warn');
+          window.setTimeout(() => {
+            this.cricketShakeInvited = false;
+          }, 420);
+          return;
+        }
+        this.cricketNotice = null;
+        this.render();
+      });
+    });
   }
 
   private renderCustomBody(): string {
@@ -987,8 +1384,15 @@ export class LobbyUI {
       ? `<footer class="icp-footer"><a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener noreferrer">${icpNumber.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] || c)}</a></footer>`
       : '';
 
+    const bodyHtml =
+      this.activeTab === 'ranked'
+        ? this.renderRankedBody()
+        : this.activeTab === 'cricket'
+          ? this.renderCricketBody()
+          : this.renderCustomBody();
+
     this.container.innerHTML = `
-      <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''}">
+      <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''} ${this.activeTab === 'cricket' ? 'lobby-card-cricket' : ''}">
         <header class="lobby-header">
           <div class="lobby-title-group">
             <h1>回旋镖大作战</h1>
@@ -996,6 +1400,7 @@ export class LobbyUI {
           <div class="lobby-nav-right lobby-nav-row">
             <div class="lobby-tabs">
               <button class="lobby-tab ${this.activeTab === 'ranked' ? 'active' : ''}" id="tab-ranked">🏆 排位赛</button>
+              <button class="lobby-tab ${this.activeTab === 'cricket' ? 'active' : ''}" id="tab-cricket">🦗 斗蛐蛐</button>
               <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">🎛️ 自定义对局</button>
             </div>
             <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看最近 50 场对局历史与观战回放">📜 对局历史</button>
@@ -1016,7 +1421,7 @@ export class LobbyUI {
           </div>
         </header>
 
-        ${this.activeTab === 'ranked' ? this.renderRankedBody() : this.renderCustomBody()}
+        ${bodyHtml}
       </div>
       ${icpFooterHtml}
     `;
@@ -1034,6 +1439,15 @@ export class LobbyUI {
       if (this.activeTab === 'ranked' && !this.showLeaderboard) return;
       this.activeTab = 'ranked';
       this.showLeaderboard = false;
+      this.closeMapPoolModal();
+      this.leaderboardPanel.hideTooltip();
+      this.render();
+    });
+    this.container.querySelector('#tab-cricket')?.addEventListener('click', () => {
+      if (this.activeTab === 'cricket') return;
+      this.activeTab = 'cricket';
+      this.showLeaderboard = false;
+      this.closeMapPoolModal();
       this.leaderboardPanel.hideTooltip();
       this.render();
     });
@@ -1070,7 +1484,7 @@ export class LobbyUI {
       });
 
       this.container.querySelector('#btn-open-map-pool')?.addEventListener('click', () => {
-        this.openMapPoolModal();
+        this.openMapPoolModal('ranked');
       });
 
       this.container.querySelector('#btn-toggle-cliff-guard')?.addEventListener('click', () => {
@@ -1081,6 +1495,12 @@ export class LobbyUI {
       this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {
         this.startRankedMatch();
       });
+      return;
+    }
+
+    // Cricket ("斗蛐蛐") tab bindings
+    if (this.activeTab === 'cricket') {
+      this.bindCricketEvents();
       return;
     }
 

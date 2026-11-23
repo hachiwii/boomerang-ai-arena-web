@@ -4294,3 +4294,579 @@ kbd {
   background: #3d7eff;
   color: #fff;
 }
+
+
+/* ---------- Cricket ("斗蛐蛐") Mode ---------- */
+.lobby-card-cricket {
+  width: min(1180px, 96vw);
+  padding: 16px 22px 14px;
+}
+
+.lobby-card-cricket .lobby-header {
+  padding-bottom: 12px;
+  margin-bottom: 12px;
+}
+
+.cricket-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.cricket-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cricket-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.cricket-toolbar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.cricket-format-seg {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.11);
+}
+
+.cricket-fmt-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text-dim);
+  padding: 7px 14px;
+  border-radius: 9px;
+  font-size: 13.5px;
+  font-weight: 800;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cricket-fmt-btn span {
+  font-size: 11px;
+  font-weight: 700;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(220, 232, 255, 0.72);
+}
+
+.cricket-fmt-btn:hover {
+  color: #fff;
+  background: rgba(255, 255, 255, 0.06);
+}
+
+.cricket-fmt-btn.active {
+  background: linear-gradient(135deg, rgba(61, 126, 255, 0.34), rgba(112, 76, 255, 0.32));
+  border-color: rgba(124, 174, 255, 0.62);
+  color: #fff;
+  box-shadow: 0 4px 14px rgba(61, 126, 255, 0.25);
+}
+
+.cricket-fmt-btn.active span {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+
+.cricket-mappool-btn {
+  padding: 9px 14px;
+}
+
+.cricket-start-btn {
+  width: auto !important;
+  margin-top: 0 !important;
+  padding: 10px 26px !important;
+  font-size: 14.5px !important;
+  border-radius: 12px !important;
+  background: linear-gradient(135deg, #f59f00, #ff6b2b) !important;
+  box-shadow: 0 6px 20px rgba(245, 138, 16, 0.36) !important;
+}
+
+.cricket-start-btn:hover:not(:disabled) {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+}
+
+.cricket-start-btn:disabled {
+  opacity: 0.48;
+  cursor: not-allowed;
+  transform: none;
+  box-shadow: none !important;
+}
+
+.cricket-notice {
+  padding: 8px 13px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-weight: 700;
+  border: 1px solid transparent;
+}
+
+.cricket-notice.is-warn {
+  background: rgba(255, 107, 74, 0.14);
+  border-color: rgba(255, 130, 96, 0.42);
+  color: #ffb8a8;
+}
+
+.cricket-notice.is-ok {
+  background: rgba(64, 210, 146, 0.14);
+  border-color: rgba(74, 224, 158, 0.4);
+  color: #a9f7d2;
+}
+
+.cricket-board {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.cricket-zone {
+  border-radius: 14px;
+  padding: 9px 11px 10px;
+  border: 1.5px solid rgba(255, 255, 255, 0.12);
+  background: rgba(14, 20, 36, 0.62);
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.cz-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.cz-title-group {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.cz-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.cz-head h3 {
+  font-size: 14px;
+  font-weight: 900;
+  letter-spacing: 0.4px;
+}
+
+.cz-count {
+  font-size: 11.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  padding: 1px 8px;
+  border-radius: 999px;
+}
+
+.cz-sub {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-weight: 600;
+}
+
+/* Gold Zone: 直邀 */
+.cricket-zone-invited {
+  background: linear-gradient(135deg, rgba(245, 179, 53, 0.13), rgba(168, 108, 16, 0.08));
+  border-color: rgba(247, 194, 78, 0.46);
+  box-shadow: inset 0 1px 0 rgba(255, 224, 138, 0.16);
+}
+
+.cricket-zone-invited .cz-dot {
+  background: #ffd15c;
+  box-shadow: 0 0 8px rgba(255, 204, 72, 0.75);
+}
+
+.cricket-zone-invited .cz-head h3 {
+  color: #ffe08a;
+}
+
+.cricket-zone-invited .cz-count {
+  background: rgba(255, 198, 66, 0.22);
+  border: 1px solid rgba(255, 204, 84, 0.45);
+  color: #ffe59c;
+}
+
+.cricket-zone-invited.is-at-cap .cz-count {
+  background: rgba(255, 184, 48, 0.34);
+  color: #fff2c6;
+}
+
+.cricket-zone-invited.is-drag-over {
+  border-color: #ffd56b;
+  background: linear-gradient(135deg, rgba(255, 196, 64, 0.24), rgba(188, 122, 18, 0.16));
+  box-shadow: 0 0 0 2px rgba(255, 208, 92, 0.34), inset 0 0 24px rgba(255, 204, 72, 0.12);
+}
+
+.cricket-zone-invited.is-drag-full {
+  border-color: #ff6b6b;
+  border-style: dashed;
+  background: rgba(255, 84, 84, 0.14);
+  box-shadow: 0 0 0 2px rgba(255, 107, 107, 0.32);
+}
+
+.cricket-zone-invited.is-shake {
+  animation: cricketShake 0.36s ease;
+}
+
+@keyframes cricketShake {
+  0%, 100% { transform: translateX(0); }
+  22% { transform: translateX(-6px); }
+  46% { transform: translateX(6px); }
+  72% { transform: translateX(-4px); }
+}
+
+.cricket-invited-row {
+  display: grid;
+  grid-template-columns: repeat(var(--max-invited, 4), minmax(0, 1fr));
+  gap: 9px;
+}
+
+.cricket-empty-slot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 54px;
+  border-radius: 10px;
+  border: 1.5px dashed rgba(255, 206, 92, 0.34);
+  background: rgba(255, 200, 68, 0.04);
+  color: rgba(255, 224, 146, 0.62);
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 5px 8px;
+  text-align: center;
+  user-select: none;
+}
+
+/* Bottom Split: Left = 抽签 (Blue), Right = 落选 (Gray) */
+.cricket-bottom-split {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: stretch;
+}
+
+@media (max-width: 860px) {
+  .cricket-bottom-split {
+    grid-template-columns: 1fr;
+  }
+  .cricket-invited-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Blue Zone: 抽签 */
+.cricket-zone-lottery {
+  background: linear-gradient(160deg, rgba(61, 126, 255, 0.13), rgba(32, 68, 156, 0.08));
+  border-color: rgba(88, 152, 255, 0.44);
+}
+
+.cricket-zone-lottery .cz-dot {
+  background: #5ca2ff;
+  box-shadow: 0 0 8px rgba(92, 162, 255, 0.72);
+}
+
+.cricket-zone-lottery .cz-head h3 {
+  color: #9ac5ff;
+}
+
+.cricket-zone-lottery .cz-count {
+  background: rgba(78, 142, 255, 0.22);
+  border: 1px solid rgba(108, 166, 255, 0.44);
+  color: #bdd8ff;
+}
+
+.cricket-zone-lottery.is-drag-over {
+  border-color: #74b2ff;
+  background: linear-gradient(160deg, rgba(72, 142, 255, 0.24), rgba(36, 78, 178, 0.15));
+  box-shadow: 0 0 0 2px rgba(92, 162, 255, 0.34);
+}
+
+/* Gray Zone: 落选 */
+.cricket-zone-excluded {
+  background: linear-gradient(160deg, rgba(130, 142, 164, 0.12), rgba(74, 82, 98, 0.08));
+  border-color: rgba(154, 166, 188, 0.32);
+}
+
+.cricket-zone-excluded .cz-dot {
+  background: #939eb4;
+}
+
+.cricket-zone-excluded .cz-head h3 {
+  color: #c2cadb;
+}
+
+.cricket-zone-excluded .cz-count {
+  background: rgba(150, 162, 184, 0.18);
+  border: 1px solid rgba(164, 176, 198, 0.32);
+  color: #ced6e6;
+}
+
+.cricket-zone-excluded.is-drag-over {
+  border-color: #b4bfd4;
+  background: linear-gradient(160deg, rgba(148, 160, 184, 0.22), rgba(88, 98, 118, 0.15));
+  box-shadow: 0 0 0 2px rgba(174, 186, 208, 0.28);
+}
+
+.cricket-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 7px;
+  min-height: 140px;
+  align-content: start;
+}
+
+@media (max-width: 1040px) {
+  .cricket-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.cricket-zone-empty {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 130px;
+  border-radius: 10px;
+  border: 1.5px dashed rgba(255, 255, 255, 0.14);
+  color: rgba(196, 208, 232, 0.54);
+  font-size: 12px;
+  font-weight: 600;
+  user-select: none;
+}
+
+/* Character Cards */
+.cricket-card {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 6px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(18, 25, 44, 0.88);
+  cursor: grab;
+  user-select: none;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
+}
+
+.cricket-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.34);
+}
+
+.cricket-card:active {
+  cursor: grabbing;
+}
+
+.cricket-card.is-dragging {
+  opacity: 0.36;
+  transform: scale(0.96);
+}
+
+.cricket-card.is-drop-before {
+  box-shadow: -3px 0 0 0 #ffffff, 0 0 12px rgba(255, 255, 255, 0.35);
+}
+
+.cricket-card.is-tier-invited {
+  background: linear-gradient(155deg, rgba(56, 42, 16, 0.92), rgba(28, 24, 20, 0.92));
+  border-color: rgba(255, 202, 72, 0.56);
+  box-shadow: 0 3px 12px rgba(245, 178, 42, 0.18);
+}
+
+.cricket-card.is-tier-invited:hover {
+  border-color: rgba(255, 218, 112, 0.88);
+}
+
+.cricket-card.is-tier-lottery {
+  background: linear-gradient(155deg, rgba(20, 34, 64, 0.92), rgba(16, 24, 46, 0.92));
+  border-color: rgba(94, 156, 255, 0.44);
+}
+
+.cricket-card.is-tier-lottery:hover {
+  border-color: rgba(132, 184, 255, 0.8);
+}
+
+.cricket-card.is-tier-excluded {
+  background: linear-gradient(155deg, rgba(34, 39, 50, 0.86), rgba(24, 28, 36, 0.88));
+  border-color: rgba(152, 164, 186, 0.28);
+}
+
+.cricket-card.is-tier-excluded:hover {
+  border-color: rgba(182, 194, 214, 0.54);
+}
+
+.cricket-card.is-tier-excluded .cc-avatar {
+  filter: saturate(0.55);
+  opacity: 0.82;
+}
+
+.cricket-card.is-tier-excluded .cc-name {
+  color: #bfc7d8;
+}
+
+.cc-top {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+.cc-avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  border: 1.5px solid #fff;
+  object-fit: cover;
+  flex-shrink: 0;
+  background: rgba(0, 0, 0, 0.35);
+}
+
+.cc-name-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.cc-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 800;
+  color: #f4f7ff;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cc-elo {
+  font-size: 10.5px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  padding: 1.5px 5px;
+  border-radius: 5px;
+  background: rgba(255, 198, 72, 0.16);
+  border: 1px solid rgba(255, 204, 88, 0.35);
+  color: #ffe08a;
+  flex-shrink: 0;
+}
+
+.cc-elo.is-sparring {
+  background: rgba(154, 166, 188, 0.14);
+  border-color: rgba(154, 166, 188, 0.28);
+  color: #b4bece;
+  font-size: 10px;
+}
+
+.cc-metrics {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  font-size: 10.5px;
+  color: rgba(188, 202, 228, 0.78);
+  font-variant-numeric: tabular-nums;
+}
+
+.cc-metric strong {
+  color: #eef4ff;
+  font-weight: 800;
+}
+
+.cc-metric.is-empty strong {
+  color: rgba(176, 190, 216, 0.45);
+  font-weight: 700;
+}
+
+.cricket-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+}
+
+.cricket-footer-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.cricket-footer-hint kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.cricket-reset-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.cricket-reset-btn {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(214, 224, 244, 0.86);
+  padding: 6px 12px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.cricket-reset-btn:hover {
+  border-color: rgba(255, 134, 114, 0.55);
+  background: rgba(255, 96, 78, 0.14);
+  color: #ffd0c6;
+}
+
+.cricket-reset-btn.confirm {
+  border-color: rgba(255, 110, 92, 0.82);
+  background: rgba(224, 58, 44, 0.34);
+  color: #fff;
+}
+
+.cricket-reset-cancel {
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.08);
+  color: #dce6ff;
+  padding: 6px 10px;
+  border-radius: 9px;
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.hm-mode-cricket {
+  background: rgba(245, 168, 46, 0.18);
+  border-color: rgba(255, 198, 72, 0.45);
+  color: #ffe08a;
+}
