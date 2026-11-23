@@ -1,6 +1,7 @@
 import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
 import { CountdownStage } from '../game/matchController';
 import { MatchReplayBundle } from '../game/matchHistory';
+import { Mp4ExportResult } from '../game/mp4Exporter';
 import { ReplayPlaybackState } from '../game/replayController';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
 import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
@@ -15,6 +16,11 @@ export interface HudCallbacks {
   onReplayRestart?: () => void;
   onReplaySeek?: (tickIndex: number) => void;
   onReplaySpeed?: (speed: number) => void;
+  onReplayExportMp4?: (
+    bundle: MatchReplayBundle,
+    signal: AbortSignal,
+    onProgress: (progress01: number, phaseText: string) => void,
+  ) => Promise<Mp4ExportResult>;
 }
 
 function causeLabel(cause: number, killerName?: string): string {
@@ -86,6 +92,10 @@ export class HudUI {
   private replayTimeEl: HTMLElement | null = null;
   private replayBannerEl: HTMLElement | null = null;
   private replaySpeedBtns: HTMLButtonElement[] = [];
+  private replayExportBtn: HTMLButtonElement | null = null;
+  private replayExportStatusEl: HTMLElement | null = null;
+  private replayExportAbort: AbortController | null = null;
+  private replayExportNoticeTimer: number | null = null;
 
   constructor(parent: HTMLElement, settings: SettingsStore, callbacks: HudCallbacks) {
     this.settings = settings;
@@ -243,11 +253,27 @@ export class HudUI {
   }
 
   private clearReplayRefs() {
+    if (this.replayExportAbort) {
+      this.replayExportAbort.abort();
+      this.replayExportAbort = null;
+    }
+    if (this.replayExportNoticeTimer !== null) {
+      window.clearTimeout(this.replayExportNoticeTimer);
+      this.replayExportNoticeTimer = null;
+    }
     this.replayPlayBtn = null;
     this.replaySlider = null;
     this.replayTimeEl = null;
     this.replayBannerEl = null;
     this.replaySpeedBtns = [];
+    this.replayExportBtn = null;
+    this.replayExportStatusEl = null;
+  }
+
+  private getExportPresetLabel(): string {
+    const s = this.settings.get();
+    const spd = s.exportSpeed === 1 ? '1x' : `${s.exportSpeed}x`;
+    return `${s.exportResolution} · ${s.exportBitrateMbps} Mbps · ${spd}`;
   }
 
   public showReplay(bundle: MatchReplayBundle, playback: ReplayPlaybackState) {
@@ -350,8 +376,11 @@ export class HudUI {
         ? `🏆 回放结束 · 胜者：${winnerSlot.displayName}`
         : '🤝 回放结束 · 平局';
 
+    const exportPreset = this.getExportPresetLabel();
+
     this.bottomBar.innerHTML = `
       <div class="replay-dock">
+        <div class="replay-export-status hidden" id="replay-export-status"></div>
         <div class="replay-end-banner hidden" id="replay-end-banner">${endBannerText}</div>
         <div class="replay-bar">
           <button type="button" class="replay-ctrl-btn replay-play-btn" id="replay-play-btn" title="播放 / 暂停 (Space)">⏸ 暂停</button>
@@ -389,6 +418,13 @@ export class HudUI {
               )
               .join('')}
           </div>
+
+          <button
+            type="button"
+            class="replay-ctrl-btn replay-export-btn"
+            id="replay-export-btn"
+            title="导出本局观战回放 MP4（当前设置：${exportPreset}）"
+          >⬇ 导出</button>
         </div>
       </div>
     `;
@@ -403,6 +439,8 @@ export class HudUI {
     this.replayTimeEl = this.bottomBar.querySelector('#replay-time');
     this.replayBannerEl = this.bottomBar.querySelector('#replay-end-banner');
     this.replaySpeedBtns = Array.from(this.bottomBar.querySelectorAll<HTMLButtonElement>('[data-replay-speed]'));
+    this.replayExportBtn = this.bottomBar.querySelector('#replay-export-btn');
+    this.replayExportStatusEl = this.bottomBar.querySelector('#replay-export-status');
 
     this.replayPlayBtn?.addEventListener('click', () => {
       this.callbacks.onReplayTogglePause?.();
@@ -419,9 +457,96 @@ export class HudUI {
         this.callbacks.onReplaySpeed?.(Number(btn.dataset.replaySpeed));
       });
     }
+    this.replayExportBtn?.addEventListener('click', () => {
+      this.startReplayHudExport();
+    });
 
     this.lastTickState = null;
     this.updateReplayControls(playback);
+  }
+
+  private startReplayHudExport() {
+    if (!this.isReplayMode || !this.replayBundle || this.replayExportAbort || !this.callbacks.onReplayExportMp4) {
+      return;
+    }
+    const bundle = this.replayBundle;
+    const preset = this.getExportPresetLabel();
+    const abortCtrl = new AbortController();
+    this.replayExportAbort = abortCtrl;
+
+    if (this.replayExportNoticeTimer !== null) {
+      window.clearTimeout(this.replayExportNoticeTimer);
+      this.replayExportNoticeTimer = null;
+    }
+
+    if (this.replayExportBtn) {
+      this.replayExportBtn.disabled = true;
+      this.replayExportBtn.classList.add('is-exporting');
+      this.replayExportBtn.textContent = '导出 1%';
+    }
+
+    if (this.replayExportStatusEl) {
+      this.replayExportStatusEl.className = 'replay-export-status';
+      this.replayExportStatusEl.innerHTML = `
+        <div class="res-row">
+          <span class="res-text" id="res-text">🎬 正在导出 MP4 (${preset}) · 准备中...</span>
+          <span class="res-pct" id="res-pct">1%</span>
+          <button type="button" class="heb-cancel-btn" id="res-cancel">取消</button>
+        </div>
+        <div class="heb-track"><div class="heb-fill" id="res-fill" style="width:1%"></div></div>
+      `;
+      this.replayExportStatusEl.querySelector('#res-cancel')?.addEventListener('click', () => {
+        this.replayExportAbort?.abort();
+      });
+    }
+
+    const showResultBanner = (text: string, isOk: boolean) => {
+      if (!this.isReplayMode || !this.replayExportStatusEl) return;
+      this.replayExportStatusEl.className = `replay-export-status ${isOk ? 'is-ok' : 'is-err'}`;
+      this.replayExportStatusEl.textContent = text;
+      this.replayExportNoticeTimer = window.setTimeout(() => {
+        this.replayExportNoticeTimer = null;
+        this.replayExportStatusEl?.classList.add('hidden');
+      }, 4800);
+    };
+
+    void this.callbacks
+      .onReplayExportMp4(bundle, abortCtrl.signal, (p01, phaseText) => {
+        if (this.replayExportAbort !== abortCtrl) return;
+        const pct = Math.max(0, Math.min(100, Math.round(p01 * 100)));
+        if (this.replayExportBtn) this.replayExportBtn.textContent = `导出 ${pct}%`;
+        const txt = this.replayExportStatusEl?.querySelector('#res-text');
+        const pctEl = this.replayExportStatusEl?.querySelector('#res-pct');
+        const fill = this.replayExportStatusEl?.querySelector<HTMLElement>('#res-fill');
+        if (txt) txt.textContent = `🎬 正在导出 MP4 (${preset}) · ${phaseText}`;
+        if (pctEl) pctEl.textContent = `${pct}%`;
+        if (fill) fill.style.width = `${pct}%`;
+      })
+      .then((res) => {
+        if (this.replayExportAbort !== abortCtrl) return;
+        this.replayExportAbort = null;
+        if (this.replayExportBtn) {
+          this.replayExportBtn.disabled = false;
+          this.replayExportBtn.classList.remove('is-exporting');
+          this.replayExportBtn.textContent = '⬇ 导出';
+        }
+        const mb = res.sizeBytes < 1024 * 1024 ? `${(res.sizeBytes / 1024).toFixed(0)} KB` : `${(res.sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+        showResultBanner(`✅ 已下载 ${res.filename}（${mb} · ${res.width}×${res.height} · ${res.hasAudio ? '含音效' : '无音轨'}）`, true);
+      })
+      .catch((err) => {
+        if (this.replayExportAbort !== abortCtrl) return;
+        this.replayExportAbort = null;
+        if (this.replayExportBtn) {
+          this.replayExportBtn.disabled = false;
+          this.replayExportBtn.classList.remove('is-exporting');
+          this.replayExportBtn.textContent = '⬇ 导出';
+        }
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          showResultBanner('已取消 MP4 导出', false);
+        } else {
+          showResultBanner(`导出失败：${err instanceof Error ? err.message : String(err)}`, false);
+        }
+      });
   }
 
   public updateReplayControls(playback: ReplayPlaybackState) {
@@ -493,7 +618,13 @@ export class HudUI {
   }
 
   public refreshKeyHints() {
-    if (this.root.classList.contains('hidden') || this.isReplayMode) return;
+    if (this.root.classList.contains('hidden')) return;
+    if (this.isReplayMode) {
+      if (this.replayExportBtn) {
+        this.replayExportBtn.title = `导出本局观战回放 MP4（当前设置：${this.getExportPresetLabel()}）`;
+      }
+      return;
+    }
     this.renderBottomHints(this.humanSeat);
     if (this.lastTickState) {
       this.updateHumanActionHints(this.lastTickState);

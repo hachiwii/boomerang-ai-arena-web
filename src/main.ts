@@ -356,6 +356,21 @@ async function bootstrap() {
     onReplaySpeed: (spd) => {
       replayController.setSpeed(spd);
     },
+    onReplayExportMp4: async (bundle, signal, onProgress) => {
+      const s = settings.get();
+      const result = await exportReplayToMp4(bundle, {
+        resolution: s.exportResolution,
+        bitrateMbps: s.exportBitrateMbps,
+        speed: s.exportSpeed,
+        soundEnabled: s.soundEnabled,
+        volumePct: s.volume,
+        sharedCharModelCache: renderer.getCharModelCache(),
+        signal,
+        onProgress,
+      });
+      triggerMp4Download(result.blob, result.filename);
+      return result;
+    },
   });
   renderer.setNameplateLayer(hudUI.nameplateLayer);
 

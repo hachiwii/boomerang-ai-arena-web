@@ -15,6 +15,7 @@ interface TileInstanceRef {
   rndA: number;
   rndB: number;
   baseColor: THREE.Color;
+  modified?: boolean;
 }
 
 function hash2(x: number, y: number): number {
@@ -500,6 +501,7 @@ export class ArenaMap3D {
 
         if (fallStep >= 0 && gt >= fallStep) {
           // Falling into the cloud sea!
+          ti.modified = true;
           const u = gt - fallStep;
           if (u < 35) {
             const drop = 0.045 * u * u + 0.06 * u;
@@ -526,6 +528,7 @@ export class ArenaMap3D {
 
         if (fallStep >= 0 && gt >= fallStep - colWarn) {
           // Collapse warning: shake + urgent orange-red pulse!
+          ti.modified = true;
           const prog = (gt - (fallStep - colWarn)) / Math.max(1, colWarn);
           const amp = (0.014 + 0.032 * prog) * prog;
           const jx = Math.sin(elapsedSec * 46 + ti.rndA * 20) * amp;
@@ -544,6 +547,23 @@ export class ArenaMap3D {
             dirtyCol = true;
           }
           continue;
+        }
+
+        if (ti.modified) {
+          // Restore intact tile transform & original color after rewinding/restarting replay!
+          ti.modified = false;
+          if (!sway) {
+            this._dummy.position.set(ti.cx, ti.baseY, ti.cz);
+            this._dummy.rotation.set(0, ti.rotY, 0);
+            this._dummy.scale.set(ti.scaleX, ti.scaleY, ti.scaleZ);
+            this._dummy.updateMatrix();
+            mesh.setMatrixAt(ti.idx, this._dummy.matrix);
+            dirtyMat = true;
+          }
+          if (warnTint) {
+            mesh.setColorAt(ti.idx, ti.baseColor);
+            dirtyCol = true;
+          }
         }
 
         if (sway) {
