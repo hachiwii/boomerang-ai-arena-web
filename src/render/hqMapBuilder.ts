@@ -16,6 +16,7 @@ import {
   addHouse,
   addLandmarkFeature,
   addMesa,
+  BucketKind,
   hexLin,
   HqMeshBuilder,
   ICO1,
@@ -26,7 +27,7 @@ import {
   Vec3,
 } from './hqGeomBuilder';
 import { BridgeSpec, PaintedGroundResult, paintHighQualityGround } from './hqGroundPaint';
-import { getHqTheme, HqPalette, HqThemeSpec } from './hqThemes';
+import { getHqTheme, HqThemeSpec } from './hqThemes';
 
 export interface ArenaMapUpdateOpts {
   pauseClouds?: boolean;
@@ -49,13 +50,22 @@ export interface IArenaMap {
   dispose(): void;
 }
 
+/**
+ * Shared-material lazy-clone occluder entry:
+ * During normal gameplay every mesh shares the arena's tiny shared material pool (zero WebGL state churn!).
+ * Only when a foreground mesh actually blocks the close-up camera does it lazily clone & swap to its
+ * translucent `fadeMaterials`, then swap right back to `opaqueMaterials` once clear!
+ */
 export interface OccluderEntry {
-  materials: THREE.Material[];
+  meshes: THREE.Mesh[];
+  opaqueMaterials: THREE.Material[];
+  fadeMaterials: THREE.Material[] | null;
   baseOpacities: number[];
   box: THREE.Box3;
   isGrass: boolean;
   minOpacity: number;
   curOpacity: number;
+  usingFade: boolean;
   wave: number;
 }
 
@@ -80,9 +90,7 @@ export function segmentIntersectsExpandedBox(
   const maxZ = box.max.z + pad;
 
   const checkAxis = (orig: number, d: number, bMin: number, bMax: number): boolean => {
-    if (Math.abs(d) < 1e-6) {
-      return orig >= bMin && orig <= bMax;
-    }
+    if (Math.abs(d) < 1e-6) return orig >= bMin && orig <= bMax;
     let t1 = (bMin - orig) / d;
     let t2 = (bMax - orig) / d;
     if (t1 > t2) {
@@ -118,12 +126,13 @@ export function applyCloseupOcclusionStep(
     dist = _dirScratch.length();
     if (dist > 0.3) _dirScratch.divideScalar(dist);
   }
-  // Smooth blend strength [0..1] as camera glides from overview into close-up
   const strength = active ? Math.min(1, Math.max(0, (blend - 0.12) / 0.42)) : 0;
   const smoothK = dt > 0 ? 1 - Math.exp(-Math.min(0.1, dt) * 14) : 1;
 
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
+    if (!active && !e.usingFade && e.curOpacity >= 0.999) continue;
+
     let hit = false;
     if (strength > 0.01 && dist > 0.6) {
       const pad = e.isGrass ? 0.24 : 0.46;
@@ -133,24 +142,45 @@ export function applyCloseupOcclusionStep(
         hit = segmentIntersectsExpandedBox(camPos, _dirScratch, 0.05, tMax, e.box, pad);
       }
     }
+
     const targetOp = hit ? 1.0 - (1.0 - e.minOpacity) * strength : 1.0;
     const prev = e.curOpacity;
     const next = Math.abs(targetOp - prev) < 0.008 ? targetOp : prev + (targetOp - prev) * smoothK;
-    if (Math.abs(next - prev) < 0.001 && !hit && prev >= 0.999) continue;
     e.curOpacity = next;
 
-    const isTranslucent = next < 0.985;
-    for (let m = 0; m < e.materials.length; m++) {
-      const mat = e.materials[m];
-      const baseOp = e.baseOpacities[m];
-      const finalOp = baseOp * next;
-      const needTrans = isTranslucent || baseOp < 0.99;
-      if (mat.transparent !== needTrans) {
-        mat.transparent = needTrans;
-        mat.needsUpdate = true;
+    const wantFade = next < 0.985;
+    if (wantFade) {
+      if (!e.fadeMaterials) {
+        e.fadeMaterials = e.opaqueMaterials.map((m) => {
+          const cl = m.clone();
+          cl.transparent = true;
+          cl.depthWrite = false;
+          return cl;
+        });
       }
-      mat.opacity = finalOp;
-      mat.depthWrite = !isTranslucent && baseOp >= 0.99;
+      if (!e.usingFade) {
+        e.usingFade = true;
+        for (let k = 0; k < e.meshes.length; k++) {
+          e.meshes[k].material = e.fadeMaterials[k];
+        }
+      }
+      for (let k = 0; k < e.fadeMaterials.length; k++) {
+        e.fadeMaterials[k].opacity = e.baseOpacities[k] * next;
+      }
+    } else if (e.usingFade) {
+      e.usingFade = false;
+      for (let k = 0; k < e.meshes.length; k++) {
+        e.meshes[k].material = e.opaqueMaterials[k];
+      }
+    }
+  }
+}
+
+export function disposeOccluderEntries(entries: OccluderEntry[]) {
+  for (const e of entries) {
+    if (e.fadeMaterials) {
+      for (const m of e.fadeMaterials) m.dispose();
+      e.fadeMaterials = null;
     }
   }
 }
@@ -158,13 +188,28 @@ export function applyCloseupOcclusionStep(
 interface CollapseChunk {
   id: number;
   wave: number;
-  group: THREE.Group;
+  /** Terrain slab (top + cliff) — hidden while wave is intact, shown ONLY when wave enters warning/fall! */
+  terrainGroup: THREE.Group;
+  /** Always-mounted obstacle & tall-grass container riding with this chunk's pivot `(cx, 0, cz)`! */
+  propMount: THREE.Group;
+  topMesh: THREE.Mesh | null;
+  cliffMesh: THREE.Mesh | null;
   cx: number;
   cz: number;
   distFromCenter: number;
   rnd: [number, number, number, number, number, number];
-  warnMaterials: THREE.MeshLambertMaterial[];
+  usingWarnMat: boolean;
   modified: boolean;
+}
+
+interface WaveBundle {
+  wave: number;
+  /** Single merged static top + cliff mesh for the ENTIRE intact wave (only 2 draw calls!) */
+  intactTerrain: THREE.Group;
+  /** Single merged static surface details for this wave (only 1-2 draw calls!) */
+  intactDetails: THREE.Group;
+  chunks: CollapseChunk[];
+  mode: 'intact' | 'active' | 'fallen';
 }
 
 interface GrassClusterRef {
@@ -265,16 +310,14 @@ function rectsOfCells(
       h++;
     }
     for (let yy = y; yy < y + h; yy++) {
-      for (let xx = x; xx < x + w; xx++) {
-        left.delete(`${xx},${yy}`);
-      }
+      for (let xx = x; xx < x + w; xx++) left.delete(`${xx},${yy}`);
     }
     out.push([x, y, w, h]);
   }
   return out;
 }
 
-/** Build a fluffy multi-puff cloud BufferGeometry (4 merged soft spheres) for instancing. */
+/** Build a fluffy multi-puff cloud BufferGeometry (4 merged soft spheres) for single-draw-call instancing. */
 function buildFluffyCloudGeometry(): THREE.BufferGeometry {
   const puffs: [number, number, number, number, number, number][] = [
     [0, 0, 0, 1.0, 0.56, 0.85],
@@ -287,9 +330,7 @@ function buildFluffyCloudGeometry(): THREE.BufferGeometry {
   const sph = ICO1;
   for (const [ox, oy, oz, rx, ry, rz] of puffs) {
     for (const [a, b, c] of sph.tris) {
-      const va = sph.verts[a];
-      const vb = sph.verts[b];
-      const vc = sph.verts[c];
+      const va = sph.verts[a], vb = sph.verts[b], vc = sph.verts[c];
       pos.push(
         ox + va[0] * rx, oy + va[1] * ry, oz + va[2] * rz,
         ox + vb[0] * rx, oy + vb[1] * ry, oz + vb[2] * rz,
@@ -306,8 +347,11 @@ function buildFluffyCloudGeometry(): THREE.BufferGeometry {
 }
 
 /**
- * High-Quality Arena Builder faithfully porting the open-source
- * `chen-006/meow-ai-arena` Blender look into real-time WebGL2!
+ * High-Quality Arena Builder faithfully porting `chen-006/meow-ai-arena` into 240Hz-capable WebGL2:
+ * - Wave-merged intact terrain + details (~15-25 draw calls instead of 1,200+!)
+ * - Active-wave 4x4 rock chunks swap in ONLY during the brief collapse warning + fall window
+ * - Tiny shared material pool (7 opaque materials + 2 active-warning materials) with lazy cloning
+ *   ONLY for the 1-2 obstacles currently blocking a close-up camera!
  */
 export class HqArenaMap3D implements IArenaMap {
   public readonly root = new THREE.Group();
@@ -317,10 +361,18 @@ export class HqArenaMap3D implements IArenaMap {
   public readonly heightM: number;
 
   private readonly chunks: CollapseChunk[] = [];
+  private readonly waveBundles = new Map<number, WaveBundle>();
   private readonly cellChunkId: Int32Array;
   private readonly occluders: OccluderEntry[] = [];
   private readonly grassClusters: GrassClusterRef[] = [];
   private readonly groundResult: PaintedGroundResult;
+
+  // Shared arena materials (zero per-mesh WebGL material rebind churn!)
+  private readonly sharedTopMat: THREE.MeshLambertMaterial;
+  private readonly sharedCliffMat: THREE.MeshLambertMaterial;
+  private readonly warnTopMat: THREE.MeshLambertMaterial;
+  private readonly warnCliffMat: THREE.MeshLambertMaterial;
+  private readonly sharedBucketMats: Record<BucketKind, THREE.Material>;
 
   private cloudMesh!: THREE.InstancedMesh;
   private cloudData: CloudInfo[] = [];
@@ -347,22 +399,41 @@ export class HqArenaMap3D implements IArenaMap {
     const seed = hashSeed(`${mapData.name}_${themeName}_hq`);
     const rng = new SeededRng(seed);
 
-    // 1. Paint procedural ground Canvas2D texture + dirt/quiet masks + bridges
+    // 1. Crisp 2K procedural painted ground texture + aux masks + bridges
     this.groundResult = paintHighQualityGround(mapData, this.hqTheme, seed + 13);
 
-    // 2. Partition cells into permanent core + per-wave collapse chunks & build rounded islands + stratified cliffs
-    this.buildTerrainChunks(rng);
+    // Create shared material palette (7 opaque + 2 warning materials total for the whole arena!)
+    this.sharedTopMat = new THREE.MeshLambertMaterial({ map: this.groundResult.texture });
+    this.sharedCliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    this.warnTopMat = new THREE.MeshLambertMaterial({ map: this.groundResult.texture });
+    this.warnCliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    this.sharedBucketMats = {
+      solid: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
+      smooth: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: false }),
+      foliage: new THREE.MeshLambertMaterial({ vertexColors: true, side: THREE.DoubleSide }),
+      glow: new THREE.MeshBasicMaterial({ vertexColors: true }),
+      water: new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 0.78,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      }),
+    };
 
-    // 3. Build detailed themed obstacles/structures (each individually occludable in close-up!)
+    // 2. Build wave-merged intact terrain + compact 4x4 active-wave collapse chunks
+    this.buildTerrainWavesAndChunks(rng);
+
+    // 3. Build detailed themed obstacles (each individually occludable with lazy material clone!)
     this.buildObstacles(rng);
 
-    // 4. Build lush multi-segment curved tall grass + tip flowers
+    // 4. Build lush multi-segment curved tall grass + tip flowers (compact 4x4 clusters)
     this.buildTallGrass(rng);
 
-    // 5. Build field features (oldtown fountain, sunset/canyon bridge posts & ropes) & ground details
+    // 5. Build field features (fountain, bridge posts & ropes) & wave-merged ground details
     this.buildFieldAndDetails(rng);
 
-    // 6. Build surrounding scenic floating background islands + landmarks + animated waterfall
+    // 6. Build merged distant outer islands + nearby occludable flanking islands + landmarks + waterfall
     this.buildOuterDecor(rng);
 
     // 7. Build fluffy multi-puff cloud sea & ambient floating petals/snow/leaves
@@ -384,8 +455,10 @@ export class HqArenaMap3D implements IArenaMap {
     return this.getChunkForCell(Math.floor(mx / cs), Math.floor(my / cs));
   }
 
-  private registerOccluder(meshes: THREE.Mesh[], materials: THREE.Material[], wave: number, isGrass = false) {
+  private registerOccluder(meshes: THREE.Mesh[], wave: number, isGrass = false) {
     const box = new THREE.Box3();
+    const opaqueMaterials: THREE.Material[] = [];
+    const baseOpacities: number[] = [];
     for (const m of meshes) {
       m.updateMatrixWorld(true);
       m.geometry.computeBoundingBox();
@@ -393,37 +466,58 @@ export class HqArenaMap3D implements IArenaMap {
         const mb = m.geometry.boundingBox.clone().applyMatrix4(m.matrixWorld);
         box.union(mb);
       }
+      const mat = m.material as THREE.Material;
+      opaqueMaterials.push(mat);
+      baseOpacities.push(mat.opacity);
     }
     if (box.isEmpty()) return;
     this.occluders.push({
-      materials,
-      baseOpacities: materials.map((m) => m.opacity),
+      meshes,
+      opaqueMaterials,
+      fadeMaterials: null,
+      baseOpacities,
       box,
       isGrass,
       minOpacity: isGrass ? 0.34 : 0.24,
       curOpacity: 1.0,
+      usingFade: false,
       wave,
     });
   }
 
-  private buildTerrainChunks(rng: SeededRng) {
+  private buildTerrainWavesAndChunks(rng: SeededRng) {
     const { nx, ny, cells, waves, cell } = this.mapData;
     const cs = cell / 1000;
     const P = this.hqTheme.pal;
-    const { texture, mg } = this.groundResult;
+    const { mg } = this.groundResult;
     const Wm = this.widthM;
     const Hm = this.heightM;
 
-    // Group solid cells into chunks: wave === -1 -> chunk 0; wave >= 0 -> 2x2 cell blocks per wave
+    const isSolid = (gx: number, gy: number) =>
+      gx >= 0 && gy >= 0 && gx < nx && gy < ny && cells[gy * nx + gx] !== CellType.PIT;
+    const waveAt = (gx: number, gy: number) =>
+      gx >= 0 && gy >= 0 && gx < nx && gy < ny ? waves[gy * nx + gx] : -99;
+
+    // Group solid cells into compact 4x4 collapse chunks per wave (wave -1 = single core chunk 0)
     const chunkCellsMap = new Map<string, { wave: number; cells: [number, number][] }>();
     chunkCellsMap.set('perm', { wave: -1, cells: [] });
+    const waveCellsMap = new Map<number, [number, number][]>();
+    waveCellsMap.set(-1, []);
 
     for (let gy = 0; gy < ny; gy++) {
       for (let gx = 0; gx < nx; gx++) {
         const idx = gy * nx + gx;
         if (cells[idx] === CellType.PIT) continue;
         const w = waves[idx];
-        const key = w < 0 ? 'perm' : `w${w}_${Math.floor(gx / 2)}_${Math.floor(gy / 2)}`;
+        let wArr = waveCellsMap.get(w);
+        if (!wArr) {
+          wArr = [];
+          waveCellsMap.set(w, wArr);
+        }
+        wArr.push([gx, gy]);
+
+        // 4x4 cell collapse blocks (2m x 2m natural rock chunks!) -> ~8-16 chunks per wave instead of 70!
+        const key = w < 0 ? 'perm' : `w${w}_${Math.floor(gx / 4)}_${Math.floor(gy / 4)}`;
         let entry = chunkCellsMap.get(key);
         if (!entry) {
           entry = { wave: w, cells: [] };
@@ -433,10 +527,10 @@ export class HqArenaMap3D implements IArenaMap {
       }
     }
 
-    const isSolid = (gx: number, gy: number) =>
-      gx >= 0 && gy >= 0 && gx < nx && gy < ny && cells[gy * nx + gx] !== CellType.PIT;
-    const waveAt = (gx: number, gy: number) =>
-      gx >= 0 && gy >= 0 && gx < nx && gy < ny ? waves[gy * nx + gx] : -99;
+    const chunkList = Array.from(chunkCellsMap.values());
+    chunkList.forEach((info, cid) => {
+      for (const [gx, gy] of info.cells) this.cellChunkId[gy * nx + gx] = cid;
+    });
 
     const cLip = hexLin(P.lip);
     const cSoil = hexLin(P.soil);
@@ -445,13 +539,10 @@ export class HqArenaMap3D implements IArenaMap {
     const cRockC = hexLin(P.rock_c);
     const cRockDeep = hexLin(P.rock_deep);
     const cRockUnder = hexLin(P.rock_under);
-    const cLedge = hexLin(P.ledge_hi);
 
     const uvU = (wx: number) => (wx + mg) / (Wm + 2 * mg);
     const uvV = (wz: number) => 1.0 - (wz + mg) / (Hm + 2 * mg);
 
-    // Deterministic smooth spatial hash keyed purely by vertex (wx, wz) so adjacent cliff faces
-    // share EXACT 3D corner positions -> 100% watertight with zero gaps or vertical slits!
     const vertNoise = (wx: number, wz: number): number => {
       const qx = Math.round(wx * 20) * 0.05;
       const qz = Math.round(wz * 20) * 0.05;
@@ -459,17 +550,7 @@ export class HqArenaMap3D implements IArenaMap {
       return h - Math.floor(h);
     };
 
-    // Pre-populate cellChunkId for ALL chunks before building geometry so cross-chunk edges are exact
-    const chunkList = Array.from(chunkCellsMap.values());
-    chunkList.forEach((info, cid) => {
-      for (const [gx, gy] of info.cells) {
-        this.cellChunkId[gy * nx + gx] = cid;
-      }
-    });
-
-    // Compute a GLOBAL outer-pit outward normal at every perimeter vertex `(wx, wz)` across the entire map.
-    // Because adjacent collapse chunks read the EXACT same global normal at shared outer corners (and ignore
-    // internal fracture edges), adjacent cliff faces meet 100% seamlessly with ZERO V-notches or slits!
+    // Global outer-pit outward normal table so all adjacent cliffs share identical 3D vertices (100% watertight!)
     const globalOuterOut = new Map<string, [number, number]>();
     const vKey = (wx: number, wz: number) => `${Math.round(wx * 40)}_${Math.round(wz * 40)}`;
     const accumGlobalOut = (wx: number, wz: number, ox: number, oz: number) => {
@@ -497,38 +578,14 @@ export class HqArenaMap3D implements IArenaMap {
         const bevelSE = pitS && pitE;
         const bevelSW = pitS && pitW;
 
-        if (pitN) {
-          accumGlobalOut(bevelNW ? x0 + rBevel : x0, z0, 0, -1);
-          accumGlobalOut(bevelNE ? x1 - rBevel : x1, z0, 0, -1);
-        }
-        if (bevelNE) {
-          accumGlobalOut(x1 - rBevel, z0, 0.7071, -0.7071);
-          accumGlobalOut(x1, z0 + rBevel, 0.7071, -0.7071);
-        }
-        if (pitE) {
-          accumGlobalOut(x1, bevelNE ? z0 + rBevel : z0, 1, 0);
-          accumGlobalOut(x1, bevelSE ? z1 - rBevel : z1, 1, 0);
-        }
-        if (bevelSE) {
-          accumGlobalOut(x1, z1 - rBevel, 0.7071, 0.7071);
-          accumGlobalOut(x1 - rBevel, z1, 0.7071, 0.7071);
-        }
-        if (pitS) {
-          accumGlobalOut(bevelSE ? x1 - rBevel : x1, z1, 0, 1);
-          accumGlobalOut(bevelSW ? x0 + rBevel : x0, z1, 0, 1);
-        }
-        if (bevelSW) {
-          accumGlobalOut(x0 + rBevel, z1, -0.7071, 0.7071);
-          accumGlobalOut(x0, z1 - rBevel, -0.7071, 0.7071);
-        }
-        if (pitW) {
-          accumGlobalOut(x0, bevelSW ? z1 - rBevel : z1, -1, 0);
-          accumGlobalOut(x0, bevelNW ? z0 + rBevel : z0, -1, 0);
-        }
-        if (bevelNW) {
-          accumGlobalOut(x0, z0 + rBevel, -0.7071, -0.7071);
-          accumGlobalOut(x0 + rBevel, z0, -0.7071, -0.7071);
-        }
+        if (pitN) { accumGlobalOut(bevelNW ? x0 + rBevel : x0, z0, 0, -1); accumGlobalOut(bevelNE ? x1 - rBevel : x1, z0, 0, -1); }
+        if (bevelNE) { accumGlobalOut(x1 - rBevel, z0, 0.7071, -0.7071); accumGlobalOut(x1, z0 + rBevel, 0.7071, -0.7071); }
+        if (pitE) { accumGlobalOut(x1, bevelNE ? z0 + rBevel : z0, 1, 0); accumGlobalOut(x1, bevelSE ? z1 - rBevel : z1, 1, 0); }
+        if (bevelSE) { accumGlobalOut(x1, z1 - rBevel, 0.7071, 0.7071); accumGlobalOut(x1 - rBevel, z1, 0.7071, 0.7071); }
+        if (pitS) { accumGlobalOut(bevelSE ? x1 - rBevel : x1, z1, 0, 1); accumGlobalOut(bevelSW ? x0 + rBevel : x0, z1, 0, 1); }
+        if (bevelSW) { accumGlobalOut(x0 + rBevel, z1, -0.7071, 0.7071); accumGlobalOut(x0, z1 - rBevel, -0.7071, 0.7071); }
+        if (pitW) { accumGlobalOut(x0, bevelSW ? z1 - rBevel : z1, -1, 0); accumGlobalOut(x0, bevelNW ? z0 + rBevel : z0, -1, 0); }
+        if (bevelNW) { accumGlobalOut(x0, z0 + rBevel, -0.7071, -0.7071); accumGlobalOut(x0 + rBevel, z0, -0.7071, -0.7071); }
       }
     }
 
@@ -540,25 +597,14 @@ export class HqArenaMap3D implements IArenaMap {
       return [wx - (v[0] / len) * inset, y, wz - (v[1] / len) * inset];
     };
 
-    chunkList.forEach((info, chunkIdx) => {
-      const grp = new THREE.Group();
-      let sx = 0, sz = 0;
-      for (const [gx, gy] of info.cells) {
-        sx += (gx + 0.5) * cs;
-        sz += (gy + 0.5) * cs;
-      }
-      const nCells = Math.max(1, info.cells.length);
-      const cx = info.wave < 0 ? 0 : sx / nCells;
-      const cz = info.wave < 0 ? 0 : sz / nCells;
-      grp.position.set(cx, 0, cz);
-      this.root.add(grp);
-
-      const distFromCenter = Math.hypot(cx - Wm * 0.5, cz - Hm * 0.5);
-      if (info.wave >= 0) {
-        this.waveMaxDist.set(info.wave, Math.max(this.waveMaxDist.get(info.wave) ?? 0.1, distFromCenter));
-      }
-
-      // Build top surface geometry (textured) + watertight stratified faceted cliff geometry (vertex colors)
+    // Helper: construct top + cliff BufferGeometries for a cell subset centered at `(cx, cz)`
+    const buildTerrainGeos = (
+      cellList: [number, number][],
+      wave: number,
+      cx: number,
+      cz: number,
+      splitByChunkId: number | null, // null = wave-merged intact mesh (only edges bordering pit or OTHER wave!)
+    ): { topMesh: THREE.Mesh | null; cliffMesh: THREE.Mesh | null } => {
       const topPos: number[] = [];
       const topNrm: number[] = [];
       const topUv: number[] = [];
@@ -572,13 +618,7 @@ export class HqArenaMap3D implements IArenaMap {
         topUv.push(uvU(ax), uvV(az), uvU(bx), uvV(bz), uvU(dx), uvV(dz));
       };
 
-      const pushCliffQuad = (
-        p0: Vec3,
-        p1: Vec3,
-        p2: Vec3,
-        p3: Vec3,
-        col: LinRGB,
-      ) => {
+      const pushCliffQuad = (p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3, col: LinRGB) => {
         const ax = p0[0] - cx, ay = p0[1], az = p0[2] - cz;
         const bx = p1[0] - cx, by = p1[1], bz = p1[2] - cz;
         const ex = p2[0] - cx, ey = p2[1], ez = p2[2] - cz;
@@ -592,7 +632,6 @@ export class HqArenaMap3D implements IArenaMap {
         nx_ /= nl;
         ny_ /= nl;
         nz_ /= nl;
-
         cliffPos.push(ax, ay, az, bx, by, bz, ex, ey, ez, ax, ay, az, ex, ey, ez, fx, fy, fz);
         for (let k = 0; k < 6; k++) {
           cliffNrm.push(nx_, ny_, nz_);
@@ -600,164 +639,50 @@ export class HqArenaMap3D implements IArenaMap {
         }
       };
 
-      interface ExposedSeg {
-        ax: number;
-        az: number;
-        bx: number;
-        bz: number;
-        outerPit: boolean;
-        seed: number;
-      }
+      const addDiff = (nx_: number, ny_: number) => {
+        if (!isSolid(nx_, ny_)) return { exposed: true, outerPit: true };
+        const nw = waveAt(nx_, ny_);
+        if (nw !== wave) return { exposed: true, outerPit: false };
+        if (splitByChunkId !== null && wave >= 0) {
+          if (this.cellChunkId[ny_ * nx + nx_] !== splitByChunkId) return { exposed: true, outerPit: false };
+        }
+        return { exposed: false, outerPit: false };
+      };
+
+      interface ExposedSeg { ax: number; az: number; bx: number; bz: number; outerPit: boolean; seed: number }
       const exposedSegs: ExposedSeg[] = [];
 
-      for (const [gx, gy] of info.cells) {
-        const x0 = gx * cs;
-        const x1 = (gx + 1) * cs;
-        const z0 = gy * cs;
-        const z1 = (gy + 1) * cs;
-        const mx = (x0 + x1) * 0.5;
-        const mz = (z0 + z1) * 0.5;
-
+      for (const [gx, gy] of cellList) {
+        const x0 = gx * cs, x1 = (gx + 1) * cs, z0 = gy * cs, z1 = (gy + 1) * cs;
+        const mx = (x0 + x1) * 0.5, mz = (z0 + z1) * 0.5;
         const pitN = !isSolid(gx, gy - 1);
         const pitS = !isSolid(gx, gy + 1);
         const pitW = !isSolid(gx - 1, gy);
         const pitE = !isSolid(gx + 1, gy);
-
         const bevelNW = pitN && pitW;
         const bevelNE = pitN && pitE;
         const bevelSE = pitS && pitE;
         const bevelSW = pitS && pitW;
-
-        interface PerimSeg {
-          ax: number;
-          az: number;
-          bx: number;
-          bz: number;
-          ox: number;
-          oz: number;
-          outerPit: boolean;
-          exposed: boolean;
-          seed: number;
-        }
-        const segs: PerimSeg[] = [];
-        const addDiff = (nx_: number, ny_: number) => {
-          if (!isSolid(nx_, ny_)) return { exposed: true, outerPit: true };
-          const nw = waveAt(nx_, ny_);
-          if (nw !== info.wave) return { exposed: true, outerPit: false };
-          if (info.wave >= 0) {
-            const otherCid = this.cellChunkId[ny_ * nx + nx_];
-            if (otherCid !== chunkIdx) return { exposed: true, outerPit: false };
-          }
-          return { exposed: false, outerPit: false };
-        };
 
         const dN = addDiff(gx, gy - 1);
         const dE = addDiff(gx + 1, gy);
         const dS = addDiff(gx, gy + 1);
         const dW = addDiff(gx - 1, gy);
 
-        segs.push({
-          ax: bevelNW ? x0 + rBevel : x0,
-          az: z0,
-          bx: bevelNE ? x1 - rBevel : x1,
-          bz: z0,
-          ox: 0,
-          oz: -1,
-          outerPit: dN.outerPit,
-          exposed: dN.exposed,
-          seed: gx * 13 + gy * 31 + 1,
-        });
-        if (bevelNE) {
-          segs.push({
-            ax: x1 - rBevel,
-            az: z0,
-            bx: x1,
-            bz: z0 + rBevel,
-            ox: 0.7071,
-            oz: -0.7071,
-            outerPit: true,
-            exposed: true,
-            seed: gx * 17 + gy * 29 + 2,
-          });
-        }
-        segs.push({
-          ax: x1,
-          az: bevelNE ? z0 + rBevel : z0,
-          bx: x1,
-          bz: bevelSE ? z1 - rBevel : z1,
-          ox: 1,
-          oz: 0,
-          outerPit: dE.outerPit,
-          exposed: dE.exposed,
-          seed: gx * 19 + gy * 37 + 3,
-        });
-        if (bevelSE) {
-          segs.push({
-            ax: x1,
-            az: z1 - rBevel,
-            bx: x1 - rBevel,
-            bz: z1,
-            ox: 0.7071,
-            oz: 0.7071,
-            outerPit: true,
-            exposed: true,
-            seed: gx * 23 + gy * 41 + 4,
-          });
-        }
-        segs.push({
-          ax: bevelSE ? x1 - rBevel : x1,
-          az: z1,
-          bx: bevelSW ? x0 + rBevel : x0,
-          bz: z1,
-          ox: 0,
-          oz: 1,
-          outerPit: dS.outerPit,
-          exposed: dS.exposed,
-          seed: gx * 29 + gy * 43 + 5,
-        });
-        if (bevelSW) {
-          segs.push({
-            ax: x0 + rBevel,
-            az: z1,
-            bx: x0,
-            bz: z1 - rBevel,
-            ox: -0.7071,
-            oz: 0.7071,
-            outerPit: true,
-            exposed: true,
-            seed: gx * 31 + gy * 47 + 6,
-          });
-        }
-        segs.push({
-          ax: x0,
-          az: bevelSW ? z1 - rBevel : z1,
-          bx: x0,
-          bz: bevelNW ? z0 + rBevel : z0,
-          ox: -1,
-          oz: 0,
-          outerPit: dW.outerPit,
-          exposed: dW.exposed,
-          seed: gx * 37 + gy * 53 + 7,
-        });
-        if (bevelNW) {
-          segs.push({
-            ax: x0,
-            az: z0 + rBevel,
-            bx: x0 + rBevel,
-            bz: z0,
-            ox: -0.7071,
-            oz: -0.7071,
-            outerPit: true,
-            exposed: true,
-            seed: gx * 41 + gy * 59 + 8,
-          });
-        }
+        const segs: { ax: number; az: number; bx: number; bz: number; outerPit: boolean; exposed: boolean; seed: number }[] = [
+          { ax: bevelNW ? x0 + rBevel : x0, az: z0, bx: bevelNE ? x1 - rBevel : x1, bz: z0, outerPit: dN.outerPit, exposed: dN.exposed, seed: gx * 13 + gy * 31 + 1 },
+        ];
+        if (bevelNE) segs.push({ ax: x1 - rBevel, az: z0, bx: x1, bz: z0 + rBevel, outerPit: true, exposed: true, seed: gx * 17 + gy * 29 + 2 });
+        segs.push({ ax: x1, az: bevelNE ? z0 + rBevel : z0, bx: x1, bz: bevelSE ? z1 - rBevel : z1, outerPit: dE.outerPit, exposed: dE.exposed, seed: gx * 19 + gy * 37 + 3 });
+        if (bevelSE) segs.push({ ax: x1, az: z1 - rBevel, bx: x1 - rBevel, bz: z1, outerPit: true, exposed: true, seed: gx * 23 + gy * 41 + 4 });
+        segs.push({ ax: bevelSE ? x1 - rBevel : x1, az: z1, bx: bevelSW ? x0 + rBevel : x0, bz: z1, outerPit: dS.outerPit, exposed: dS.exposed, seed: gx * 29 + gy * 43 + 5 });
+        if (bevelSW) segs.push({ ax: x0 + rBevel, az: z1, bx: x0, bz: z1 - rBevel, outerPit: true, exposed: true, seed: gx * 31 + gy * 47 + 6 });
+        segs.push({ ax: x0, az: bevelSW ? z1 - rBevel : z1, bx: x0, bz: bevelNW ? z0 + rBevel : z0, outerPit: dW.outerPit, exposed: dW.exposed, seed: gx * 37 + gy * 53 + 7 });
+        if (bevelNW) segs.push({ ax: x0, az: z0 + rBevel, bx: x0 + rBevel, bz: z0, outerPit: true, exposed: true, seed: gx * 41 + gy * 59 + 8 });
 
         for (const s of segs) {
           pushTopTri(mx, mz, s.bx, s.bz, s.ax, s.az);
-          if (s.exposed) {
-            exposedSegs.push({ ax: s.ax, az: s.az, bx: s.bx, bz: s.bz, outerPit: s.outerPit, seed: s.seed });
-          }
+          if (s.exposed) exposedSegs.push({ ax: s.ax, az: s.az, bx: s.bx, bz: s.bz, outerPit: s.outerPit, seed: s.seed });
         }
       }
 
@@ -772,8 +697,6 @@ export class HqArenaMap3D implements IArenaMap {
         const depthB = outerPit ? 1.75 + vb * 0.38 : 1.18;
         const yStart = outerPit ? 0.0 : -0.012;
 
-        // Outer cliff tapers seamlessly using shared global outward normals; internal fracture walls stay
-        // crisp & vertical so neighboring chunks meet flush with zero triangular notches!
         const bands: [number, number, number, number, LinRGB][] = outerPit
           ? [
               [yStart, yStart, 0.0, 0.0, scaleLin(cLip, shade)],
@@ -803,46 +726,99 @@ export class HqArenaMap3D implements IArenaMap {
         }
       }
 
-      const warnMaterials: THREE.MeshLambertMaterial[] = [];
-
+      let topMesh: THREE.Mesh | null = null;
+      let cliffMesh: THREE.Mesh | null = null;
       if (topPos.length > 0) {
         const topGeo = new THREE.BufferGeometry();
         topGeo.setAttribute('position', new THREE.Float32BufferAttribute(topPos, 3));
         topGeo.setAttribute('normal', new THREE.Float32BufferAttribute(topNrm, 3));
         topGeo.setAttribute('uv', new THREE.Float32BufferAttribute(topUv, 2));
         topGeo.computeBoundingSphere();
-        const topMat = new THREE.MeshLambertMaterial({ map: texture });
-        const topMesh = new THREE.Mesh(topGeo, topMat);
+        topMesh = new THREE.Mesh(topGeo, this.sharedTopMat);
         topMesh.receiveShadow = true;
-        grp.add(topMesh);
-        warnMaterials.push(topMat);
       }
-
       if (cliffPos.length > 0) {
         const cliffGeo = new THREE.BufferGeometry();
         cliffGeo.setAttribute('position', new THREE.Float32BufferAttribute(cliffPos, 3));
         cliffGeo.setAttribute('normal', new THREE.Float32BufferAttribute(cliffNrm, 3));
         cliffGeo.setAttribute('color', new THREE.Float32BufferAttribute(cliffCol, 3));
         cliffGeo.computeBoundingSphere();
-        const cliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
-        const cliffMesh = new THREE.Mesh(cliffGeo, cliffMat);
+        cliffMesh = new THREE.Mesh(cliffGeo, this.sharedCliffMat);
         cliffMesh.castShadow = false;
         cliffMesh.receiveShadow = false;
-        grp.add(cliffMesh);
-        warnMaterials.push(cliffMat);
+      }
+      return { topMesh, cliffMesh };
+    };
+
+    // 1. Build 1 merged intact mesh per wave (ONLY ~14 draw calls for the ENTIRE island!)
+    for (const [wave, cellList] of waveCellsMap) {
+      const intactTerrain = new THREE.Group();
+      const intactDetails = new THREE.Group();
+      const { topMesh, cliffMesh } = buildTerrainGeos(cellList, wave, 0, 0, null);
+      if (topMesh) intactTerrain.add(topMesh);
+      if (cliffMesh) intactTerrain.add(cliffMesh);
+      this.root.add(intactTerrain);
+      this.root.add(intactDetails);
+      this.waveBundles.set(wave, {
+        wave,
+        intactTerrain,
+        intactDetails,
+        chunks: [],
+        mode: 'intact',
+      });
+    }
+
+    // 2. Build 4x4 rock collapse chunks for each collapsing wave (hidden until wave enters warning/fall!)
+    chunkList.forEach((info, chunkIdx) => {
+      let sx = 0, sz = 0;
+      for (const [gx, gy] of info.cells) {
+        sx += (gx + 0.5) * cs;
+        sz += (gy + 0.5) * cs;
+      }
+      const nCells = Math.max(1, info.cells.length);
+      const cx = info.wave < 0 ? 0 : sx / nCells;
+      const cz = info.wave < 0 ? 0 : sz / nCells;
+
+      const propMount = new THREE.Group();
+      propMount.position.set(cx, 0, cz);
+      this.root.add(propMount);
+
+      const terrainGroup = new THREE.Group();
+      terrainGroup.position.set(cx, 0, cz);
+      terrainGroup.visible = false; // Hidden while intact!
+      this.root.add(terrainGroup);
+
+      let topMesh: THREE.Mesh | null = null;
+      let cliffMesh: THREE.Mesh | null = null;
+      if (info.wave >= 0) {
+        const res = buildTerrainGeos(info.cells, info.wave, cx, cz, chunkIdx);
+        topMesh = res.topMesh;
+        cliffMesh = res.cliffMesh;
+        if (topMesh) terrainGroup.add(topMesh);
+        if (cliffMesh) terrainGroup.add(cliffMesh);
       }
 
-      this.chunks.push({
+      const distFromCenter = Math.hypot(cx - Wm * 0.5, cz - Hm * 0.5);
+      if (info.wave >= 0) {
+        this.waveMaxDist.set(info.wave, Math.max(this.waveMaxDist.get(info.wave) ?? 0.1, distFromCenter));
+      }
+
+      const chunk: CollapseChunk = {
         id: chunkIdx,
         wave: info.wave,
-        group: grp,
+        terrainGroup,
+        propMount,
+        topMesh,
+        cliffMesh,
         cx,
         cz,
         distFromCenter,
         rnd: [rng.next(), rng.next(), rng.next(), rng.next(), rng.next(), rng.next()],
-        warnMaterials,
+        usingWarnMat: false,
         modified: false,
-      });
+      };
+      this.chunks.push(chunk);
+      this.waveBundles.get(info.wave)?.chunks.push(chunk);
     });
   }
 
@@ -852,25 +828,27 @@ export class HqArenaMap3D implements IArenaMap {
     const R = this.hqTheme.rock;
     const used = new Set<string>();
 
-    // Helper: attach an HqMeshBuilder to its chunk (shifting coords into chunk-local space) & register occluder
     const commitObstacle = (mb: HqMeshBuilder, worldX: number, worldZ: number) => {
       if (!mb.hasAny()) return;
       const chunk = this.getChunkForWorld(worldX, worldZ);
-      const { meshes, ownedMaterials } = mb.buildMeshes({ castShadow: true, receiveShadow: true });
+      const { meshes } = mb.buildMeshes({
+        castShadow: true,
+        receiveShadow: true,
+        sharedMats: this.sharedBucketMats,
+      });
       const localGrp = new THREE.Group();
       localGrp.position.set(-chunk.cx, 0, -chunk.cz);
       for (const m of meshes) localGrp.add(m);
-      chunk.group.add(localGrp);
-      this.registerOccluder(meshes, ownedMaterials, chunk.wave, false);
+      chunk.propMount.add(localGrp);
+      this.registerOccluder(meshes, chunk.wave, false);
     };
 
     const components = getWallComponents(this.mapData);
 
-    // 1. Structure-level themed obstacles (`garden`, `houses`, `trees`, `masonry`)
     if (R.kind === 'garden') {
       const k1 = Math.max(1, Math.round(1.0 / cs));
-      const midX = this.widthM * 0.5 / cs;
-      const midY = this.heightM * 0.5 / cs;
+      const midX = (this.widthM * 0.5) / cs;
+      const midY = (this.heightM * 0.5) / cs;
       for (const comp of components) {
         const cset = new Set(comp.map(([x, y]) => `${x},${y}`));
         const cands: [number, number][] = [];
@@ -890,13 +868,12 @@ export class HqArenaMap3D implements IArenaMap {
         const ty = -(y0 + k1 * 0.5) * cs;
         const a = (k1 * cs) * 0.5;
         const mb = new HqMeshBuilder();
-        mb.stack(
-          tx,
-          ty,
-          [[a * 1.08, -0.05], [a * 1.04, 0.24], [a * 0.86, 0.36]],
-          [hexLin(P.stone_side), hexLin(P.stone_lit)],
-          { n: 7, jitter: 0.08, rng, cap: hexLin(P.moss) },
-        );
+        mb.stack(tx, ty, [[a * 1.08, -0.05], [a * 1.04, 0.24], [a * 0.86, 0.36]], [hexLin(P.stone_side), hexLin(P.stone_lit)], {
+          n: 7,
+          jitter: 0.08,
+          rng,
+          cap: hexLin(P.moss),
+        });
         addArenaTree(mb, tx, ty, a * 0.6, rng, {
           trunk: ['#6E4A48', '#553838'],
           crown: ['#E06C98', '#F7A6C0', '#FFE2EC'],
@@ -907,22 +884,25 @@ export class HqArenaMap3D implements IArenaMap {
           blobs: 6,
         });
         commitObstacle(mb, tx, -ty);
-        for (let i = 0; i < k1; i++) {
-          for (let j = 0; j < k1; j++) {
-            used.add(`${x0 + i},${y0 + j}`);
-          }
-        }
+        for (let i = 0; i < k1; i++) for (let j = 0; j < k1; j++) used.add(`${x0 + i},${y0 + j}`);
       }
     } else if (R.kind === 'houses') {
       let hIdx = 1;
       for (const comp of components) {
+        // Group houses within same chunk into one occluder batch to keep draw calls ultra-low!
+        const chunkBuilders = new Map<number, { mb: HqMeshBuilder; wx: number; wz: number }>();
         for (const [x0, y0, w, h] of rectsOfCells(comp, this.mapData, 4)) {
-          const mb = new HqMeshBuilder();
-          const X0 = x0 * cs;
-          const Y0 = -(y0 + h) * cs;
-          addHouse(mb, X0, Y0, w * cs, h * cs, rng, hIdx++);
-          commitObstacle(mb, X0 + w * cs * 0.5, (y0 + h * 0.5) * cs);
+          const wx = (x0 + w * 0.5) * cs;
+          const wz = (y0 + h * 0.5) * cs;
+          const cid = this.getChunkForWorld(wx, wz).id;
+          let entry = chunkBuilders.get(cid);
+          if (!entry) {
+            entry = { mb: new HqMeshBuilder(), wx, wz };
+            chunkBuilders.set(cid, entry);
+          }
+          addHouse(entry.mb, x0 * cs, -(y0 + h) * cs, w * cs, h * cs, rng, hIdx++);
         }
+        for (const [, entry] of chunkBuilders) commitObstacle(entry.mb, entry.wx, entry.wz);
         for (const [x, y] of comp) used.add(`${x},${y}`);
       }
     } else if (R.kind === 'trees') {
@@ -964,7 +944,7 @@ export class HqArenaMap3D implements IArenaMap {
       const ch = 0.29;
 
       for (const comp of components) {
-        for (const [rx, ry, rw, rh] of rectsOfCells(comp, this.mapData, 3)) {
+        for (const [rx, ry, rw, rh] of rectsOfCells(comp, this.mapData, 4)) {
           const mb = new HqMeshBuilder();
           for (let y = ry; y < ry + rh; y++) {
             for (let x = rx; x < rx + rw; x++) {
@@ -1006,7 +986,6 @@ export class HqArenaMap3D implements IArenaMap {
       }
     }
 
-    // 2. Remaining wall cells -> `obstacle_rect` (`hoodoo`, `crates`, `menhir`, or faceted `rock_cluster`)
     const remCells: [number, number][] = [];
     for (let y = 0; y < this.mapData.ny; y++) {
       for (let x = 0; x < this.mapData.nx; x++) {
@@ -1041,11 +1020,8 @@ export class HqArenaMap3D implements IArenaMap {
           const defs: [number, number, number][] = [[0.28, 0.27, 1.75], [0.76, 0.22, 1.15]];
           defs.forEach(([t0, sc, hh], k) => {
             const t = big ? t0 : 1 - t0;
-            if (Wd > Hd) {
-              addHoodoo(mb, X0 + Wd * t, cy, Wd * sc, Hd * 0.46, hh * hk * (0.7 + 0.3 * Math.min(1, Sh)), rng, bands, { cap: k === 0 });
-            } else {
-              addHoodoo(mb, cx, Y0 + Hd * t, Wd * 0.46, Hd * sc, hh * hk * (0.7 + 0.3 * Math.min(1, Sh)), rng, bands, { cap: k === 0 });
-            }
+            if (Wd > Hd) addHoodoo(mb, X0 + Wd * t, cy, Wd * sc, Hd * 0.46, hh * hk * (0.7 + 0.3 * Math.min(1, Sh)), rng, bands, { cap: k === 0 });
+            else addHoodoo(mb, cx, Y0 + Hd * t, Wd * 0.46, Hd * sc, hh * hk * (0.7 + 0.3 * Math.min(1, Sh)), rng, bands, { cap: k === 0 });
           });
         } else {
           addHoodoo(mb, cx, cy, Wd * 0.5 - 0.03, Hd * 0.5 - 0.03, (1.05 + 0.75 * Math.min(1, Sh)) * hk * rng.uniform(0.92, 1.08), rng, bands);
@@ -1062,9 +1038,7 @@ export class HqArenaMap3D implements IArenaMap {
             const s = Math.min(sx, sy) - 0.1;
             if (s >= 0.8 && rng.next() < 0.3) {
               const br = s * 0.24;
-              for (const [ox, oy] of [[-0.24, -0.2], [0.24, -0.16], [0.0, 0.24]]) {
-                addBarrel(mb, px + ox * s, py + oy * s, br, s * 0.62, 0);
-              }
+              for (const [ox, oy] of [[-0.24, -0.2], [0.24, -0.16], [0.0, 0.24]]) addBarrel(mb, px + ox * s, py + oy * s, br, s * 0.62, 0);
               addBarrel(mb, px, py - 0.04 * s, br * 0.92, s * 0.55, s * 0.62);
             } else {
               addCrate(mb, px, py, s, 0, rng, rng.uniform(-0.06, 0.06));
@@ -1078,35 +1052,23 @@ export class HqArenaMap3D implements IArenaMap {
         if (Sh >= 0.9) {
           addFacetedRock(mb, cx, cy, Wd * 0.4, Hd * 0.38, rng.uniform(1.9, 2.25) * hk, rng, P, mr, { rot: rng.uniform(-0.3, 0.3) });
           for (let k = 0; k < 2; k++) {
-            const sx = rng.choice([-1, 1]);
-            const sy = rng.choice([-1, 1]);
+            const sx = rng.choice([-1, 1]), sy = rng.choice([-1, 1]);
             addFacetedRock(mb, cx + sx * Wd * 0.33, cy + sy * Hd * 0.33, 0.15, 0.13, rng.uniform(0.35, 0.6), rng, P, mr);
           }
         } else if (Lg >= 1.4) {
           const Hh = rng.uniform(1.45, 1.6) * hk;
           for (const sg of [-1, 1]) {
-            if (Wd > Hd) {
-              addFacetedRock(mb, cx + sg * (Wd * 0.5 - 0.3), cy, 0.27, Hd * 0.42, Hh, rng, P, mr, { rot: rng.uniform(-0.1, 0.1) });
-            } else {
-              addFacetedRock(mb, cx, cy + sg * (Hd * 0.5 - 0.3), Wd * 0.42, 0.27, Hh, rng, P, mr, { rot: rng.uniform(-0.1, 0.1) });
-            }
+            if (Wd > Hd) addFacetedRock(mb, cx + sg * (Wd * 0.5 - 0.3), cy, 0.27, Hd * 0.42, Hh, rng, P, mr, { rot: rng.uniform(-0.1, 0.1) });
+            else addFacetedRock(mb, cx, cy + sg * (Hd * 0.5 - 0.3), Wd * 0.42, 0.27, Hh, rng, P, mr, { rot: rng.uniform(-0.1, 0.1) });
           }
           if (Lg >= 1.9) {
             addFacetedRock(mb, cx, cy, Wd > Hd ? Wd * 0.2 : Wd * 0.38, Wd > Hd ? Hd * 0.38 : Hd * 0.2, Hh * 0.8, rng, P, mr);
           }
           const lintelStyle = { ...mr, top: [0.92, 0.98] as [number, number], n: [4, 5] as [number, number], p: 6.0 };
-          addFacetedRock(
-            mb,
-            cx,
-            cy,
-            Wd > Hd ? Wd * 0.5 - 0.02 : Wd * 0.46,
-            Wd > Hd ? Hd * 0.46 : Hd * 0.5 - 0.02,
-            0.32,
-            rng,
-            P,
-            lintelStyle,
-            { rot: 0, z0: Hh - 0.04 },
-          );
+          addFacetedRock(mb, cx, cy, Wd > Hd ? Wd * 0.5 - 0.02 : Wd * 0.46, Wd > Hd ? Hd * 0.46 : Hd * 0.5 - 0.02, 0.32, rng, P, lintelStyle, {
+            rot: 0,
+            z0: Hh - 0.04,
+          });
         } else if (Lg >= 0.9) {
           [-1, 1].forEach((sg, k) => {
             const hh = (k === 0 ? 1.7 : 1.15) * hk * rng.uniform(0.92, 1.08);
@@ -1117,7 +1079,6 @@ export class HqArenaMap3D implements IArenaMap {
           addFacetedRock(mb, cx, cy, Wd * 0.44, Hd * 0.4, rng.uniform(1.0, 1.4) * hk, rng, P, mr, { rot: rng.uniform(-0.2, 0.2) });
         }
       } else {
-        // Faceted rock cluster (`meadow`, `glacier`, remaining `blossom` walls)
         const hkEff = (0.55 + 0.45 * Math.min(1, Sh)) * hk;
         const parts: [number, number, number, number, number, boolean][] = [];
         const ratio = Lg / Math.max(1e-5, Sh);
@@ -1130,18 +1091,13 @@ export class HqArenaMap3D implements IArenaMap {
             parts.push([cx + rng.uniform(-0.03, 0.03), Y0 + Hd * 0.76, Wd * 0.44, Hd * 0.23, rng.uniform(0.6, 0.8) * hkEff, false]);
           }
           if (rng.next() < 0.5) {
-            for (const p of parts) {
-              p[0] = 2 * cx - p[0];
-              p[1] = 2 * cy - p[1];
-            }
+            for (const p of parts) { p[0] = 2 * cx - p[0]; p[1] = 2 * cy - p[1]; }
           }
         } else if (Wd * Hd <= 1.3) {
           parts.push([cx, cy, Wd * 0.47, Hd * 0.47, rng.uniform(0.95, 1.2) * hkEff, true]);
         } else {
-          const sx = rng.choice([-1, 1]);
-          const sy = rng.choice([-1, 1]);
-          const A = Wd * 0.5 - 0.03;
-          const B = Hd * 0.5 - 0.03;
+          const sx = rng.choice([-1, 1]), sy = rng.choice([-1, 1]);
+          const A = Wd * 0.5 - 0.03, B = Hd * 0.5 - 0.03;
           const bw = A * 0.62, bh = B * 0.62;
           parts.push([cx + sx * (A - bw), cy + sy * (B - bh), bw, bh, rng.uniform(1.15, 1.4) * hkEff, true]);
           const mw = A * 0.46, mh = B * 0.46;
@@ -1150,16 +1106,12 @@ export class HqArenaMap3D implements IArenaMap {
           parts.push([cx + sx * (A - mw * 0.8), cy - sy * (B - mh * 0.8), mw * 0.8, mh * 0.8, rng.uniform(0.55, 0.75) * hkEff, false]);
         }
         for (const [px, py, a, b, hh, main] of parts) {
-          addFacetedRock(mb, px, py, a, b, hh, rng, P, R, {
-            mossy: main && rng.next() < R.mossy,
-            rot: rng.uniform(-0.25, 0.25),
-          });
+          addFacetedRock(mb, px, py, a, b, hh, rng, P, R, { mossy: main && rng.next() < R.mossy, rot: rng.uniform(-0.25, 0.25) });
         }
         if (Sh >= 0.7) {
           const smCount = rng.int(1, 3);
           for (let k = 0; k < smCount; k++) {
-            const sx = rng.choice([-1, 1]);
-            const sy = rng.choice([-1, 1]);
+            const sx = rng.choice([-1, 1]), sy = rng.choice([-1, 1]);
             const r = rng.uniform(0.1, 0.16);
             addFacetedRock(mb, cx + sx * (Wd * 0.5 - r), cy + sy * (Hd * 0.5 - r), r, r * rng.uniform(0.8, 1.0), rng.uniform(0.16, 0.3), rng, P, R);
           }
@@ -1208,11 +1160,11 @@ export class HqArenaMap3D implements IArenaMap {
       return d * cs;
     };
 
-    // Group grass cells into 2x2 clusters per chunk so draw calls stay ultra-low while supporting sway & foreground occlusion
+    // Group grass cells by chunk (4x4 cell blocks) -> ultra-lean ~10-22 draw calls total!
     const clusters = new Map<string, [number, number][]>();
     for (const [x, y] of grassCells) {
       const cid = this.getChunkForCell(x, y).id;
-      const key = `${cid}_${Math.floor(x / 2)}_${Math.floor(y / 2)}`;
+      const key = `${cid}_${Math.floor(x / 4)}_${Math.floor(y / 4)}`;
       let arr = clusters.get(key);
       if (!arr) {
         arr = [];
@@ -1221,7 +1173,7 @@ export class HqArenaMap3D implements IArenaMap {
       arr.push([x, y]);
     }
 
-    const bladesPerCell = Math.max(10, Math.round(115 * cs * cs)); // lush & dense, ~28 blades per 0.5m cell!
+    const bladesPerCell = Math.max(8, Math.round(86 * cs * cs));
 
     for (const [, list] of clusters) {
       let avgX = 0, avgZ = 0;
@@ -1244,20 +1196,17 @@ export class HqArenaMap3D implements IArenaMap {
 
           const kEdge = Math.min(1, Math.max(0, ed) / 0.28);
           const hgt = rng.uniform(0.38, 0.66) * (0.6 + 0.4 * kEdge);
-          const wid = rng.uniform(0.048, 0.085);
+          const wid = rng.uniform(0.052, 0.09);
           const ang = rng.uniform(0, Math.PI * 2);
           const ox = fx - 0.5;
           const oy = fy - 0.5;
           const lean = hgt * (rng.uniform(0.08, 0.2) + (1 - kEdge) * 0.35);
           const la = Math.atan2(-oy, ox) + rng.normal(0, 0.6);
 
-          // Local Blender coords centered at cluster center `(avgX, -avgZ)`
           const bx = (x + fx) * cs - avgX;
           const by = -((y + fy) * cs - avgZ);
-          const ca = Math.cos(ang);
-          const sa = Math.sin(ang);
-          const lx = Math.cos(la) * lean;
-          const ly = Math.sin(la) * lean;
+          const ca = Math.cos(ang), sa = Math.sin(ang);
+          const lx = Math.cos(la) * lean, ly = Math.sin(la) * lean;
 
           const v0: Vec3 = [bx - ca * wid, by - sa * wid, -0.02];
           const v1: Vec3 = [bx + ca * wid, by + sa * wid, -0.02];
@@ -1276,10 +1225,9 @@ export class HqArenaMap3D implements IArenaMap {
           mb.quad(v2, v3, v5, v4, m2, 'foliage', m2, mt, mt);
           mb.tri(v4, v5, v6, mt, mt, t2, 'foliage');
 
-          // Little sakura / wildflower buds on blade tips (e.g. blossom theme!)
-          if (flowerCols.length > 0 && kEdge > 0.28 && rng.next() < 0.088) {
+          if (flowerCols.length > 0 && kEdge > 0.28 && rng.next() < 0.095) {
             const fc = rng.choice(flowerCols);
-            const r = rng.uniform(0.04, 0.058);
+            const r = rng.uniform(0.042, 0.06);
             mb.blob(bx + lx, by + ly, hgt + 0.012, r, r, r * 0.75, fc, scaleLin(fc, 1.12), {
               sub: 0,
               smooth: false,
@@ -1289,37 +1237,42 @@ export class HqArenaMap3D implements IArenaMap {
       }
 
       if (!mb.hasAny()) continue;
-      const { meshes, ownedMaterials } = mb.buildMeshes({ castShadow: false, receiveShadow: true });
+      const { meshes } = mb.buildMeshes({
+        castShadow: false,
+        receiveShadow: true,
+        sharedMats: this.sharedBucketMats,
+      });
       const gGrp = new THREE.Group();
       gGrp.position.set(avgX - chunk.cx, 0, avgZ - chunk.cz);
       for (const m of meshes) gGrp.add(m);
-      chunk.group.add(gGrp);
+      chunk.propMount.add(gGrp);
 
-      this.grassClusters.push({
-        group: gGrp,
-        cx: avgX,
-        cz: avgZ,
-        phase: rng.uniform(0, Math.PI * 2),
-      });
-      this.registerOccluder(meshes, ownedMaterials, chunk.wave, true);
+      this.grassClusters.push({ group: gGrp, cx: avgX, cz: avgZ, phase: rng.uniform(0, Math.PI * 2) });
+      this.registerOccluder(meshes, chunk.wave, true);
     }
   }
 
   private buildFieldAndDetails(rng: SeededRng) {
-    const { nx, ny, cells, cell } = this.mapData;
+    const { nx, ny, cells, waves, cell } = this.mapData;
     const cs = cell / 1000;
     const P = this.hqTheme.pal;
     const det = this.hqTheme.detail;
     const { dirt, quiet, ppm, mg, widthPx, heightPx, bridges } = this.groundResult;
 
-    const builders = new Map<number, HqMeshBuilder>();
-    const getB = (chunkId: number) => {
-      let b = builders.get(chunkId);
+    // Group ALL ground surface details by WAVE (only ~6-7 merged meshes instead of 380!)
+    const waveBuilders = new Map<number, HqMeshBuilder>();
+    const getWaveB = (wave: number) => {
+      let b = waveBuilders.get(wave);
       if (!b) {
         b = new HqMeshBuilder();
-        builders.set(chunkId, b);
+        waveBuilders.set(wave, b);
       }
       return b;
+    };
+    const waveOfWorld = (mx: number, my: number): number => {
+      const gx = Math.max(0, Math.min(nx - 1, Math.floor(mx / cs)));
+      const gy = Math.max(0, Math.min(ny - 1, Math.floor(my / cs)));
+      return waves[gy * nx + gx];
     };
 
     const sampleAux = (arr: Float32Array, mx: number, my: number): number => {
@@ -1345,7 +1298,7 @@ export class HqArenaMap3D implements IArenaMap {
       return true;
     };
 
-    // ---- Field Features: Fountain (oldtown) & Bridges (sunset, canyon) ----
+    // Fountain (`oldtown`)
     if (this.hqTheme.field.includes('fountain')) {
       const seen = new Uint8Array(nx * ny);
       for (let y = 0; y < ny; y++) {
@@ -1364,46 +1317,36 @@ export class HqArenaMap3D implements IArenaMap {
               if (xx < 0 || yy < 0 || xx >= nx || yy >= ny) border = true;
               else {
                 const ni = yy * nx + xx;
-                if (cells[ni] === CellType.PIT && !seen[ni]) {
-                  seen[ni] = 1;
-                  st.push([xx, yy]);
-                }
+                if (cells[ni] === CellType.PIT && !seen[ni]) { seen[ni] = 1; st.push([xx, yy]); }
               }
             }
           }
           if (border || comp.length < 6 || comp.length > 80) continue;
           let minX = nx, maxX = 0, minY = ny, maxY = 0;
           for (const [cx, cy] of comp) {
-            if (cx < minX) minX = cx;
-            if (cx > maxX) maxX = cx;
-            if (cy < minY) minY = cy;
-            if (cy > maxY) maxY = cy;
+            if (cx < minX) minX = cx; if (cx > maxX) maxX = cx;
+            if (cy < minY) minY = cy; if (cy > maxY) maxY = cy;
           }
-          const rx = ((maxX - minX + 1) * cs) * 0.5;
-          const ry = ((maxY - minY + 1) * cs) * 0.5;
-          const fx = ((minX + maxX + 1) * cs) * 0.5;
-          const fy = -((minY + maxY + 1) * cs) * 0.5;
-          addFountain(getB(0), fx, fy, rx, ry);
+          addFountain(getWaveB(-1), ((minX + maxX + 1) * cs) * 0.5, -((minY + maxY + 1) * cs) * 0.5, ((maxX - minX + 1) * cs) * 0.5, ((maxY - minY + 1) * cs) * 0.5);
         }
       }
     }
 
+    // Bridge posts & draped ropes (`sunset`, `canyon`)
     if (this.hqTheme.field.includes('bridges')) {
       const ropeCol = hexLin('#E8D2A0');
       for (const br of bridges as BridgeSpec[]) {
-        const px = -br.ay;
-        const py = br.ax;
+        const px = -br.ay, py = br.ax;
         const hl2 = Math.max(0.2, br.hl - 0.12);
+        const w = waveOfWorld(br.bx, br.by);
+        const mb = getWaveB(w);
         for (const sa of [-1, 1]) {
           for (const sp of [-1, 1]) {
             const mx = br.bx + br.ax * hl2 * sa + px * (br.hw - 0.03) * sp;
             const my = br.by + br.ay * hl2 * sa + py * (br.hw - 0.03) * sp;
-            const chunk = this.getChunkForWorld(mx - px * 0.15 * sp, my - py * 0.15 * sp);
-            addBridgePost(getB(chunk.id), mx - chunk.cx, -(my - chunk.cz));
+            addBridgePost(mb, mx, -my);
           }
         }
-        const bChunk = this.getChunkForWorld(br.bx, br.by);
-        const mb = getB(bChunk.id);
         for (const sp of [-1, 1]) {
           const pts: Vec3[] = [];
           for (let i = 0; i < 9; i++) {
@@ -1411,16 +1354,13 @@ export class HqArenaMap3D implements IArenaMap {
             const u = (t * 2 - 1) * hl2;
             const sag = 0.46 - 0.62 * Math.pow(Math.max(0, 1 - (2 * t - 1) ** 2), 0.8);
             const off = br.hw + 0.03 + 0.05 * (1 - (2 * t - 1) ** 2);
-            const mx = br.bx + br.ax * u + px * off * sp;
-            const my = br.by + br.ay * u + py * off * sp;
-            pts.push([mx - bChunk.cx, -(my - bChunk.cz), sag]);
+            pts.push([br.bx + br.ax * u + px * off * sp, -(br.by + br.ay * u + py * off * sp), sag]);
           }
           mb.tube(pts, 0.022, ropeCol, { seg: 5 });
         }
       }
     }
 
-    // ---- Surface Details (tufts, wildflowers, pebbles, fallen leaves, obstacle base foliage, cliff overhangs, theme extras) ----
     const gDark = hexLin(P.tuft_dark);
     const gLight = hexLin(P.tuft_light);
     const flMain = P.flower_main.map((h) => hexLin(h));
@@ -1432,8 +1372,7 @@ export class HqArenaMap3D implements IArenaMap {
     const pebbleBase = hexLin(P.stone_lit);
 
     const addTuft = (mx: number, my: number, s = 1.0, lean?: [number, number], nOpt?: number) => {
-      const chunk = this.getChunkForWorld(mx, my);
-      const mb = getB(chunk.id);
+      const mb = getWaveB(waveOfWorld(mx, my));
       const cnt = nOpt ?? rng.int(4, 7);
       for (let k = 0; k < cnt; k++) {
         const a = rng.uniform(0, Math.PI * 2);
@@ -1443,36 +1382,18 @@ export class HqArenaMap3D implements IArenaMap {
         const oy = rng.normal(0, 0.03 * s);
         let lx = Math.cos(a) * h * 0.45;
         let ly = Math.sin(a) * h * 0.45;
-        if (lean) {
-          lx += lean[0] * h * 0.7;
-          ly += lean[1] * h * 0.7;
-        }
-        const bx = mx + ox - chunk.cx;
-        const by = -(my + oy - chunk.cz);
+        if (lean) { lx += lean[0] * h * 0.7; ly += lean[1] * h * 0.7; }
+        const bx = mx + ox, by = -(my + oy);
         const tipC = lerpLin(gDark, gLight, rng.uniform(0.2, 1.0));
-        mb.tri(
-          [bx - w * Math.sin(a), by + w * Math.cos(a), -0.01],
-          [bx + w * Math.sin(a), by - w * Math.cos(a), -0.01],
-          [bx + lx, by - ly, h],
-          gDark,
-          gDark,
-          tipC,
-          'foliage',
-        );
+        mb.tri([bx - w * Math.sin(a), by + w * Math.cos(a), -0.01], [bx + w * Math.sin(a), by - w * Math.cos(a), -0.01], [bx + lx, by - ly, h], gDark, gDark, tipC, 'foliage');
       }
     };
 
     let floorCells = 0;
     for (let i = 0; i < cells.length; i++) if (cells[i] === CellType.FLOOR) floorCells++;
     const area = floorCells * cs * cs;
+    const wallRects = rectsOfCells(getWallComponents(this.mapData).flat(), this.mapData, Math.max(1, Math.round(2.0 / cs)));
 
-    const wallRects = rectsOfCells(
-      getWallComponents(this.mapData).flat(),
-      this.mapData,
-      Math.max(1, Math.round(2.0 / cs)),
-    );
-
-    // Theme extras (mushroom, fern, cactus, dryshrub, heather, pots, rubble)
     for (const ex of det.extras) {
       if (ex === 'pots' || ex === 'rubble') {
         for (const [x0, y0, w, h] of wallRects) {
@@ -1492,10 +1413,7 @@ export class HqArenaMap3D implements IArenaMap {
               else if (side === 2) { mx = x0 * cs - 0.2; my = (y0 + t * h) * cs; }
               else { mx = (x0 + w) * cs + 0.2; my = (y0 + t * h) * cs; }
             }
-            if (okFloor(mx, my, 0.1)) {
-              const chunk = this.getChunkForWorld(mx, my);
-              addDetailExtra(getB(chunk.id), ex, mx - chunk.cx, -(my - chunk.cz), rng);
-            }
+            if (okFloor(mx, my, 0.1)) addDetailExtra(getWaveB(waveOfWorld(mx, my)), ex, mx, -my, rng);
           }
         }
       } else {
@@ -1507,94 +1425,62 @@ export class HqArenaMap3D implements IArenaMap {
           if (!okFloor(mx, my, 0.22) || sampleAux(dirt, mx, my) > 0.15) continue;
           if (rng.next() > 0.15 + 0.85 * sampleAux(quiet, mx, my)) continue;
           if (rng.next() < 0.65) continue;
-          const chunk = this.getChunkForWorld(mx, my);
-          addDetailExtra(getB(chunk.id), ex, mx - chunk.cx, -(my - chunk.cz), rng);
+          addDetailExtra(getWaveB(waveOfWorld(mx, my)), ex, mx, -my, rng);
         }
       }
     }
 
-    // Scattered grass tufts
-    const nTuft = Math.round(area * det.tuft * 0.75);
+    const nTuft = Math.round(area * det.tuft * 0.72);
     for (let t = 0; t < nTuft; t++) {
-      const mx = rng.uniform(0, this.widthM);
-      const my = rng.uniform(0, this.heightM);
-      if (okFloor(mx, my, 0.12) && rng.next() > sampleAux(dirt, mx, my) * 0.9) {
-        addTuft(mx, my, rng.uniform(0.8, 1.3));
-      }
+      const mx = rng.uniform(0, this.widthM), my = rng.uniform(0, this.heightM);
+      if (okFloor(mx, my, 0.12) && rng.next() > sampleAux(dirt, mx, my) * 0.9) addTuft(mx, my, rng.uniform(0.8, 1.3));
     }
 
-    // Wildflower clusters
     const nFl = Math.round(area * det.flower);
     for (let t = 0; t < nFl; t++) {
-      const mx = rng.uniform(0, this.widthM);
-      const my = rng.uniform(0, this.heightM);
+      const mx = rng.uniform(0, this.widthM), my = rng.uniform(0, this.heightM);
       if (!okFloor(mx, my, 0.25) || sampleAux(dirt, mx, my) > 0.2) continue;
       if (rng.next() > 0.25 + 0.75 * sampleAux(quiet, mx, my)) continue;
       const col = rng.next() < 0.8 ? rng.choice(flMain) : rng.choice(flAcc);
       const spread = rng.uniform(0.14, 0.3);
-      const cnt = rng.int(5, 13);
+      const cnt = rng.int(5, 12);
       for (let j = 0; j < cnt; j++) {
-        const fx = mx + rng.normal(0, spread);
-        const fy = my + rng.normal(0, spread);
+        const fx = mx + rng.normal(0, spread), fy = my + rng.normal(0, spread);
         if (!okFloor(fx, fy, 0.1)) continue;
-        const r = rng.uniform(0.032, 0.048);
-        const z = rng.uniform(0.05, 0.12);
-        const chunk = this.getChunkForWorld(fx, fy);
-        const mb = getB(chunk.id);
-        mb.blob(fx - chunk.cx, -(fy - chunk.cz), z, r, r, r * 0.6, col, col, { sub: 0, smooth: false });
-        mb.blob(fx - chunk.cx, -(fy - chunk.cz), z + r * 0.35, r * 0.4, r * 0.4, r * 0.5, flCore, flCore, { sub: 0, smooth: false });
+        const r = rng.uniform(0.032, 0.048), z = rng.uniform(0.05, 0.12);
+        const mb = getWaveB(waveOfWorld(fx, fy));
+        mb.blob(fx, -fy, z, r, r, r * 0.6, col, col, { sub: 0, smooth: false });
+        mb.blob(fx, -fy, z + r * 0.35, r * 0.4, r * 0.4, r * 0.5, flCore, flCore, { sub: 0, smooth: false });
         addTuft(fx, fy, 0.55, undefined, 2);
       }
     }
 
-    // Road-edge 3D pebbles
     const nPeb = Math.round(area * det.pebble);
     for (let t = 0; t < nPeb; t++) {
-      const mx = rng.uniform(0, this.widthM);
-      const my = rng.uniform(0, this.heightM);
+      const mx = rng.uniform(0, this.widthM), my = rng.uniform(0, this.heightM);
       const d = sampleAux(dirt, mx, my);
       if (!okFloor(mx, my, 0.15) || d <= 0.15 || d >= 0.9 || rng.next() < 0.5) continue;
-      const chunk = this.getChunkForWorld(mx, my);
-      const mb = getB(chunk.id);
+      const mb = getWaveB(waveOfWorld(mx, my));
       const cnt = rng.int(1, 4);
       for (let j = 0; j < cnt; j++) {
-        const ox = rng.normal(0, 0.08);
-        const oy = rng.normal(0, 0.08);
+        const ox = rng.normal(0, 0.08), oy = rng.normal(0, 0.08);
         const r = rng.uniform(0.03, 0.065);
         const c = scaleLin(pebbleBase, rng.uniform(0.85, 1.08));
-        mb.blob(mx + ox - chunk.cx, -(my + oy - chunk.cz), 0.006, r * 1.25, r, r * 0.55, c, c, {
-          sub: 0,
-          smooth: false,
-          rotZ: rng.uniform(0, 6.28),
-        });
+        mb.blob(mx + ox, -(my + oy), 0.006, r * 1.25, r, r * 0.55, c, c, { sub: 0, smooth: false, rotZ: rng.uniform(0, 6.28) });
       }
     }
 
-    // 3D fallen leaves / petals
     const nLeaf = Math.round(area * det.leaf);
     for (let t = 0; t < nLeaf; t++) {
-      const mx = rng.uniform(0, this.widthM);
-      const my = rng.uniform(0, this.heightM);
+      const mx = rng.uniform(0, this.widthM), my = rng.uniform(0, this.heightM);
       if (!okFloor(mx, my, 0.1)) continue;
-      const chunk = this.getChunkForWorld(mx, my);
-      const mb = getB(chunk.id);
+      const mb = getWaveB(waveOfWorld(mx, my));
       const a = rng.uniform(0, 6.28);
-      const L = rng.uniform(0.07, 0.11);
-      const w = rng.uniform(0.03, 0.045);
+      const L = rng.uniform(0.07, 0.11), w = rng.uniform(0.03, 0.045);
       const ca = Math.cos(a), sa = Math.sin(a);
-      const lx = mx - chunk.cx;
-      const ly = -(my - chunk.cz);
-      mb.quad(
-        [lx - ca * L, ly - sa * L, 0.014],
-        [lx - sa * w, ly + ca * w, 0.022],
-        [lx + ca * L, ly + sa * L, 0.014],
-        [lx + sa * w, ly - ca * w, 0.022],
-        rng.choice(leafCols),
-        'foliage',
-      );
+      mb.quad([mx - ca * L, -my - sa * L, 0.014], [mx - sa * w, -my + ca * w, 0.022], [mx + ca * L, -my + sa * L, 0.014], [mx + sa * w, -my - ca * w, 0.022], rng.choice(leafCols), 'foliage');
     }
 
-    // Base foliage around obstacles
     for (const [x0, y0, w, h] of wallRects) {
       const reps = 2 + Math.floor((w + h) * cs * 0.9);
       for (let k = 0; k < reps; k++) {
@@ -1606,11 +1492,8 @@ export class HqArenaMap3D implements IArenaMap {
         else if (side === 2) { mx = x0 * cs - 0.04; my = (y0 + t * h) * cs; }
         else { mx = (x0 + w) * cs + 0.04; my = (y0 + t * h) * cs; }
         if (cellAt(mx, my) !== CellType.FLOOR) continue;
-        const chunk = this.getChunkForWorld(mx, my);
-        const mb = getB(chunk.id);
+        const mb = getWaveB(waveOfWorld(mx, my));
         const size = rng.uniform(0.16, 0.25);
-        const bx = mx - chunk.cx;
-        const by = -(my - chunk.cz);
         const blades = rng.int(5, 8);
         for (let j = 0; j < blades; j++) {
           const a = rng.uniform(0, Math.PI * 2);
@@ -1618,22 +1501,11 @@ export class HqArenaMap3D implements IArenaMap {
           const wd = L * 0.22;
           const ca = Math.cos(a), sa = Math.sin(a);
           const cm = lerpLin(p0Col, p1Col, rng.uniform(0.3, 1.0));
-          mb.quad(
-            [bx, by, 0.01],
-            [bx + ca * L * 0.5 - sa * wd, by + sa * L * 0.5 + ca * wd, L * 0.55],
-            [bx + ca * L, by + sa * L, L * 0.32],
-            [bx + ca * L * 0.5 + sa * wd, by + sa * L * 0.5 - ca * wd, L * 0.55],
-            p0Col,
-            'foliage',
-            cm,
-            p1Col,
-            cm,
-          );
+          mb.quad([mx, -my, 0.01], [mx + ca * L * 0.5 - sa * wd, -my + sa * L * 0.5 + ca * wd, L * 0.55], [mx + ca * L, -my + sa * L, L * 0.32], [mx + ca * L * 0.5 + sa * wd, -my + sa * L * 0.5 - ca * wd, L * 0.55], p0Col, 'foliage', cm, p1Col, cm);
         }
       }
     }
 
-    // Overhanging cliff-edge grass tufts
     const edgeProb = Math.min(1, det.tuft / 1.3);
     for (let y = 0; y < ny; y++) {
       for (let x = 0; x < nx; x++) {
@@ -1654,12 +1526,17 @@ export class HqArenaMap3D implements IArenaMap {
       }
     }
 
-    // Commit per-chunk detail meshes (zero extra draw calls per detail!)
-    for (const [cid, mb] of builders) {
+    // Commit 1 merged detail mesh group per wave (sharing arena materials!)
+    for (const [wave, mb] of waveBuilders) {
       if (!mb.hasAny()) continue;
-      const chunk = this.chunks[cid];
-      const { meshes } = mb.buildMeshes({ castShadow: false, receiveShadow: true });
-      for (const m of meshes) chunk.group.add(m);
+      const bundle = this.waveBundles.get(wave);
+      if (!bundle) continue;
+      const { meshes } = mb.buildMeshes({
+        castShadow: false,
+        receiveShadow: true,
+        sharedMats: this.sharedBucketMats,
+      });
+      for (const m of meshes) bundle.intactDetails.add(m);
     }
   }
 
@@ -1669,7 +1546,6 @@ export class HqArenaMap3D implements IArenaMap {
     const D = this.hqTheme.decor;
     const P = this.hqTheme.pal;
 
-    // Placements directly from `env.auto_decor(Wm, Hm)` (Blender coords: Y = -mapY, Z = up)
     interface DecorSlot {
       nm: string;
       x: number;
@@ -1679,27 +1555,25 @@ export class HqArenaMap3D implements IArenaMap {
       ry: number;
       kind: 'mixed' | 'trees' | 'bushes' | 'none';
       pri: number;
+      occludable: boolean;
     }
     const slots: DecorSlot[] = [
-      { nm: 'm06', x: -4.4, y: -Hm * 0.5 + 0.3, z: 1.4 + D.dz, rx: 2.9, ry: 4.5, kind: 'mixed', pri: 3 },
-      { nm: 'm07', x: Wm + 4.3, y: -Hm * 0.5 - 0.3, z: 1.1 + D.dz, rx: 2.9, ry: 4.4, kind: 'trees', pri: 2 },
-      { nm: 'm00', x: 1.0 + Wm * 0.05, y: 4.6, z: -1.8, rx: 3.4, ry: 2.3, kind: 'trees', pri: 1 },
-      { nm: 'm01', x: Wm - 1.0 - Wm * 0.05, y: 4.8, z: -2.2, rx: 3.4, ry: 2.3, kind: 'mixed', pri: 0 },
-      { nm: 'm03', x: -2.2, y: -(Hm + 2.8), z: -0.3, rx: 2.2, ry: 1.7, kind: 'bushes', pri: 6 },
-      { nm: 'm04', x: Wm + 2.4, y: -(Hm + 3.0), z: -0.5, rx: 2.2, ry: 1.7, kind: 'bushes', pri: 7 },
-      { nm: 's01', x: -1.0, y: 1.4, z: -3.0, rx: 1.35, ry: 1.15, kind: 'none', pri: 9 },
-      { nm: 's03', x: Wm + 1.0, y: 1.1, z: -2.5, rx: 1.4, ry: 1.15, kind: 'none', pri: 9 },
-      { nm: 's00', x: Wm * 0.3, y: -(Hm + 3.4), z: -2.2, rx: 1.5, ry: 1.2, kind: 'none', pri: 9 },
+      { nm: 'm06', x: -4.4, y: -Hm * 0.5 + 0.3, z: 1.4 + D.dz, rx: 2.9, ry: 4.5, kind: 'mixed', pri: 3, occludable: true },
+      { nm: 'm07', x: Wm + 4.3, y: -Hm * 0.5 - 0.3, z: 1.1 + D.dz, rx: 2.9, ry: 4.4, kind: 'trees', pri: 2, occludable: true },
+      { nm: 'm00', x: 1.0 + Wm * 0.05, y: 4.6, z: -1.8, rx: 3.4, ry: 2.3, kind: 'trees', pri: 1, occludable: false },
+      { nm: 'm01', x: Wm - 1.0 - Wm * 0.05, y: 4.8, z: -2.2, rx: 3.4, ry: 2.3, kind: 'mixed', pri: 0, occludable: false },
+      { nm: 'm03', x: -2.2, y: -(Hm + 2.8), z: -0.3, rx: 2.2, ry: 1.7, kind: 'bushes', pri: 6, occludable: true },
+      { nm: 'm04', x: Wm + 2.4, y: -(Hm + 3.0), z: -0.5, rx: 2.2, ry: 1.7, kind: 'bushes', pri: 7, occludable: true },
+      { nm: 's01', x: -1.0, y: 1.4, z: -3.0, rx: 1.35, ry: 1.15, kind: 'none', pri: 9, occludable: false },
+      { nm: 's03', x: Wm + 1.0, y: 1.1, z: -2.5, rx: 1.4, ry: 1.15, kind: 'none', pri: 9, occludable: false },
+      { nm: 's00', x: Wm * 0.3, y: -(Hm + 3.4), z: -2.2, rx: 1.5, ry: 1.2, kind: 'none', pri: 9, occludable: false },
     ];
-    if (Wm > 20) {
-      slots.push({ nm: 'm02', x: Wm * 0.5, y: 6.6, z: -3.6, rx: 3.6, ry: 2.2, kind: 'mixed', pri: 4 });
-    }
+    if (Wm > 20) slots.push({ nm: 'm02', x: Wm * 0.5, y: 6.6, z: -3.6, rx: 3.6, ry: 2.2, kind: 'mixed', pri: 4, occludable: false });
     if (Hm > 13.5) {
-      slots.push({ nm: 'm04b', x: -5.6, y: -Hm - 0.5, z: 0.6, rx: 2.4, ry: 2.2, kind: 'trees', pri: 8 });
-      slots.push({ nm: 'm03b', x: Wm + 5.6, y: -Hm - 0.8, z: 0.4, rx: 2.4, ry: 2.2, kind: 'mixed', pri: 8 });
+      slots.push({ nm: 'm04b', x: -5.6, y: -Hm - 0.5, z: 0.6, rx: 2.4, ry: 2.2, kind: 'trees', pri: 8, occludable: false });
+      slots.push({ nm: 'm03b', x: Wm + 5.6, y: -Hm - 0.8, z: 0.4, rx: 2.4, ry: 2.2, kind: 'mixed', pri: 8, occludable: false });
     }
 
-    // Assign theme signature landmarks by priority (`m01`, `m00`, `m07`, `m06`, `m02`...)
     const sortedForFeats = slots
       .map((s, idx) => ({ idx, pri: s.pri, kind: s.kind }))
       .filter((s) => s.kind !== 'none')
@@ -1712,48 +1586,36 @@ export class HqArenaMap3D implements IArenaMap {
     const pickTreePal = (): [string, string, string] => {
       const tot = P.tree_pals.reduce((acc, [w]) => acc + w, 0);
       let r = rng.next() * tot;
-      for (const [w, pal] of P.tree_pals) {
-        r -= w;
-        if (r <= 0) return pal;
-      }
+      for (const [w, pal] of P.tree_pals) { r -= w; if (r <= 0) return pal; }
       return P.tree_pals[P.tree_pals.length - 1][1];
     };
-
     const pickMixKind = (): string | null => {
       if (!D.mix || D.mix.length === 0) return null;
       const tot = D.mix.reduce((acc, [w]) => acc + w, 0);
       let r = rng.next() * tot;
-      for (const [w, k] of D.mix) {
-        r -= w;
-        if (r <= 0) return k;
-      }
+      for (const [w, k] of D.mix) { r -= w; if (r <= 0) return k; }
       return D.mix[D.mix.length - 1][1];
     };
 
-    const cGrass = hexLin(P.grass);
-    const cGrass2 = hexLin(P.grass2);
-    const cRim = hexLin(P.grass_rim);
-    const cLip = hexLin(P.lip);
-    const cSoil = hexLin(P.soil);
-    const cRockA = hexLin(P.rock_a);
-    const cRockB = hexLin(P.rock_b);
-    const cRockC = hexLin(P.rock_c);
-    const cRockDeep = hexLin(P.rock_deep);
-    const cRockUnder = hexLin(P.rock_under);
+    const cGrass = hexLin(P.grass), cGrass2 = hexLin(P.grass2), cRim = hexLin(P.grass_rim);
+    const cLip = hexLin(P.lip), cSoil = hexLin(P.soil);
+    const cRockA = hexLin(P.rock_a), cRockB = hexLin(P.rock_b), cRockC = hexLin(P.rock_c);
+    const cRockDeep = hexLin(P.rock_deep), cRockUnder = hexLin(P.rock_under);
     const fCols = P.flower_main.map((h) => hexLin(h));
-
     const spaceMap: Record<string, number> = { house: 1.7, bigtree: 1.25, spire: 1.1, sakura: 1.1, palm: 1.0 };
 
-    slots.forEach((sl, si) => {
-      const mb = new HqMeshBuilder();
+    // Merge all non-occludable distant islands into ONE single builder (3 draw calls instead of 28!)
+    const mergedFarMb = new HqMeshBuilder();
 
-      // Build organic faceted floating island plateau
+    slots.forEach((sl, si) => {
+      const mb = sl.occludable ? new HqMeshBuilder() : mergedFarMb;
+
       const sides = 14;
       const angs: number[] = [];
       const rScale: number[] = [];
       for (let i = 0; i < sides; i++) {
-        angs.push((2 * Math.PI * i) / sides + rng.uniform(-0.14, 0.14));
-        rScale.push(rng.uniform(0.84, 1.14));
+        angs.push((2 * Math.PI * i) / sides + rng.uniform(-0.12, 0.12));
+        rScale.push(rng.uniform(0.86, 1.12));
       }
 
       const depth = Math.min(6.2, Math.max(2.6, (sl.rx + sl.ry) * 0.72));
@@ -1769,24 +1631,15 @@ export class HqArenaMap3D implements IArenaMap {
       const rings: Vec3[][] = levels.map(([sc, zz]) => {
         const ring: Vec3[] = [];
         for (let i = 0; i < sides; i++) {
-          ring.push([
-            sl.x + Math.cos(angs[i]) * sl.rx * rScale[i] * sc,
-            sl.y + Math.sin(angs[i]) * sl.ry * rScale[i] * sc,
-            zz,
-          ]);
+          ring.push([sl.x + Math.cos(angs[i]) * sl.rx * rScale[i] * sc, sl.y + Math.sin(angs[i]) * sl.ry * rScale[i] * sc, zz]);
         }
         return ring;
       });
 
-      // Top grass cap (center -> inner ring -> rim)
       const topOuter = rings[0];
       const topMid: Vec3[] = [];
       for (let i = 0; i < sides; i++) {
-        topMid.push([
-          sl.x + Math.cos(angs[i]) * sl.rx * rScale[i] * 0.78,
-          sl.y + Math.sin(angs[i]) * sl.ry * rScale[i] * 0.78,
-          sl.z + 0.015,
-        ]);
+        topMid.push([sl.x + Math.cos(angs[i]) * sl.rx * rScale[i] * 0.78, sl.y + Math.sin(angs[i]) * sl.ry * rScale[i] * 0.78, sl.z + 0.015]);
       }
       const ctr: Vec3 = [sl.x, sl.y, sl.z + 0.04];
       for (let i = 0; i < sides; i++) {
@@ -1796,11 +1649,8 @@ export class HqArenaMap3D implements IArenaMap {
         mb.quad(topMid[i], topOuter[i], topOuter[j], topMid[j], gC, 'solid', cRim, cRim, gC);
       }
 
-      // Stratified cliff sides + tapered floating keel tip
       for (let k = 0; k < rings.length - 1; k++) {
-        const r0 = rings[k];
-        const r1 = rings[k + 1];
-        const col = levels[k][2];
+        const r0 = rings[k], r1 = rings[k + 1], col = levels[k][2];
         for (let i = 0; i < sides; i++) {
           const j = (i + 1) % sides;
           mb.quad(r0[i], r1[i], r1[j], r0[j], scaleLin(col, 0.92 + ((i * 7 + k * 3) % 5) * 0.04));
@@ -1808,12 +1658,8 @@ export class HqArenaMap3D implements IArenaMap {
       }
       const keelTip: Vec3 = [sl.x, sl.y, sl.z - depth];
       const botRing = rings[rings.length - 1];
-      for (let i = 0; i < sides; i++) {
-        const j = (i + 1) % sides;
-        mb.tri(botRing[i], keelTip, botRing[j], cRockUnder);
-      }
+      for (let i = 0; i < sides; i++) mb.tri(botRing[i], keelTip, botRing[(i + 1) % sides], cRockUnder);
 
-      // Place landmark feature & distant props on plateau top
       const placed: [number, number][] = [];
       const fname = featFor.get(si);
       if (fname) {
@@ -1833,8 +1679,7 @@ export class HqArenaMap3D implements IArenaMap {
         const gap = tk ? (spaceMap[tk] ?? 0.95) : 0.95;
         if (placed.some(([qx, qy]) => (lx - qx) ** 2 + (ly - qy) ** 2 < gap * gap)) continue;
         placed.push([lx, ly]);
-        const wx = sl.x + lx;
-        const wy = sl.y + ly;
+        const wx = sl.x + lx, wy = sl.y + ly;
         const sc = rng.uniform(0.9, 1.35) * (sl.kind === 'bushes' && tk ? 0.75 : 1.0);
         if (tk === 'pine' || (tk === null && sl.kind !== 'bushes' && rng.next() < D.pines * (sl.kind === 'mixed' ? 1.0 : 0.5))) {
           addFarPine(mb, wx, wy, sl.z, sc * 1.15, rng, P.pine_pal, P.trunk);
@@ -1852,8 +1697,7 @@ export class HqArenaMap3D implements IArenaMap {
         for (let b = 0; b < bCount; b++) {
           const ang = rng.uniform(0, Math.PI * 2);
           const rad = Math.sqrt(rng.next()) * 0.74;
-          const lx = Math.cos(ang) * sl.rx * rad;
-          const ly = Math.sin(ang) * sl.ry * rad;
+          const lx = Math.cos(ang) * sl.rx * rad, ly = Math.sin(ang) * sl.ry * rad;
           if (placed.some(([qx, qy]) => (lx - qx) ** 2 + (ly - qy) ** 2 < 0.7 * 0.7)) continue;
           placed.push([lx, ly]);
           addFarBush(mb, sl.x + lx, sl.y + ly, sl.z, rng.uniform(0.7, 1.15), rng, P.bush_pal);
@@ -1870,97 +1714,67 @@ export class HqArenaMap3D implements IArenaMap {
           const col = rng.choice(fCols);
           for (let j = 0; j < 4; j++) {
             const r = rng.uniform(0.035, 0.05);
-            mb.blob(fx0 + rng.normal(0, 0.1), fy0 + rng.normal(0, 0.1), sl.z + rng.uniform(0.04, 0.1), r, r, r * 0.7, col, col, {
-              sub: 1,
-              smooth: false,
-            });
+            mb.blob(fx0 + rng.normal(0, 0.1), fy0 + rng.normal(0, 0.1), sl.z + rng.uniform(0.04, 0.1), r, r, r * 0.7, col, col, { sub: 0, smooth: false });
           }
         }
       }
 
-      const { meshes, ownedMaterials } = mb.buildMeshes({ castShadow: false, receiveShadow: true });
-      const grp = new THREE.Group();
-      for (const m of meshes) grp.add(m);
-      this.root.add(grp);
-
-      // Register nearby foreground/side scenic islands as occluders so low close-ups near arena edges stay crisp!
-      if (sl.nm === 'm03' || sl.nm === 'm04' || sl.nm === 'm06' || sl.nm === 'm07') {
-        this.registerOccluder(meshes, ownedMaterials, -1, false);
+      if (sl.occludable) {
+        const { meshes } = mb.buildMeshes({ castShadow: false, receiveShadow: true, sharedMats: this.sharedBucketMats });
+        const grp = new THREE.Group();
+        for (const m of meshes) grp.add(m);
+        this.root.add(grp);
+        this.registerOccluder(meshes, -1, false);
       }
     });
 
-    // Animated cascading waterfall pouring off the left high mesa (`m06`) into the cloud sea
+    if (mergedFarMb.hasAny()) {
+      const { meshes } = mergedFarMb.buildMeshes({ castShadow: false, receiveShadow: true, sharedMats: this.sharedBucketMats });
+      for (const m of meshes) this.root.add(m);
+    }
+
+    // Animated cascading waterfall pouring off left high mesa (`m06`)
     if (D.waterfall) {
       const wf = new THREE.Group();
       const wfX = -4.4 + 2.75;
       const wfZ = Hm * 0.56;
       const topY = 1.4 + D.dz;
       const drop = 11.5;
-      const width = 0.72;
 
-      // Main luminous falling ribbon
-      const ribGeo = new THREE.PlaneGeometry(width, drop, 1, 8);
+      const ribGeo = new THREE.PlaneGeometry(0.72, drop, 1, 8);
       const posAttr = ribGeo.getAttribute('position');
       for (let i = 0; i < posAttr.count; i++) {
         const yLocal = posAttr.getY(i);
-        const t = (drop * 0.5 - yLocal) / drop; // 0 at top -> 1 at bottom
-        const curveOut = Math.sin(Math.min(1, t * 2.2) * Math.PI * 0.5) * 0.55;
-        posAttr.setZ(i, curveOut);
+        const t = (drop * 0.5 - yLocal) / drop;
+        posAttr.setZ(i, Math.sin(Math.min(1, t * 2.2) * Math.PI * 0.5) * 0.55);
       }
       ribGeo.computeVertexNormals();
-      const ribMat = new THREE.MeshBasicMaterial({
-        color: '#7CE0FA',
-        transparent: true,
-        opacity: 0.76,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
-      const rib = new THREE.Mesh(ribGeo, ribMat);
+      const rib = new THREE.Mesh(
+        ribGeo,
+        new THREE.MeshBasicMaterial({ color: '#7CE0FA', transparent: true, opacity: 0.76, side: THREE.DoubleSide, depthWrite: false }),
+      );
       rib.position.set(wfX, topY - drop * 0.5, wfZ);
       rib.rotation.y = Math.PI * 0.5;
       wf.add(rib);
 
-      // Animated white foam streaks cascading down the waterfall
       const streakGeo = new THREE.PlaneGeometry(0.14, 1.35);
-      const streakMat = new THREE.MeshBasicMaterial({
-        color: '#EFFBFF',
-        transparent: true,
-        opacity: 0.85,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      });
-      for (let i = 0; i < 9; i++) {
+      const streakMat = new THREE.MeshBasicMaterial({ color: '#EFFBFF', transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
+      for (let i = 0; i < 6; i++) {
         const sm = new THREE.Mesh(streakGeo, streakMat);
         sm.rotation.y = Math.PI * 0.5;
-        sm.userData = {
-          wfX: wfX + 0.52,
-          wfZ: wfZ + ((i % 3) - 1) * 0.2,
-          topY,
-          drop,
-          phase: i / 9,
-        };
+        sm.userData = { wfX: wfX + 0.52, wfZ: wfZ + ((i % 3) - 1) * 0.2, topY, drop, phase: i / 6 };
         wf.add(sm);
         this.waterfallStreaks.push(sm);
       }
 
-      // Soft foam mist puffs at top lip & bottom cloud splash
-      const mistGeo = new THREE.IcosahedronGeometry(0.32, 1);
-      const mistMat = new THREE.MeshBasicMaterial({
-        color: '#F4FDFF',
-        transparent: true,
-        opacity: 0.72,
-        depthWrite: false,
-      });
-      for (let i = 0; i < 6; i++) {
-        const isTop = i < 3;
+      const mistGeo = new THREE.IcosahedronGeometry(0.32, 0);
+      const mistMat = new THREE.MeshBasicMaterial({ color: '#F4FDFF', transparent: true, opacity: 0.72, depthWrite: false });
+      for (let i = 0; i < 4; i++) {
+        const isTop = i < 2;
         const mm = new THREE.Mesh(mistGeo, mistMat);
-        mm.position.set(
-          wfX + (isTop ? 0.25 : 0.65) + (i % 3 - 1) * 0.14,
-          isTop ? topY - 0.1 : topY - drop + 0.6,
-          wfZ + ((i % 3) - 1) * 0.25,
-        );
+        mm.position.set(wfX + (isTop ? 0.25 : 0.65) + (i % 2 - 0.5) * 0.18, isTop ? topY - 0.1 : topY - drop + 0.6, wfZ + ((i % 2) - 0.5) * 0.26);
         mm.scale.setScalar(isTop ? 0.75 : 1.35);
-        mm.userData = { baseY: mm.position.y, phase: i * 1.3, baseScale: mm.scale.x };
+        mm.userData = { baseY: mm.position.y, phase: i * 1.5, baseScale: mm.scale.x };
         wf.add(mm);
         this.waterfallMist.push(mm);
       }
@@ -1972,7 +1786,7 @@ export class HqArenaMap3D implements IArenaMap {
 
   private buildClouds(rng: SeededRng) {
     const P = this.hqTheme.pal;
-    const count = 72;
+    const count = 68;
     const geo = buildFluffyCloudGeometry();
     const mat = new THREE.MeshLambertMaterial({
       color: '#ffffff',
@@ -1987,7 +1801,7 @@ export class HqArenaMap3D implements IArenaMap {
     const cz0 = this.heightM * 0.5;
 
     for (let i = 0; i < count; i++) {
-      const high = i >= 58;
+      const high = i >= 54;
       const x = cx0 + (rng.next() - 0.5) * (this.widthM * 3.4 + 34);
       const z = cz0 + (rng.next() - 0.5) * (this.heightM * 3.0 + 30) - (high ? 4 : 0);
       const y = high ? -7.8 - rng.next() * 1.8 : -11.5 - rng.next() * 3.8;
@@ -2014,15 +1828,10 @@ export class HqArenaMap3D implements IArenaMap {
   private buildAmbientParticles(rng: SeededRng) {
     const amb = this.hqTheme.ambient;
     if (!amb || amb.cols.length === 0) return;
-    const count = Math.max(12, Math.min(72, Math.round((amb.n * (this.widthM * this.heightM)) / 216)));
+    const count = Math.max(12, Math.min(64, Math.round((amb.n * (this.widthM * this.heightM)) / 216)));
     const s0 = amb.size * 2.2;
     const geo = new THREE.PlaneGeometry(s0, s0 * 0.65);
-    const mat = new THREE.MeshBasicMaterial({
-      color: '#ffffff',
-      side: THREE.DoubleSide,
-      transparent: true,
-      opacity: 0.84,
-    });
+    const mat = new THREE.MeshBasicMaterial({ color: '#ffffff', side: THREE.DoubleSide, transparent: true, opacity: 0.84 });
     this.ambientMesh = new THREE.InstancedMesh(geo, mat, count);
     for (let i = 0; i < count; i++) {
       this.ambientData.push({
@@ -2045,73 +1854,151 @@ export class HqArenaMap3D implements IArenaMap {
     const { waveSteps, colWarn } = this.mapData;
     const freezeT = opts?.freezeCollapseAtTick;
 
-    // 1. Per-wave terrain chunk warning shake/pulse & tumbling fall (with post-match freeze & rewind restore!)
-    for (let i = 0; i < this.chunks.length; i++) {
-      const ch = this.chunks[i];
-      if (ch.wave < 0 || ch.wave >= waveSteps.length) continue;
-      const fallStep = waveSteps[ch.wave];
-      const alreadyFalling = fallStep >= 0 && (freezeT !== undefined ? fallStep <= freezeT : gt >= fallStep);
+    let maxWarnEmissive = 0;
 
-      if (alreadyFalling && gt >= fallStep) {
-        ch.modified = true;
-        const maxD = this.waveMaxDist.get(ch.wave) ?? 1;
-        const delay = (1 - ch.distFromCenter / maxD) * 4.5 + ch.rnd[0] * 1.8;
-        const u = gt - fallStep;
-        if (u < delay) {
-          // Final crack tremor right before dropping
-          const amp = 0.032;
-          const ph = elapsedSec * 44 + ch.rnd[1] * 20;
-          ch.group.visible = true;
-          ch.group.position.set(ch.cx + Math.sin(ph) * amp, -0.05, ch.cz + Math.cos(ph * 1.3) * amp);
-          ch.group.rotation.set(Math.sin(ph * 0.9) * 0.04, 0, Math.cos(ph * 1.1) * 0.04);
-          ch.group.scale.setScalar(1);
-          for (const m of ch.warnMaterials) m.emissive.copy(this._warnCol).multiplyScalar(0.5);
-        } else {
-          const tau = (u - delay) / 20;
-          const drop = 0.5 * 14.5 * tau * tau + 0.65 * tau;
-          if (drop < 18) {
-            ch.group.visible = true;
-            const ox = ch.cx - this.widthM * 0.5;
-            const oz = ch.cz - this.heightM * 0.5;
-            const L = Math.hypot(ox, oz) || 1;
-            const out = 0.48 * tau;
-            ch.group.position.set(ch.cx + (ox / L) * out, -0.06 - drop, ch.cz + (oz / L) * out);
-            const ax = ch.rnd[4] * Math.PI * 2;
-            const ang = (0.35 + 1.5 * ch.rnd[5]) * tau * 1.5;
-            ch.group.rotation.set(Math.cos(ax) * ang, (ch.rnd[2] - 0.5) * tau, Math.sin(ax) * ang);
-            ch.group.scale.setScalar(Math.max(0.05, 1 - tau * 0.25));
-            for (const m of ch.warnMaterials) m.emissive.copy(this._black);
-          } else {
-            ch.group.visible = false;
+    // 1. Wave-level swap between ultra-fast merged intact mesh & compact 4x4 active-collapse chunks!
+    for (const [wave, bundle] of this.waveBundles) {
+      if (wave < 0 || wave >= waveSteps.length) continue;
+      const fallStep = waveSteps[wave];
+      const frozenIntact = freezeT !== undefined && fallStep > freezeT;
+      const inWarning = !frozenIntact && gt >= fallStep - colWarn && gt < fallStep;
+      const isFalling = !frozenIntact && gt >= fallStep;
+
+      if (!inWarning && !isFalling) {
+        // Wave is completely intact -> single merged intactTerrain + intactDetails (2-4 draw calls!)
+        if (bundle.mode !== 'intact') {
+          bundle.mode = 'intact';
+          bundle.intactTerrain.visible = true;
+          bundle.intactDetails.visible = true;
+          for (const ch of bundle.chunks) {
+            ch.terrainGroup.visible = false;
+            ch.propMount.visible = true;
+            ch.propMount.position.set(ch.cx, 0, ch.cz);
+            ch.propMount.rotation.set(0, 0, 0);
+            ch.propMount.scale.setScalar(1);
+            if (ch.usingWarnMat) {
+              ch.usingWarnMat = false;
+              if (ch.topMesh) ch.topMesh.material = this.sharedTopMat;
+              if (ch.cliffMesh) ch.cliffMesh.material = this.sharedCliffMat;
+            }
+            ch.modified = false;
           }
         }
         continue;
       }
 
-      if (freezeT === undefined && fallStep >= 0 && gt >= fallStep - colWarn) {
-        ch.modified = true;
-        const prog = Math.min(1, Math.max(0, (gt - (fallStep - colWarn)) / Math.max(1, colWarn)));
-        const amp = (0.01 + 0.032 * prog) * prog;
-        const ph = elapsedSec * (32 + 22 * prog) + ch.rnd[1] * 20;
-        ch.group.visible = true;
-        ch.group.position.set(ch.cx + Math.sin(ph) * amp, -0.02 - 0.04 * prog * prog, ch.cz + Math.cos(ph * 1.25) * amp);
-        const tilt = (0.012 + 0.04 * prog) * prog;
-        ch.group.rotation.set(Math.sin(ph * 0.8 + ch.rnd[2] * 6) * tilt, 0, Math.cos(ph * 1.1 + ch.rnd[3] * 6) * tilt);
-        ch.group.scale.setScalar(1);
-        const pulse = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(elapsedSec * (9 + prog * 14)));
-        const emi = pulse * (0.18 + 0.42 * prog);
-        for (const m of ch.warnMaterials) m.emissive.copy(this._warnCol).multiplyScalar(emi);
-        continue;
+      // Active warning or falling wave -> hide merged intact slab, animate compact 4x4 chunks!
+      bundle.mode = 'active';
+      bundle.intactTerrain.visible = false;
+      bundle.intactDetails.visible = false;
+
+      const maxD = this.waveMaxDist.get(wave) ?? 1;
+      let anyVisible = false;
+
+      for (const ch of bundle.chunks) {
+        if (isFalling) {
+          const delay = (1 - ch.distFromCenter / maxD) * 4.5 + ch.rnd[0] * 1.8;
+          const u = gt - fallStep;
+          if (u < delay) {
+            anyVisible = true;
+            const amp = 0.032;
+            const ph = elapsedSec * 44 + ch.rnd[1] * 20;
+            const px = ch.cx + Math.sin(ph) * amp;
+            const pz = ch.cz + Math.cos(ph * 1.3) * amp;
+            const rx = Math.sin(ph * 0.9) * 0.04;
+            const rz = Math.cos(ph * 1.1) * 0.04;
+            ch.terrainGroup.visible = true;
+            ch.propMount.visible = true;
+            ch.terrainGroup.position.set(px, -0.05, pz);
+            ch.terrainGroup.rotation.set(rx, 0, rz);
+            ch.terrainGroup.scale.setScalar(1);
+            ch.propMount.position.set(px, -0.05, pz);
+            ch.propMount.rotation.set(rx, 0, rz);
+            ch.propMount.scale.setScalar(1);
+            if (!ch.usingWarnMat) {
+              ch.usingWarnMat = true;
+              if (ch.topMesh) ch.topMesh.material = this.warnTopMat;
+              if (ch.cliffMesh) ch.cliffMesh.material = this.warnCliffMat;
+            }
+            maxWarnEmissive = Math.max(maxWarnEmissive, 0.5);
+          } else {
+            const tau = (u - delay) / 20;
+            const drop = 0.5 * 14.5 * tau * tau + 0.65 * tau;
+            if (drop < 18) {
+              anyVisible = true;
+              const ox = ch.cx - this.widthM * 0.5;
+              const oz = ch.cz - this.heightM * 0.5;
+              const L = Math.hypot(ox, oz) || 1;
+              const out = 0.48 * tau;
+              const px = ch.cx + (ox / L) * out;
+              const py = -0.06 - drop;
+              const pz = ch.cz + (oz / L) * out;
+              const ax = ch.rnd[4] * Math.PI * 2;
+              const ang = (0.35 + 1.5 * ch.rnd[5]) * tau * 1.5;
+              const rx = Math.cos(ax) * ang;
+              const ry = (ch.rnd[2] - 0.5) * tau;
+              const rz = Math.sin(ax) * ang;
+              const sc = Math.max(0.05, 1 - tau * 0.25);
+
+              ch.terrainGroup.visible = true;
+              ch.propMount.visible = true;
+              ch.terrainGroup.position.set(px, py, pz);
+              ch.terrainGroup.rotation.set(rx, ry, rz);
+              ch.terrainGroup.scale.setScalar(sc);
+              ch.propMount.position.set(px, py, pz);
+              ch.propMount.rotation.set(rx, ry, rz);
+              ch.propMount.scale.setScalar(sc);
+              if (ch.usingWarnMat) {
+                ch.usingWarnMat = false;
+                if (ch.topMesh) ch.topMesh.material = this.sharedTopMat;
+                if (ch.cliffMesh) ch.cliffMesh.material = this.sharedCliffMat;
+              }
+            } else {
+              ch.terrainGroup.visible = false;
+              ch.propMount.visible = false;
+            }
+          }
+        } else {
+          // Warning tremor + orange glow pulse
+          anyVisible = true;
+          const prog = Math.min(1, Math.max(0, (gt - (fallStep - colWarn)) / Math.max(1, colWarn)));
+          const amp = (0.01 + 0.032 * prog) * prog;
+          const ph = elapsedSec * (32 + 22 * prog) + ch.rnd[1] * 20;
+          const px = ch.cx + Math.sin(ph) * amp;
+          const py = -0.02 - 0.04 * prog * prog;
+          const pz = ch.cz + Math.cos(ph * 1.25) * amp;
+          const tilt = (0.012 + 0.04 * prog) * prog;
+          const rx = Math.sin(ph * 0.8 + ch.rnd[2] * 6) * tilt;
+          const rz = Math.cos(ph * 1.1 + ch.rnd[3] * 6) * tilt;
+
+          ch.terrainGroup.visible = true;
+          ch.propMount.visible = true;
+          ch.terrainGroup.position.set(px, py, pz);
+          ch.terrainGroup.rotation.set(rx, 0, rz);
+          ch.terrainGroup.scale.setScalar(1);
+          ch.propMount.position.set(px, py, pz);
+          ch.propMount.rotation.set(rx, 0, rz);
+          ch.propMount.scale.setScalar(1);
+
+          if (!ch.usingWarnMat) {
+            ch.usingWarnMat = true;
+            if (ch.topMesh) ch.topMesh.material = this.warnTopMat;
+            if (ch.cliffMesh) ch.cliffMesh.material = this.warnCliffMat;
+          }
+          const pulse = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(elapsedSec * (9 + prog * 14)));
+          maxWarnEmissive = Math.max(maxWarnEmissive, pulse * (0.18 + 0.42 * prog));
+        }
       }
 
-      if (ch.modified) {
-        ch.modified = false;
-        ch.group.visible = true;
-        ch.group.position.set(ch.cx, 0, ch.cz);
-        ch.group.rotation.set(0, 0, 0);
-        ch.group.scale.setScalar(1);
-        for (const m of ch.warnMaterials) m.emissive.copy(this._black);
-      }
+      if (!anyVisible && isFalling) bundle.mode = 'fallen';
+    }
+
+    if (maxWarnEmissive > 0.001) {
+      this.warnTopMat.emissive.copy(this._warnCol).multiplyScalar(maxWarnEmissive);
+      this.warnCliffMat.emissive.copy(this._warnCol).multiplyScalar(maxWarnEmissive);
+    } else {
+      this.warnTopMat.emissive.copy(this._black);
+      this.warnCliffMat.emissive.copy(this._black);
     }
 
     // 2. Gentle tall-grass breeze sway
@@ -2121,12 +2008,12 @@ export class HqArenaMap3D implements IArenaMap {
       g.group.rotation.set(sw, 0, sw * 0.65);
     }
 
-    // 3. Animated cascading waterfall streaks & mist
+    // 3. Animated cascading waterfall
     if (this.waterfallGroup) {
       for (let i = 0; i < this.waterfallStreaks.length; i++) {
         const sm = this.waterfallStreaks[i];
         const ud = sm.userData as { wfX: number; wfZ: number; topY: number; drop: number; phase: number };
-        const t = ((elapsedSec * 0.62 + ud.phase) % 1 + 1) % 1;
+        const t = (((elapsedSec * 0.62 + ud.phase) % 1) + 1) % 1;
         const y = ud.topY - t * ud.drop;
         const curveOut = Math.sin(Math.min(1, t * 2.2) * Math.PI * 0.5) * 0.55;
         sm.position.set(ud.wfX - 0.52 + curveOut + 0.04, y, ud.wfZ);
@@ -2190,9 +2077,16 @@ export class HqArenaMap3D implements IArenaMap {
   }
 
   public dispose() {
+    disposeOccluderEntries(this.occluders);
     this.groundResult.texture.dispose();
     const geos = new Set<THREE.BufferGeometry>();
-    const mats = new Set<THREE.Material>();
+    const mats = new Set<THREE.Material>([
+      this.sharedTopMat,
+      this.sharedCliffMat,
+      this.warnTopMat,
+      this.warnCliffMat,
+      ...Object.values(this.sharedBucketMats),
+    ]);
     this.root.traverse((obj) => {
       if (obj instanceof THREE.Mesh) {
         geos.add(obj.geometry);

@@ -914,18 +914,18 @@ export function addArenaTree(
   const cC = hexLin(cw[2]);
   const R = a * 0.82 * cr;
   const top = z + h;
-  mb.blob(cx, cy, top + R * 0.45 * flat, R * 0.8, R * 0.8, R * 0.8 * flat, cA, cB, { sub: 2, smooth: true });
+  mb.blob(cx, cy, top + R * 0.45 * flat, R * 0.8, R * 0.8, R * 0.8 * flat, cA, cB, { sub: 1, smooth: true });
   for (let k = 0; k < blobs - 1; k++) {
     const an = rot0 + (2 * Math.PI * k) / Math.max(1, blobs - 1);
     const rr = R * 0.6;
     const rb = R * rng.uniform(0.44, 0.56);
     mb.blob(cx + Math.cos(an) * rr, cy + Math.sin(an) * rr, top + R * rng.uniform(0.15, 0.6) * flat, rb, rb, rb * flat, cA, k % 2 ? cC : cB, {
-      sub: 2,
+      sub: 1,
       smooth: true,
     });
   }
-  mb.blob(cx - R * 0.15, cy + R * 0.1, top + R * 1.0 * flat, R * 0.52, R * 0.52, R * 0.46 * flat, cB, cC, { sub: 2, smooth: true });
-  mb.blob(cx + R * 0.3, cy - R * 0.2, top + R * 0.85 * flat, R * 0.36, R * 0.36, R * 0.32 * flat, cB, cC, { sub: 2, smooth: true });
+  mb.blob(cx - R * 0.15, cy + R * 0.1, top + R * 1.0 * flat, R * 0.52, R * 0.52, R * 0.46 * flat, cB, cC, { sub: 1, smooth: true });
+  mb.blob(cx + R * 0.3, cy - R * 0.2, top + R * 0.85 * flat, R * 0.36, R * 0.36, R * 0.32 * flat, cB, cC, { sub: 1, smooth: true });
 }
 
 // ------------------------------------------------------------------ Hoodoo & Mesa (`props.hoodoo`, `props.mesa`)
@@ -1597,13 +1597,13 @@ export function addLandmarkFeature(
       const r = h * 0.62;
       mb.stack(px, py, [[r * 0.26, z - 0.1], [r * 0.18, z + h * 0.6], [r * 0.2, z + h]], hexLin('#FFF4E0'), { n: 8, smooth: true });
       const cap = hexLin('#E8453C');
-      mb.blob(px, py, z + h, r, r, r * 0.62, cap, cap, { sub: 2, smooth: true, clampMinZ: -r * 0.1 });
+      mb.blob(px, py, z + h, r, r, r * 0.62, cap, cap, { sub: 1, smooth: true, clampMinZ: -r * 0.1 });
       const wh = hexLin('#FFFFFF');
       for (let j = 0; j < 7; j++) {
         const an = 0.9 * j + k;
         const rr = r * (0.3 + 0.08 * (j % 4));
         const dz = r * 0.62 * Math.sqrt(Math.max(0.05, 1 - (rr / r) * (rr / r))) - 0.01;
-        mb.blob(px + Math.cos(an) * rr, py + Math.sin(an) * rr, z + h + dz, r * 0.13, r * 0.13, r * 0.05, wh, wh, { sub: 1 });
+        mb.blob(px + Math.cos(an) * rr, py + Math.sin(an) * rr, z + h + dz, r * 0.13, r * 0.13, r * 0.05, wh, wh, { sub: 0 });
       }
     }
   }

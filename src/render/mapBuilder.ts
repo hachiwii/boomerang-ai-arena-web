@@ -3,6 +3,7 @@ import { CellType, EngineMapData } from '../game/types';
 import {
   applyCloseupOcclusionStep,
   ArenaMapUpdateOpts,
+  disposeOccluderEntries,
   IArenaMap,
   OccluderEntry,
 } from './hqMapBuilder';
@@ -275,11 +276,14 @@ export class ArenaMap3D implements IArenaMap {
     const cTop = new THREE.Color(T.wallTop);
     const cAcc = new THREE.Color(T.wallAccent);
 
-    // Group walls into compact 2x2 spatial clusters so foreground obstacles blocking
-    // close-up cameras fade smoothly to semi-transparent without affecting other walls!
+    // Group walls into compact 4x4 spatial clusters sharing ONE opaque body/top material pair
+    // (lazy-cloned ONLY on the 1-2 clusters actively blocking a close-up camera -> 240Hz+ everywhere!).
+    const sharedBodyMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
+    const sharedTopMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
+
     const clusterMap = new Map<string, { gx: number; gy: number; wave: number }[]>();
     for (const w of walls) {
-      const key = `${Math.floor(w.gx / 2)}_${Math.floor(w.gy / 2)}`;
+      const key = `${Math.floor(w.gx / 4)}_${Math.floor(w.gy / 4)}`;
       let arr = clusterMap.get(key);
       if (!arr) {
         arr = [];
@@ -289,10 +293,8 @@ export class ArenaMap3D implements IArenaMap {
     }
 
     for (const [, list] of clusterMap) {
-      const bodyMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
-      const topMat = new THREE.MeshLambertMaterial({ color: '#ffffff', flatShading: true });
-      const bodyMesh = new THREE.InstancedMesh(bodyGeo, bodyMat, list.length);
-      const topMesh = new THREE.InstancedMesh(topGeo, topMat, list.length);
+      const bodyMesh = new THREE.InstancedMesh(bodyGeo, sharedBodyMat, list.length);
+      const topMesh = new THREE.InstancedMesh(topGeo, sharedTopMat, list.length);
       bodyMesh.castShadow = true;
       bodyMesh.receiveShadow = true;
       topMesh.castShadow = true;
@@ -373,12 +375,15 @@ export class ArenaMap3D implements IArenaMap {
       this.wallClusters.push({ bodyMesh, topMesh, bodyTiles, topTiles });
 
       this.occluders.push({
-        materials: [bodyMat, topMat],
+        meshes: [bodyMesh, topMesh],
+        opaqueMaterials: [sharedBodyMat, sharedTopMat],
+        fadeMaterials: null,
         baseOpacities: [1, 1],
         box: new THREE.Box3(new THREE.Vector3(minX, 0, minZ), new THREE.Vector3(maxX, maxY, maxZ)),
         isGrass: false,
         minOpacity: 0.24,
         curOpacity: 1.0,
+        usingFade: false,
         wave: list[0].wave,
       });
     }
@@ -699,6 +704,7 @@ export class ArenaMap3D implements IArenaMap {
   }
 
   public dispose() {
+    disposeOccluderEntries(this.occluders);
     const geos = new Set<THREE.BufferGeometry>(this.wallSharedGeos);
     const mats = new Set<THREE.Material>();
     this.root.traverse((obj) => {
