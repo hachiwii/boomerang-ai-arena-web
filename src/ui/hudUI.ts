@@ -1,4 +1,5 @@
 import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
+import { GifClipExportResult } from '../game/gifExporter';
 import { CountdownStage } from '../game/matchController';
 import { MatchReplayBundle } from '../game/matchHistory';
 import { Mp4ExportResult } from '../game/mp4Exporter';
@@ -21,6 +22,12 @@ export interface HudCallbacks {
     signal: AbortSignal,
     onProgress: (progress01: number, phaseText: string) => void,
   ) => Promise<Mp4ExportResult>;
+  onReplayExportGif?: (
+    bundle: MatchReplayBundle,
+    endTickIndex: number,
+    signal: AbortSignal,
+    onProgress: (progress01: number, phaseText: string) => void,
+  ) => Promise<GifClipExportResult>;
 }
 
 function causeLabel(cause: number, killerName?: string): string {
@@ -93,9 +100,11 @@ export class HudUI {
   private replayBannerEl: HTMLElement | null = null;
   private replaySpeedBtns: HTMLButtonElement[] = [];
   private replayExportBtn: HTMLButtonElement | null = null;
+  private replayGifBtn: HTMLButtonElement | null = null;
   private replayExportStatusEl: HTMLElement | null = null;
   private replayExportAbort: AbortController | null = null;
   private replayExportNoticeTimer: number | null = null;
+  private replayCurrentTickIndex = 0;
 
   constructor(parent: HTMLElement, settings: SettingsStore, callbacks: HudCallbacks) {
     this.settings = settings;
@@ -267,7 +276,9 @@ export class HudUI {
     this.replayBannerEl = null;
     this.replaySpeedBtns = [];
     this.replayExportBtn = null;
+    this.replayGifBtn = null;
     this.replayExportStatusEl = null;
+    this.replayCurrentTickIndex = 0;
   }
 
   private getExportPresetLabel(): string {
@@ -425,6 +436,13 @@ export class HudUI {
             id="replay-export-btn"
             title="导出本局观战回放 MP4（当前设置：${exportPreset}）"
           >⬇ 导出</button>
+
+          <button
+            type="button"
+            class="replay-ctrl-btn replay-gif-btn"
+            id="replay-gif-btn"
+            title="截取当前时间点往前最长 10s 画面为 720p 15fps GIF（暂停背景飘云，保留其他动效）"
+          >🎞 10s GIF</button>
         </div>
       </div>
     `;
@@ -440,6 +458,7 @@ export class HudUI {
     this.replayBannerEl = this.bottomBar.querySelector('#replay-end-banner');
     this.replaySpeedBtns = Array.from(this.bottomBar.querySelectorAll<HTMLButtonElement>('[data-replay-speed]'));
     this.replayExportBtn = this.bottomBar.querySelector('#replay-export-btn');
+    this.replayGifBtn = this.bottomBar.querySelector('#replay-gif-btn');
     this.replayExportStatusEl = this.bottomBar.querySelector('#replay-export-status');
 
     this.replayPlayBtn?.addEventListener('click', () => {
@@ -460,9 +479,47 @@ export class HudUI {
     this.replayExportBtn?.addEventListener('click', () => {
       this.startReplayHudExport();
     });
+    this.replayGifBtn?.addEventListener('click', () => {
+      this.startReplayGifExport();
+    });
 
     this.lastTickState = null;
     this.updateReplayControls(playback);
+  }
+
+  private showReplayExportResultBanner(text: string, isOk: boolean) {
+    if (!this.isReplayMode || !this.replayExportStatusEl) return;
+    if (this.replayExportNoticeTimer !== null) {
+      window.clearTimeout(this.replayExportNoticeTimer);
+      this.replayExportNoticeTimer = null;
+    }
+    this.replayExportStatusEl.className = `replay-export-status ${isOk ? 'is-ok' : 'is-err'}`;
+    this.replayExportStatusEl.textContent = text;
+    this.replayExportNoticeTimer = window.setTimeout(() => {
+      this.replayExportNoticeTimer = null;
+      this.replayExportStatusEl?.classList.add('hidden');
+    }, 4800);
+  }
+
+  private setReplayExportButtonsBusy(activeKind: 'mp4' | 'gif' | null) {
+    if (this.replayExportBtn) {
+      this.replayExportBtn.disabled = activeKind !== null;
+      this.replayExportBtn.classList.toggle('is-exporting', activeKind === 'mp4');
+      if (activeKind === 'mp4') {
+        this.replayExportBtn.textContent = '导出 1%';
+      } else {
+        this.replayExportBtn.textContent = '⬇ 导出';
+      }
+    }
+    if (this.replayGifBtn) {
+      this.replayGifBtn.disabled = activeKind !== null;
+      this.replayGifBtn.classList.toggle('is-exporting', activeKind === 'gif');
+      if (activeKind === 'gif') {
+        this.replayGifBtn.textContent = 'GIF 1%';
+      } else {
+        this.replayGifBtn.textContent = '🎞 10s GIF';
+      }
+    }
   }
 
   private startReplayHudExport() {
@@ -479,11 +536,7 @@ export class HudUI {
       this.replayExportNoticeTimer = null;
     }
 
-    if (this.replayExportBtn) {
-      this.replayExportBtn.disabled = true;
-      this.replayExportBtn.classList.add('is-exporting');
-      this.replayExportBtn.textContent = '导出 1%';
-    }
+    this.setReplayExportButtonsBusy('mp4');
 
     if (this.replayExportStatusEl) {
       this.replayExportStatusEl.className = 'replay-export-status';
@@ -500,16 +553,6 @@ export class HudUI {
       });
     }
 
-    const showResultBanner = (text: string, isOk: boolean) => {
-      if (!this.isReplayMode || !this.replayExportStatusEl) return;
-      this.replayExportStatusEl.className = `replay-export-status ${isOk ? 'is-ok' : 'is-err'}`;
-      this.replayExportStatusEl.textContent = text;
-      this.replayExportNoticeTimer = window.setTimeout(() => {
-        this.replayExportNoticeTimer = null;
-        this.replayExportStatusEl?.classList.add('hidden');
-      }, 4800);
-    };
-
     void this.callbacks
       .onReplayExportMp4(bundle, abortCtrl.signal, (p01, phaseText) => {
         if (this.replayExportAbort !== abortCtrl) return;
@@ -525,32 +568,99 @@ export class HudUI {
       .then((res) => {
         if (this.replayExportAbort !== abortCtrl) return;
         this.replayExportAbort = null;
-        if (this.replayExportBtn) {
-          this.replayExportBtn.disabled = false;
-          this.replayExportBtn.classList.remove('is-exporting');
-          this.replayExportBtn.textContent = '⬇ 导出';
-        }
+        this.setReplayExportButtonsBusy(null);
         const mb = res.sizeBytes < 1024 * 1024 ? `${(res.sizeBytes / 1024).toFixed(0)} KB` : `${(res.sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
-        showResultBanner(`✅ 已下载 ${res.filename}（${mb} · ${res.width}×${res.height} · ${res.hasAudio ? '含音效' : '无音轨'}）`, true);
+        this.showReplayExportResultBanner(`✅ 已下载 ${res.filename}（${mb} · ${res.width}×${res.height} · ${res.hasAudio ? '含音效' : '无音轨'}）`, true);
       })
       .catch((err) => {
         if (this.replayExportAbort !== abortCtrl) return;
         this.replayExportAbort = null;
-        if (this.replayExportBtn) {
-          this.replayExportBtn.disabled = false;
-          this.replayExportBtn.classList.remove('is-exporting');
-          this.replayExportBtn.textContent = '⬇ 导出';
-        }
+        this.setReplayExportButtonsBusy(null);
         if (err instanceof DOMException && err.name === 'AbortError') {
-          showResultBanner('已取消 MP4 导出', false);
+          this.showReplayExportResultBanner('已取消 MP4 导出', false);
         } else {
-          showResultBanner(`导出失败：${err instanceof Error ? err.message : String(err)}`, false);
+          this.showReplayExportResultBanner(`导出失败：${err instanceof Error ? err.message : String(err)}`, false);
+        }
+      });
+  }
+
+  private startReplayGifExport() {
+    if (!this.isReplayMode || !this.replayBundle || this.replayExportAbort || !this.callbacks.onReplayExportGif) {
+      return;
+    }
+    const bundle = this.replayBundle;
+    const endTickIndex = this.replayCurrentTickIndex;
+    if (endTickIndex < 2) {
+      this.showReplayExportResultBanner('当前处于回放起点，请先播放一段后再截取 10s GIF', false);
+      return;
+    }
+
+    const endSec = endTickIndex / 20;
+    const atEnd = endTickIndex >= bundle.replay.ticks.length - 1;
+    const startSec = Math.max(0, endSec + (atEnd ? 0.85 : 0) - 10);
+    const rangeLabel = `${startSec.toFixed(1)}s–${endSec.toFixed(1)}s · 720p 15fps`;
+    const abortCtrl = new AbortController();
+    this.replayExportAbort = abortCtrl;
+
+    if (this.replayExportNoticeTimer !== null) {
+      window.clearTimeout(this.replayExportNoticeTimer);
+      this.replayExportNoticeTimer = null;
+    }
+
+    this.setReplayExportButtonsBusy('gif');
+
+    if (this.replayExportStatusEl) {
+      this.replayExportStatusEl.className = 'replay-export-status';
+      this.replayExportStatusEl.innerHTML = `
+        <div class="res-row">
+          <span class="res-text" id="res-text">🎞 正在导出 GIF (${rangeLabel}) · 准备中...</span>
+          <span class="res-pct" id="res-pct">1%</span>
+          <button type="button" class="heb-cancel-btn" id="res-cancel">取消</button>
+        </div>
+        <div class="heb-track"><div class="heb-fill" id="res-fill" style="width:1%"></div></div>
+      `;
+      this.replayExportStatusEl.querySelector('#res-cancel')?.addEventListener('click', () => {
+        this.replayExportAbort?.abort();
+      });
+    }
+
+    void this.callbacks
+      .onReplayExportGif(bundle, endTickIndex, abortCtrl.signal, (p01, phaseText) => {
+        if (this.replayExportAbort !== abortCtrl) return;
+        const pct = Math.max(0, Math.min(100, Math.round(p01 * 100)));
+        if (this.replayGifBtn) this.replayGifBtn.textContent = `GIF ${pct}%`;
+        const txt = this.replayExportStatusEl?.querySelector('#res-text');
+        const pctEl = this.replayExportStatusEl?.querySelector('#res-pct');
+        const fill = this.replayExportStatusEl?.querySelector<HTMLElement>('#res-fill');
+        if (txt) txt.textContent = `🎞 正在导出 GIF (${rangeLabel}) · ${phaseText}`;
+        if (pctEl) pctEl.textContent = `${pct}%`;
+        if (fill) fill.style.width = `${pct}%`;
+      })
+      .then((res) => {
+        if (this.replayExportAbort !== abortCtrl) return;
+        this.replayExportAbort = null;
+        this.setReplayExportButtonsBusy(null);
+        const mb = res.sizeBytes < 1024 * 1024 ? `${(res.sizeBytes / 1024).toFixed(0)} KB` : `${(res.sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
+        this.showReplayExportResultBanner(
+          `✅ 已下载 ${res.filename}（${mb} · ${res.durationSec.toFixed(1)}s · ${res.width}×${res.height} @ ${res.fps}fps）`,
+          true,
+        );
+      })
+      .catch((err) => {
+        if (this.replayExportAbort !== abortCtrl) return;
+        this.replayExportAbort = null;
+        this.setReplayExportButtonsBusy(null);
+        if (err instanceof DOMException && err.name === 'AbortError') {
+          this.showReplayExportResultBanner('已取消 GIF 导出', false);
+        } else {
+          this.showReplayExportResultBanner(`GIF 导出失败：${err instanceof Error ? err.message : String(err)}`, false);
         }
       });
   }
 
   public updateReplayControls(playback: ReplayPlaybackState) {
     if (!this.isReplayMode) return;
+    this.replayCurrentTickIndex = playback.tickIndex;
     const pct = playback.maxIndex > 0 ? (playback.tickIndex / playback.maxIndex) * 100 : 100;
     if (this.replaySlider) {
       this.replaySlider.max = String(playback.maxIndex);

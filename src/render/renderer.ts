@@ -1141,7 +1141,7 @@ export class GameRenderer {
   }
 
   /**
-   * Renders one deterministic spectator-perspective frame for offline MP4 export
+   * Renders one deterministic spectator-perspective frame for offline MP4/GIF export
    * and returns projected 2D nameplate coordinates in the fixed export viewport.
    */
   public renderOfflineFrame(
@@ -1151,6 +1151,7 @@ export class GameRenderer {
     gt: number,
     frameDt: number,
     elapsedSec: number,
+    opts?: { pauseClouds?: boolean; skipRender?: boolean },
   ): ProjectedNameplate[] {
     this.elapsedSec = elapsedSec;
     const out: ProjectedNameplate[] = [];
@@ -1172,7 +1173,7 @@ export class GameRenderer {
     this.camera.lookAt(this.camTargetX + sx * 0.4, 0, this.camTargetZ - 0.35 + sz * 0.4);
     this.camera.updateMatrixWorld();
 
-    this.arena.update(gt, elapsedSec);
+    this.arena.update(gt, elapsedSec, opts);
 
     const { width: screenW, height: screenH } = this.getViewportSize();
     for (let k = 0; k < this.rigs.length; k++) {
@@ -1227,7 +1228,9 @@ export class GameRenderer {
       this.fx.update(elapsedSec, prev, curr, alpha, -1, 0, 0, false);
     }
 
-    this.renderer.render(this.scene, this.camera);
+    if (!opts?.skipRender) {
+      this.renderer.render(this.scene, this.camera);
+    }
     return out;
   }
 

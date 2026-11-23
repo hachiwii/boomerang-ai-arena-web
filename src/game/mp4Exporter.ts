@@ -74,7 +74,7 @@ function drawRoundRect(
   ctx.closePath();
 }
 
-function loadImage(src: string | null): Promise<HTMLImageElement | null> {
+export function loadImage(src: string | null): Promise<HTMLImageElement | null> {
   if (!src) return Promise.resolve(null);
   return new Promise((resolve) => {
     const img = new Image();
@@ -170,7 +170,7 @@ function buildExportFilename(
   return `boomerang_${modeTag}_${summary.mapId}_${stamp}_${resolution}_${spdTag}.mp4`;
 }
 
-function drawBroadcastOverlay(
+export function drawBroadcastOverlay(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,

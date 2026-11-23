@@ -3,6 +3,7 @@ import { SoundFX } from './audio/sfx';
 import { HumanInputController } from './game/humanInput';
 import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
 import { MatchController } from './game/matchController';
+import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { ReplayController } from './game/replayController';
@@ -369,6 +370,17 @@ async function bootstrap() {
         onProgress,
       });
       triggerMp4Download(result.blob, result.filename);
+      return result;
+    },
+    onReplayExportGif: async (bundle, endTickIndex, signal, onProgress) => {
+      const result = await exportReplayClipToGif(bundle, {
+        endTickIndex,
+        maxDurationSec: 10.0,
+        sharedCharModelCache: renderer.getCharModelCache(),
+        signal,
+        onProgress,
+      });
+      triggerGifDownload(result.blob, result.filename);
       return result;
     },
   });

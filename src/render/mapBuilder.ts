@@ -481,7 +481,7 @@ export class ArenaMap3D {
   /**
    * Update collapsing tiles, grass sway, drifting clouds, and ambient petals/snow at 240Hz+.
    */
-  public update(gt: number, elapsedSec: number) {
+  public update(gt: number, elapsedSec: number, opts?: { pauseClouds?: boolean }) {
     const { waveSteps, colWarn } = this.mapData;
 
     const updateGroup = (
@@ -587,19 +587,21 @@ export class ArenaMap3D {
     updateGroup(this.wallTopMesh, this.wallTopTiles, false, false);
     updateGroup(this.grassMesh, this.grassTiles, true, false);
 
-    // Gentle cloud drift
-    const wrapW = this.widthM + 36;
-    const minX = this.widthM * 0.5 - wrapW * 0.5;
-    for (let i = 0; i < this.cloudData.length; i++) {
-      const c = this.cloudData[i];
-      const x = minX + ((((c.x + elapsedSec * c.speed - minX) % wrapW) + wrapW) % wrapW);
-      this._dummy.position.set(x, c.y + Math.sin(elapsedSec * 0.5 + i) * 0.18, c.z);
-      this._dummy.rotation.set(0, i * 0.5, 0);
-      this._dummy.scale.set(c.sx, c.sy, c.sz);
-      this._dummy.updateMatrix();
-      this.cloudMesh.setMatrixAt(i, this._dummy.matrix);
+    // Gentle cloud drift (optionally paused for compact GIF capture)
+    if (!opts?.pauseClouds) {
+      const wrapW = this.widthM + 36;
+      const minX = this.widthM * 0.5 - wrapW * 0.5;
+      for (let i = 0; i < this.cloudData.length; i++) {
+        const c = this.cloudData[i];
+        const x = minX + ((((c.x + elapsedSec * c.speed - minX) % wrapW) + wrapW) % wrapW);
+        this._dummy.position.set(x, c.y + Math.sin(elapsedSec * 0.5 + i) * 0.18, c.z);
+        this._dummy.rotation.set(0, i * 0.5, 0);
+        this._dummy.scale.set(c.sx, c.sy, c.sz);
+        this._dummy.updateMatrix();
+        this.cloudMesh.setMatrixAt(i, this._dummy.matrix);
+      }
+      this.cloudMesh.instanceMatrix.needsUpdate = true;
     }
-    this.cloudMesh.instanceMatrix.needsUpdate = true;
 
     // Ambient falling petals / snow / leaves
     if (this.ambientMesh) {

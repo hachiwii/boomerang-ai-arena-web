@@ -3951,7 +3951,7 @@ kbd {
   flex-direction: column;
   align-items: center;
   gap: 8px;
-  width: min(860px, 96vw);
+  width: min(960px, 96vw);
   pointer-events: auto;
 }
 
@@ -4025,9 +4025,29 @@ kbd {
   color: #cfe4ff;
 }
 
-.replay-ctrl-btn.replay-export-btn:disabled {
+.replay-ctrl-btn.replay-export-btn:disabled,
+.replay-ctrl-btn.replay-gif-btn:disabled {
   opacity: 0.65;
   cursor: not-allowed;
+}
+
+.replay-ctrl-btn.replay-gif-btn {
+  border-color: rgba(255, 198, 92, 0.48);
+  background: rgba(255, 166, 48, 0.22);
+  color: #ffe09e;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-ctrl-btn.replay-gif-btn:hover:not(:disabled) {
+  background: rgba(255, 166, 48, 0.36);
+  border-color: rgba(255, 214, 122, 0.78);
+  color: #fff;
+}
+
+.replay-ctrl-btn.replay-gif-btn.is-exporting {
+  background: rgba(61, 126, 255, 0.26);
+  border-color: rgba(114, 175, 255, 0.55);
+  color: #cfe4ff;
 }
 
 .replay-end-banner {
