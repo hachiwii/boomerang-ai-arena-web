@@ -597,7 +597,7 @@ export class HudUI {
 
         <div class="rr-btn-row">
           <button type="button" class="rr-back-btn" id="btn-result-back">返回主界面</button>
-          <button type="button" class="start-btn rr-primary-btn" id="btn-result-new-match">⚔️ 新对战</button>
+          <button type="button" class="start-btn rr-primary-btn" id="btn-result-new-match">⚔️ 重新匹配 <kbd class="rr-btn-kbd">R</kbd></button>
         </div>
       </div>
     `;

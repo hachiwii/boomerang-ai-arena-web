@@ -2785,5 +2785,17 @@ kbd {
   margin-top: 0;
   padding: 13px 18px;
   font-size: 15.5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   box-shadow: 0 8px 24px rgba(61, 126, 255, 0.38);
+}
+
+.rr-btn-kbd {
+  margin-right: 0;
+  padding: 1px 7px;
+  font-size: 11.5px;
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.38);
 }
