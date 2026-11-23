@@ -1001,8 +1001,8 @@ struct Game {
     i64 t = 0;
     bool over = false;
     i64 winner = -2;         // 结束后：1v1 = 胜者座位，4v4 = 胜队，四人局 = 最后存活者；-1 = 平局 / 没人活；-2 = 未结束
-    int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的挥砍从按下起持续 human_slash_ticks 步判定（默认 4 步 = 原速 200ms）
-    i64 human_slash_ticks = 4;  // 原速 20Hz 下 200ms = 4 逻辑 tick（覆盖完整 2 步前摇 + 前 2 步后摇）
+    int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的近战（挥砍/踢人）从按下起持续 human_slash_ticks 步判定（默认 5 步 = 原速 250ms）
+    i64 human_slash_ticks = 5;  // 原速 20Hz 下 250ms = 5 逻辑 tick（覆盖完整 2 步前摇 + 前 3 步后摇）
     bool record = false;
     std::vector<Event> events;
     std::shared_ptr<const Map> live;  // 当前步的地图（塌掉的是坑）；按塌了几波缓存
@@ -1284,7 +1284,7 @@ struct Game {
             const bool slash = D.st == D_HAND;
             P.st = slash ? S_SLASH : S_KICK;
             P.timer = slash ? cf.slash_pre : cf.kick_pre;
-            P.slash_win = (slash && k == human_slash_seat) ? human_slash_ticks : 0;
+            P.slash_win = (k == human_slash_seat) ? human_slash_ticks : 0;
             P.slash_win_hits = 0;
             if (slash) ++P.n_slash; else ++P.n_kick;
             ev(slash ? EV_SLASH : EV_KICK, k, ux, uy);
@@ -1459,7 +1459,7 @@ struct Game {
             if (pass == 0) {
                 if (!P.alive || P.unknown || P.st == S_FREE) continue;
                 if (P.st == S_RECALL && d[k].st == D_RISE) d[k].left = P.timer - 1;
-                if (P.slash_win > 0 && (P.st == S_SLASH || P.st == S_SLASHED)) {
+                if (P.slash_win > 0 && (P.st == S_SLASH || P.st == S_SLASHED || P.st == S_KICK || P.st == S_KICKED)) {
                     human_slash_active[k] = true;
                 }
                 if (--P.timer > 0) continue;
@@ -1471,23 +1471,42 @@ struct Game {
                 continue;
             }
             if (pass == 1 && human_slash_active[k]) {
+                if (P.st != S_SLASH && P.st != S_SLASHED && P.st != S_KICK && P.st != S_KICKED) {
+                    P.slash_win = 0;
+                    continue;
+                }
+                const bool slash = (P.st == S_SLASH || P.st == S_SLASHED);
+                const i64 reach = slash ? cf.slash_reach : cf.kick_reach;
+                const i64 cs = slash ? cf.slash_cos : cf.kick_cos;
                 const bool first_tick = (P.slash_win == human_slash_ticks);
                 int nh = 0;
                 for (int q = 0; q < n; ++q) {
                     if (q == k || !p[q].alive || p[q].unknown) continue;
+                    if (!slash && kick_protected[q]) continue;
                     const i64 dx = p[q].x - P.x, dy = p[q].y - P.y;
                     const i64 dd = dx * dx + dy * dy;
-                    if (dd > cf.slash_reach * cf.slash_reach) continue;
+                    if (dd > reach * reach) continue;
                     const i64 dl = isqrt(dd);
                     if (dl > cf.body_r) {
-                        if ((dx * P.ax + dy * P.ay) * 1000 < cf.slash_cos * dl * UNIT) continue;
+                        if ((dx * P.ax + dy * P.ay) * 1000 < cs * dl * UNIT) continue;
                     }
                     if (wall_between(m, P.x, P.y, p[q].x, p[q].y)) continue;
                     ++nh;
-                    kill(q, K_SLASH, k, 0);
-                    ev(EV_CUT, k, q);
+                    if (slash) {
+                        kill(q, K_SLASH, k, 0);
+                        ev(EV_CUT, k, q);
+                    } else {
+                        i64 ux, uy;
+                        if (!scale_to(dx, dy, cf.kick_v, ux, uy)) scale_to(P.ax, P.ay, cf.kick_v, ux, uy);
+                        kick_vx[q] += ux;
+                        kick_vy[q] += uy;
+                        if (kick_by[q] < 0) kick_by[q] = k;
+                        ++P.kick_hits;
+                        if (mates(k, q)) ++P.kick_hits_team;
+                        ev(EV_KICKHIT, k, q);
+                    }
                 }
-                if (cf.block) {
+                if (slash && cf.block) {
                     for (int j = 0; j < n; ++j) {
                         if (j == k || blocked[j] || !dart_flying(d[j].st)) continue;
                         const i64 dx = d[j].x - P.x, dy = d[j].y - P.y;
@@ -1505,12 +1524,12 @@ struct Game {
                 P.slash_win_hits += nh;
                 --P.slash_win;
                 if (first_tick) {
-                    ev(EV_SWING, k, 1, nh);
+                    ev(EV_SWING, k, slash ? 1 : 0, nh);
                 }
-                if (fire[k] && P.st == S_SLASH) {
-                    i64 post = cf.slash_post;
-                    if (P.slash_win_hits == 0 && cf.slash_miss >= 0) post = cf.slash_miss;
-                    set_state(P, S_SLASHED, post);
+                if (fire[k] && (P.st == S_SLASH || P.st == S_KICK)) {
+                    i64 post = slash ? cf.slash_post : cf.kick_post;
+                    if (slash && P.slash_win_hits == 0 && cf.slash_miss >= 0) post = cf.slash_miss;
+                    set_state(P, slash ? S_SLASHED : S_KICKED, post);
                 }
                 continue;
             }

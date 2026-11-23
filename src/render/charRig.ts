@@ -462,7 +462,7 @@ export class CharacterRig {
       armAU = 0.44 * w + armAU * (1 - w);
     }
 
-    if (currP.st === PState.KICK) {
+    if (currP.st === PState.KICK && gt - this.lastKickTick >= 4.5) {
       sy = 0.86;
       sx = 1.08;
       lean = 0.12;
