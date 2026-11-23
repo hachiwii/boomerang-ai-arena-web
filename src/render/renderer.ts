@@ -75,6 +75,10 @@ export class GameRenderer {
   private lastFrameMs = performance.now();
   private elapsedSec = 0;
 
+  // Crumbling-gravel audio state for human standing on impending-collapse tiles
+  private wasOnWarnTile = false;
+  private nextCrumbleAtMs = 0;
+
   // Voxel JSON cache
   private readonly charModelCache = new Map<string, VoxelModelData>();
   private readonly sfx: SoundFX;
@@ -255,6 +259,8 @@ export class GameRenderer {
     this.currState = initialState;
     this.tickReceivedAtMs = performance.now();
     this.shakeAmp = 0;
+    this.wasOnWarnTile = false;
+    this.nextCrumbleAtMs = 0;
 
     this.camTargetX = cx;
     this.camTargetZ = cz;
@@ -494,6 +500,45 @@ export class GameRenderer {
     return M.cells[idx] === CellType.GRASS;
   }
 
+  private getHumanCollapseWarnUrgency(): number {
+    if (!this.arena || !this.currState || this.currState.over || this.humanSeat < 0) return -1;
+    const me = this.currState.players[this.humanSeat];
+    if (!me || !me.alive || me.dashing) return -1;
+
+    const M = this.arena.mapData;
+    const cell = M.cell;
+    const t = this.currState.t;
+    const ax = Math.floor(me.x / cell);
+    const ay = Math.floor(me.y / cell);
+    const ex = ((me.x % cell) + cell) % cell === 0;
+    const ey = ((me.y % cell) + cell) % cell === 0;
+
+    let maxFallStep = -1;
+    let anySolid = false;
+    for (let i = 0; i <= (ex ? 1 : 0); i++) {
+      for (let j = 0; j <= (ey ? 1 : 0); j++) {
+        const gx = ax - i;
+        const gy = ay - j;
+        if (gx < 0 || gy < 0 || gx >= M.nx || gy >= M.ny) continue;
+        const idx = gy * M.nx + gx;
+        if (M.cells[idx] === CellType.PIT) continue;
+        const w = M.waves[idx];
+        const fallStep = w >= 0 && w < M.waveSteps.length ? M.waveSteps[w] : -1;
+        if (fallStep >= 0 && t >= fallStep) continue;
+        anySolid = true;
+        if (fallStep < 0) return -1; // Touching permanent solid ground
+        if (fallStep > maxFallStep) maxFallStep = fallStep;
+      }
+    }
+
+    if (!anySolid || maxFallStep < 0) return -1;
+    const colWarn = Math.max(1, M.colWarn);
+    if (t >= maxFallStep - colWarn && t < maxFallStep) {
+      return Math.max(0, Math.min(1, (t - (maxFallStep - colWarn)) / colWarn));
+    }
+    return -1;
+  }
+
   /**
    * Render one frame (called directly inside requestAnimationFrame for 240Hz+ / 360Hz+!).
    */
@@ -571,6 +616,20 @@ export class GameRenderer {
 
       // Update arena collapsing tiles, grass sway, clouds
       this.arena.update(gt, this.elapsedSec);
+
+      // Play escalating crumbling-gravel SFX when the human player stands on an impending-collapse tile
+      const warnUrgency = this.getHumanCollapseWarnUrgency();
+      if (warnUrgency >= 0) {
+        if (!this.wasOnWarnTile || tWork0 >= this.nextCrumbleAtMs) {
+          this.sfx.playCrumble(warnUrgency);
+          const intervalMs = (260 - warnUrgency * 145) * (0.85 + Math.random() * 0.3);
+          this.nextCrumbleAtMs = tWork0 + intervalMs;
+          this.wasOnWarnTile = true;
+        }
+      } else {
+        this.wasOnWarnTile = false;
+        this.nextCrumbleAtMs = 0;
+      }
 
       // Update character rigs & floating nameplates
       const screenW = window.innerWidth;
@@ -678,5 +737,7 @@ export class GameRenderer {
     this.nameplates = [];
     this.prevState = null;
     this.currState = null;
+    this.wasOnWarnTile = false;
+    this.nextCrumbleAtMs = 0;
   }
 }

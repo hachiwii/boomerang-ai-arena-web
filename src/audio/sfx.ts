@@ -35,7 +35,7 @@ export class SoundFX {
     osc.stop(t0 + dur + 0.02);
   }
 
-  private noise(dur: number, gainVal: number, filterFreq: number, q = 1.5) {
+  private noise(dur: number, gainVal: number, filterFreq: number, q = 1.5, delay = 0) {
     const ctx = this.ensure();
     if (!ctx) return;
     const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
@@ -49,11 +49,13 @@ export class SoundFX {
     flt.frequency.value = filterFreq;
     flt.Q.value = q;
     const g = ctx.createGain();
-    const t0 = ctx.currentTime;
-    g.gain.setValueAtTime(gainVal, t0);
+    const t0 = ctx.currentTime + delay;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(gainVal, t0 + Math.min(0.004, dur * 0.25));
     g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
     src.connect(flt).connect(g).connect(ctx.destination);
     src.start(t0);
+    src.stop(t0 + dur + 0.015);
   }
 
   public playThrow() {
@@ -112,6 +114,28 @@ export class SoundFX {
   public playCollapse() {
     this.tone(95, 42, 0.28, 'triangle', 0.15);
     this.noise(0.22, 0.1, 320, 0.9);
+  }
+
+  /**
+   * Crumbling gravel & cracking stone warning cue when the human player is standing
+   * on a floor tile about to collapse. `urgency` in [0..1] ramps density & grit.
+   */
+  public playCrumble(urgency = 0.5) {
+    const u = Math.max(0, Math.min(1, urgency));
+    // Subtle low rock shift under feet
+    const baseFreq = 135 + u * 55 + Math.random() * 25;
+    this.tone(baseFreq, 48 + Math.random() * 14, 0.055 + u * 0.025, 'triangle', 0.065 + u * 0.055);
+    // Dry stone fracture scrape
+    this.noise(0.042 + u * 0.02, 0.075 + u * 0.055, 820 + u * 360 + Math.random() * 240, 2.2);
+    // Staggered loose pebbles / gravel clacks
+    const pebbles = 3 + Math.floor(u * 2.5) + (Math.random() < 0.45 ? 1 : 0);
+    for (let i = 0; i < pebbles; i++) {
+      const delay = i === 0 ? 0.004 : 0.014 + i * (0.018 - u * 0.005) + Math.random() * 0.022;
+      const freq = 1750 + Math.random() * 2600 + u * 400;
+      const dur = 0.014 + Math.random() * 0.018;
+      const gain = (0.05 + u * 0.055) * (0.65 + Math.random() * 0.55);
+      this.noise(dur, gain, freq, 3.2 + Math.random() * 2.2, delay);
+    }
   }
 
   public playVictory() {
