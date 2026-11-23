@@ -58,9 +58,12 @@ export class GameRenderer {
   // Raycasting scratch (zero allocation per frame)
   private readonly _raycaster = new THREE.Raycaster();
   private readonly _ndc = new THREE.Vector2();
-  private readonly _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  // Intersect at y = 0.06 to match the 3D aim-line height with zero parallax offset
+  private readonly _groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -0.06);
   private readonly _hitPoint = new THREE.Vector3();
   private readonly _projVec = new THREE.Vector3();
+  private cursorSuppressed = false;
+  private activeCursorMode: 'default' | 'armed' | 'kick' = 'default';
 
   // Floating nameplate DOM elements (positioned via CSS transform3d for 240Hz smoothness!)
   private nameplateLayer: HTMLDivElement | null = null;
@@ -596,6 +599,20 @@ export class GameRenderer {
       const camZ = this.camTargetZ + this.camDist * Math.cos(PITCH_RAD) - 0.35;
       this.camera.position.set(this.camTargetX + sx, camY, camZ + sz);
       this.camera.lookAt(this.camTargetX + sx * 0.4, 0, this.camTargetZ - 0.35 + sz * 0.4);
+      this.camera.updateMatrixWorld();
+
+      // Update hardware-plane tactical crosshair cursor (0ms OS cursor latency)
+      const humanAliveNow =
+        !this.cursorSuppressed &&
+        this.humanSeat >= 0 &&
+        !this.currState.over &&
+        this.currState.players[this.humanSeat]?.alive === 1;
+      if (humanAliveNow) {
+        const hasDart = this.currState.darts[this.humanSeat]?.st === DState.HAND;
+        this.applyCanvasCursor(hasDart ? 'armed' : 'kick');
+      } else {
+        this.applyCanvasCursor('default');
+      }
 
       // Update mouse raycast into arena ground plane (in mm)
       let aimX = this.camTargetX;
@@ -719,7 +736,35 @@ export class GameRenderer {
     }
   }
 
+  public setCursorSuppressed(suppressed: boolean) {
+    this.cursorSuppressed = suppressed;
+    if (suppressed) {
+      this.applyCanvasCursor('default');
+    }
+  }
+
+  private applyCanvasCursor(mode: 'default' | 'armed' | 'kick') {
+    if (this.activeCursorMode === mode) return;
+    this.activeCursorMode = mode;
+    this.canvas.classList.toggle('aim-cursor-armed', mode === 'armed');
+    this.canvas.classList.toggle('aim-cursor-kick', mode === 'kick');
+  }
+
+  public projectClientToWorldMm(clientX: number, clientY: number): [number, number] | null {
+    if (this.previewMode || !this.arena) return null;
+    const w = window.innerWidth;
+    const h = window.innerHeight;
+    if (w <= 0 || h <= 0) return null;
+    this._ndc.set((clientX / w) * 2 - 1, -(clientY / h) * 2 + 1);
+    this._raycaster.setFromCamera(this._ndc, this.camera);
+    if (this._raycaster.ray.intersectPlane(this._groundPlane, this._hitPoint)) {
+      return [Math.round(this._hitPoint.x * 1000), Math.round(this._hitPoint.z * 1000)];
+    }
+    return null;
+  }
+
   public clearMatchObjects() {
+    this.applyCanvasCursor('default');
     if (this.arena) {
       this.scene.remove(this.arena.root);
       this.arena.dispose();

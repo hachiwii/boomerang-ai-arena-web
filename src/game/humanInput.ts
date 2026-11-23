@@ -22,9 +22,10 @@ export class HumanInputController {
   public mouseY = window.innerHeight * 0.5;
   public hasMouse = false;
 
-  // Projected world aim point in game mm (updated every frame by renderer)
+  // Projected world aim point in game mm (updated every frame by renderer AND on-demand via aimProjector)
   public aimWorldMmX = 0;
   public aimWorldMmY = 0;
+  private aimProjector: ((clientX: number, clientY: number) => [number, number] | null) | null = null;
 
   // Throw/recall hold tracking
   private throwConsumed = false;
@@ -76,6 +77,19 @@ export class HumanInputController {
       this.queuedThrowAt = -1;
       this.queuedMeleeAt = -1;
       this.queuedDashAt = -1;
+    }
+  }
+
+  public setAimProjector(fn: ((clientX: number, clientY: number) => [number, number] | null) | null) {
+    this.aimProjector = fn;
+  }
+
+  private refreshAimFromPointer() {
+    if (!this.hasMouse || !this.aimProjector) return;
+    const hit = this.aimProjector(this.mouseX, this.mouseY);
+    if (hit) {
+      this.aimWorldMmX = hit[0];
+      this.aimWorldMmY = hit[1];
     }
   }
 
@@ -172,16 +186,21 @@ export class HumanInputController {
       this.throwConsumed = false;
     });
 
-    this.canvas.addEventListener('mousemove', (e) => {
+    const onRawPointer = (e: PointerEvent) => {
       this.mouseX = e.clientX;
       this.mouseY = e.clientY;
       this.hasMouse = true;
-    });
+    };
+    if ('onpointerrawupdate' in window) {
+      window.addEventListener('pointerrawupdate', onRawPointer as EventListener, { passive: true });
+    }
+    window.addEventListener('pointermove', onRawPointer, { passive: true });
 
     this.canvas.addEventListener('mousedown', (e) => {
       this.mouseX = e.clientX;
       this.mouseY = e.clientY;
       this.hasMouse = true;
+      this.refreshAimFromPointer();
       if (this.paused || this.inputMode === 'off') return;
 
       const code = `Mouse${e.button}`;
@@ -239,6 +258,7 @@ export class HumanInputController {
 
   private getAimVector(playerX: number, playerY: number, face: number): [number, number] {
     if (this.hasMouse) {
+      this.refreshAimFromPointer();
       const dx = this.aimWorldMmX - playerX;
       const dy = this.aimWorldMmY - playerY;
       const len = Math.hypot(dx, dy);

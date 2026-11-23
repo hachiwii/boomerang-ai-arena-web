@@ -767,17 +767,15 @@ export class FXSystem {
       mat.opacity = b.kind === 'puff' ? op * 0.65 : op;
     }
 
-    // 4. Human tactical aim reticle, aim line & recall progress ring
+    // 4. Human tactical aim line & recall progress ring
+    // (The crosshair itself is rendered via zero-latency OS hardware CSS cursor on #game-canvas)
+    this.reticleGroup.visible = false;
     if (humanSeat >= 0 && !curr.over && curr.players[humanSeat]?.alive && hasMouse) {
       const hp0 = prev.players[humanSeat];
       const hp1 = curr.players[humanSeat];
       const hd = curr.darts[humanSeat];
       const hx = (hp0.x + (hp1.x - hp0.x) * alpha) / 1000;
       const hz = (hp0.y + (hp1.y - hp0.y) * alpha) / 1000;
-
-      this.reticleGroup.visible = true;
-      this.reticleGroup.position.set(aimX, 0.04, aimZ);
-      this.reticleGroup.rotation.y = nowSec * 1.8;
 
       const dx = aimX - hx;
       const dz = aimZ - hz;
@@ -805,7 +803,6 @@ export class FXSystem {
         this.recallRing.visible = false;
       }
     } else {
-      this.reticleGroup.visible = false;
       this.aimLine.visible = false;
       this.recallRing.visible = false;
     }

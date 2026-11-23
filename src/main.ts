@@ -65,6 +65,7 @@ async function bootstrap() {
 
   const input = new HumanInputController(canvas, settings);
   const renderer = new GameRenderer(canvas, sfx);
+  input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
   const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
 
   let mode: 'lobby' | 'playing' = 'lobby';
@@ -89,6 +90,7 @@ async function bootstrap() {
   const settingsModal = new SettingsModal(settings, {
     onOpenChange: (open) => {
       input.setPaused(open);
+      renderer.setCursorSuppressed(open);
     },
     onTestSound: () => {
       sfx.playCatch();
