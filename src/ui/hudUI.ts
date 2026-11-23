@@ -1,9 +1,9 @@
 import { EloUpdateResult } from '../game/leaderboard';
 import { CountdownStage } from '../game/matchController';
-import { CauseType, DState, MatchConfig, PState, SlotConfig, TickSnapshot } from '../game/types';
+import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
 
 export interface HudCallbacks {
-  onReturnToLobby: (tab?: 'play' | 'leaderboard') => void;
+  onReturnToLobby: (opts?: { openLeaderboard?: boolean; rankedMode?: RankedMode }) => void;
   onRestartMatch: () => void;
   onToggleMute: () => boolean;
   onToggleUncap: () => boolean;
@@ -45,6 +45,7 @@ export class HudUI {
   private readonly callbacks: HudCallbacks;
 
   private slots: SlotConfig[] = [];
+  private matchMode: MatchMode = 'custom';
   private humanSeat = -1;
   private muted = false;
   private uncapped = true;
@@ -134,12 +135,20 @@ export class HudUI {
   public showMatch(config: MatchConfig, humanSeat: number) {
     this.clearTimers();
     this.slots = config.slots;
+    this.matchMode = config.matchMode;
     this.humanSeat = humanSeat;
     this.cliffGuard = config.cliffGuard;
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
     this.root.classList.remove('hidden');
+
+    const mapTag =
+      config.matchMode === 'ranked-solo'
+        ? `${config.mapMeta.title} · SOLO 排位`
+        : config.matchMode === 'ranked-ffa'
+          ? `${config.mapMeta.title} · 混战排位`
+          : `${config.mapMeta.title}${humanSeat < 0 ? ' · 观战' : ''}${Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${config.speed.toFixed(1)}x` : ''}`;
 
     this.topBar.innerHTML = `
       <div class="hud-players">
@@ -162,7 +171,7 @@ export class HudUI {
       </div>
 
       <div class="hud-center-pill">
-        <div class="hud-map-label">${config.mapMeta.title}${humanSeat < 0 ? ' · 观战' : ''}${Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${(config.speed).toFixed(1)}x` : ''}</div>
+        <div class="hud-map-label">${mapTag}</div>
         <div class="hud-timer" id="hud-timer">40.0s</div>
         <div class="hud-collapse" id="hud-collapse">塌陷倒计时 12s</div>
       </div>
@@ -274,7 +283,10 @@ export class HudUI {
       if (!me.alive) {
         if (this.humanHintMove) this.humanHintMove.style.display = 'none';
         if (this.humanHintLeft) {
-          this.humanHintLeft.innerHTML = `已出局观战中 · 按 <kbd>R</kbd> 立即原配置重开`;
+          this.humanHintLeft.innerHTML =
+            this.matchMode !== 'custom'
+              ? `已出局观战中 · 按 <kbd>R</kbd> 重新匹配下一局`
+              : `已出局观战中 · 按 <kbd>R</kbd> 立即原配置重开`;
           this.humanHintLeft.classList.add('spectate-pill');
         }
         if (this.humanHintRight) this.humanHintRight.style.display = 'none';
@@ -324,16 +336,17 @@ export class HudUI {
       }))
       .sort((a, b) => a.p.rank - b.p.rank || b.p.kills - a.p.kills);
 
-    const fmtScore = (v: number) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1));
+    const isRanked = this.matchMode !== 'custom';
     const eloBannerHtml = eloResult
       ? `<div class="result-elo-banner ${eloResult.delta > 0 ? 'elo-up' : eloResult.delta < 0 ? 'elo-down' : ''}">
-          <span class="re-label">玩家 Elo 更新</span>
-          <span class="re-nums">${fmtScore(eloResult.oldRating)} → <strong>${fmtScore(eloResult.newRating)}</strong></span>
-          <span class="re-delta">(${eloResult.delta >= 0 ? '+' : ''}${eloResult.delta.toFixed(1)})</span>
+          <span class="re-label">${eloResult.mode === 'solo' ? 'SOLO' : '四人混战'} ELO</span>
+          <span class="re-nums">${eloResult.oldRating} → <strong>${eloResult.newRating}</strong></span>
+          <span class="re-delta">(${eloResult.delta >= 0 ? '+' : ''}${eloResult.delta})</span>
         </div>`
       : '';
 
     const canRestart = this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive);
+    const rankedModeForBtn: RankedMode = this.matchMode === 'ranked-ffa' ? 'ffa' : 'solo';
 
     let remainSec = 4;
     this.resultOverlay.innerHTML = `
@@ -364,8 +377,8 @@ export class HudUI {
             .join('')}
         </div>
         <div class="result-btn-row">
-          ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">↻ 重开 (R)</button>` : ''}
-          <button class="result-lb-btn" id="btn-result-lb">🏆 排行榜</button>
+          ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">${isRanked ? '↻ 重新匹配 (R)' : '↻ 重开 (R)'}</button>` : ''}
+          ${isRanked ? `<button class="result-lb-btn" id="btn-result-lb">🏆 排行榜</button>` : ''}
           <button class="start-btn result-back-btn" id="btn-result-back">返回主界面 (${remainSec}s)</button>
         </div>
       </div>
@@ -376,7 +389,7 @@ export class HudUI {
     const backBtn = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-back');
     backBtn?.addEventListener('click', () => {
       this.clearTimers();
-      this.callbacks.onReturnToLobby('play');
+      this.callbacks.onReturnToLobby();
     });
 
     this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-restart')?.addEventListener('click', () => {
@@ -386,7 +399,7 @@ export class HudUI {
 
     this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-lb')?.addEventListener('click', () => {
       this.clearTimers();
-      this.callbacks.onReturnToLobby('leaderboard');
+      this.callbacks.onReturnToLobby({ openLeaderboard: true, rankedMode: rankedModeForBtn });
     });
 
     this.countdownInterval = window.setInterval(() => {
@@ -398,7 +411,7 @@ export class HudUI {
 
     this.autoReturnTimer = window.setTimeout(() => {
       this.clearTimers();
-      this.callbacks.onReturnToLobby('play');
+      this.callbacks.onReturnToLobby();
     }, 4000);
   }
 
@@ -407,24 +420,24 @@ export class HudUI {
       window.clearTimeout(this.eloToastTimer);
       this.eloToastTimer = null;
     }
-    const fmt = (v: number) => (v > 0 ? `+${v.toFixed(1)}` : v.toFixed(1));
-    const deltaStr = `${eloResult.delta >= 0 ? '+' : ''}${eloResult.delta.toFixed(1)}`;
+    const modeLabel = eloResult.mode === 'solo' ? 'SOLO' : '混战';
+    const deltaStr = `${eloResult.delta >= 0 ? '+' : ''}${eloResult.delta}`;
     const cls = eloResult.delta > 0 ? 'elo-up' : eloResult.delta < 0 ? 'elo-down' : '';
     this.eloToastEl.className = `hud-elo-toast ${cls}`;
-    this.eloToastEl.innerHTML = `上局第 <strong>#${rank}</strong> 名 · Elo ${fmt(eloResult.oldRating)} → <strong>${fmt(eloResult.newRating)}</strong> <span class="het-delta">(${deltaStr})</span>`;
+    this.eloToastEl.innerHTML = `上局第 <strong>#${rank}</strong> 名 · ${modeLabel} ELO ${eloResult.oldRating} → <strong>${eloResult.newRating}</strong> <span class="het-delta">(${deltaStr})</span>`;
     this.eloToastTimer = window.setTimeout(() => {
       this.eloToastTimer = null;
       this.eloToastEl.classList.add('hidden');
     }, 2600);
   }
 
-  public cancelResultOverlay(restarting = false) {
+  public cancelResultOverlay(restarting = false, isRanked = false) {
     this.clearTimers();
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
     if (restarting) {
-      this.bottomBar.innerHTML = `<div class="action-pill spectate-pill">正在按原配置与站位重开...</div>`;
+      this.bottomBar.innerHTML = `<div class="action-pill spectate-pill">${isRanked ? '正在按最新 ELO 重新匹配对手与地图...' : '正在按原配置与站位重开...'}</div>`;
     }
   }
 

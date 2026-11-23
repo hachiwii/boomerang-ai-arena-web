@@ -60,6 +60,9 @@ export interface MapMeta {
   previewGrid: string[];
 }
 
+export type RankedMode = 'solo' | 'ffa';
+export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'custom';
+
 export interface RosterEntry {
   id: string;
   seat: string;
@@ -67,9 +70,9 @@ export interface RosterEntry {
   name: string;
   shortName: string;
   rank: number | null;
-  rating: number;
-  duelRating?: number | null;
-  ffaRating?: number | null;
+  rating: number | null;
+  duelRating: number | null;
+  ffaRating: number | null;
   category: 'official' | 'sparring';
   color: string;
   avatar: string | null;
@@ -88,11 +91,12 @@ export interface SlotConfig {
 }
 
 export interface MatchConfig {
+  matchMode: MatchMode;
   mapId: string;
   mapMeta: MapMeta;
   slots: SlotConfig[];
   seed: number;
-  speed: number; // 0.1 .. 2.0 (scales 20Hz base logic tick rate to 2Hz .. 40Hz)
+  speed: number; // 0.1 .. 2.0 (fixed 1.0 in ranked)
   cliffGuard: boolean; // Prevent human from walking off cliffs (dash/collapse/kick unaffected)
 }
 

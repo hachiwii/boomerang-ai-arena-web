@@ -1,18 +1,12 @@
-import { LeaderboardRow, LeaderboardStore, ModeRecord } from '../game/leaderboard';
-import { makeHoodieAvatarDataUrl } from './lobbyUI';
+import { LeaderboardRow, LeaderboardStore, ModeStats } from '../game/leaderboard';
+import { RankedMode } from '../game/types';
 
-type SortField = 'rating' | 'wr2' | 'wr3' | 'wr4' | 'kills' | 'deaths' | 'kd';
+type SortField = 'rating' | 'wr' | 'kills' | 'deaths' | 'kd';
 
-function fmtElo(v: number): string {
-  const r = Math.round(v * 10) / 10;
-  if (r > 0) return `+${r.toFixed(1)}`;
-  return r.toFixed(1);
-}
-
-function fmtWinRate(m: ModeRecord): string {
-  if (m.games === 0) return `<span class="lb-empty">—</span>`;
-  const pct = ((m.wins + 0.5 * m.draws) / m.games) * 100;
-  const sub = m.draws > 0 ? `${m.wins}胜${m.draws}平/${m.games}` : `${m.wins}/${m.games}`;
+function fmtWinRate(s: ModeStats): string {
+  if (s.games === 0) return `<span class="lb-empty">—</span>`;
+  const pct = ((s.wins + 0.5 * s.draws) / s.games) * 100;
+  const sub = s.draws > 0 ? `${s.wins}胜${s.draws}平/${s.games}` : `${s.wins}/${s.games}`;
   return `<span class="lb-wr-pct">${pct.toFixed(1)}%</span><span class="lb-wr-sub">${sub}</span>`;
 }
 
@@ -24,31 +18,39 @@ function fmtKd(row: LeaderboardRow): string {
   return row.kd.toFixed(2);
 }
 
-function avatarForRow(row: LeaderboardRow): string {
-  if (row.avatar) return row.avatar;
-  if (row.id === 'sparring-strong') return makeHoodieAvatarDataUrl('#E8483D', '#4A3328');
-  if (row.id === 'sparring-mid') return makeHoodieAvatarDataUrl('#E89A2E', '#3D3028');
-  return makeHoodieAvatarDataUrl('#4AB87A', '#4D423A');
-}
-
 export class LeaderboardPanel {
   private readonly store: LeaderboardStore;
   private readonly tooltip: HTMLDivElement;
+  private mode: RankedMode = 'solo';
   private sortBy: SortField = 'rating';
-  private includeSparring = true;
   private confirmReset = false;
   private confirmTimer: number | null = null;
   private toastText: string | null = null;
   private toastTimer: number | null = null;
   private onChanged?: () => void;
+  private onModeChange?: (mode: RankedMode) => void;
+  private onClose?: () => void;
 
-  constructor(store: LeaderboardStore, onChanged?: () => void) {
+  constructor(
+    store: LeaderboardStore,
+    callbacks: {
+      onChanged?: () => void;
+      onModeChange?: (mode: RankedMode) => void;
+      onClose?: () => void;
+    } = {},
+  ) {
     this.store = store;
-    this.onChanged = onChanged;
+    this.onChanged = callbacks.onChanged;
+    this.onModeChange = callbacks.onModeChange;
+    this.onClose = callbacks.onClose;
 
     this.tooltip = document.createElement('div');
     this.tooltip.className = 'lb-tooltip hidden';
     document.body.appendChild(this.tooltip);
+  }
+
+  public setMode(mode: RankedMode) {
+    this.mode = mode;
   }
 
   public hideTooltip() {
@@ -57,17 +59,14 @@ export class LeaderboardPanel {
 
   private showTooltip(row: LeaderboardRow, clientX: number, clientY: number) {
     const s = row.stats;
-    const totalGames = s.mode2.games + s.mode3.games + s.mode4.games;
-    const refLine =
-      row.duelRating !== null && row.ffaRating !== null
-        ? `<div class="lb-tt-ref">官方分项 · 1v1 ${fmtElo(row.duelRating)} / 四人局 ${fmtElo(row.ffaRating)}</div>`
-        : row.isHuman
-          ? `<div class="lb-tt-ref">动态 Elo · 仅人类参战局结算更新</div>`
-          : `<div class="lb-tt-ref">陪练基准分 · 固定不变</div>`;
+    const modeLabel = this.mode === 'solo' ? 'SOLO' : '四人混战';
+    const refLine = row.isHuman
+      ? `<div class="lb-tt-ref">${modeLabel} 排位分 · 初始 500 / 下限 0</div>`
+      : `<div class="lb-tt-ref">${modeLabel} 基准分 · 固定不变</div>`;
 
     this.tooltip.innerHTML = `
       <div class="lb-tt-head">
-        <img class="lb-tt-av" src="${avatarForRow(row)}" alt="" />
+        <img class="lb-tt-av" src="${row.avatar || ''}" alt="" />
         <div>
           <div class="lb-tt-name">${row.name}</div>
           ${refLine}
@@ -92,7 +91,7 @@ export class LeaderboardPanel {
         </div>
       </div>
       <div class="lb-tt-foot">
-        累计 ${totalGames} 场（2人 ${s.mode2.games} · 3人 ${s.mode3.games} · 4人 ${s.mode4.games}）
+        ${modeLabel} 累计 ${s.games} 场
       </div>
     `;
     this.tooltip.classList.remove('hidden');
@@ -115,25 +114,28 @@ export class LeaderboardPanel {
 
   public renderInto(container: HTMLElement) {
     this.hideTooltip();
-    const rows = this.store.getRows(this.sortBy, this.includeSparring);
+    const rows = this.store.getRows(this.mode, this.sortBy);
     const rowById = new Map(rows.map((r) => [r.id, r]));
 
     const sortHead = (field: SortField, label: string) =>
       `<th class="lb-sortable ${this.sortBy === field ? 'active' : ''}" data-sort="${field}">${label}${this.sortBy === field ? ' ↓' : ''}</th>`;
 
+    const wrLabel = this.mode === 'solo' ? 'SOLO 胜率' : '混战胜率';
+
     container.innerHTML = `
       <div class="lb-wrap">
         <div class="lb-toolbar">
-          <div class="lb-note">
-            <span>人类初始 <strong>0.0</strong> 分，有人类参战的对局按 Elo (K=32) 更新人类分数；Bot 分数始终固定自官方海选榜。悬停任意行查看详细击杀与坠崖统计。</span>
+          <div class="lb-left-tools">
+            ${this.onClose ? `<button type="button" class="lb-back-btn" id="lb-back-btn">← 返回排位</button>` : ''}
+            <div class="lb-mode-seg">
+              <button type="button" class="lb-mode-btn ${this.mode === 'solo' ? 'active' : ''}" data-lb-mode="solo">⚔️ SOLO 榜</button>
+              <button type="button" class="lb-mode-btn ${this.mode === 'ffa' ? 'active' : ''}" data-lb-mode="ffa">👑 四人混战榜</button>
+            </div>
           </div>
           <div class="lb-toolbar-btns">
-            <button class="lb-tool-btn ${this.includeSparring ? 'active' : ''}" id="lb-toggle-sparring">
-              ${this.includeSparring ? '显示全部 (含陪练)' : '仅看正式榜 (人类+13 AI)'}
-            </button>
             ${
               this.confirmReset
-                ? `<button class="lb-reset-btn confirm" id="lb-reset-confirm">确认重置全部战绩？</button>
+                ? `<button class="lb-reset-btn confirm" id="lb-reset-confirm">确认重置全部数据？</button>
                    <button class="lb-tool-btn" id="lb-reset-cancel">取消</button>`
                 : `<button class="lb-reset-btn" id="lb-reset-btn">重置所有数据（保留 Bot 分数）</button>`
             }
@@ -149,9 +151,7 @@ export class LeaderboardPanel {
                 <th class="col-rank">排名</th>
                 <th class="col-name">选手</th>
                 ${sortHead('rating', 'Elo 分数')}
-                ${sortHead('wr2', '2人胜率')}
-                ${sortHead('wr3', '3人胜率')}
-                ${sortHead('wr4', '4人胜率')}
+                ${sortHead('wr', wrLabel)}
                 ${sortHead('kills', '总击杀')}
                 ${sortHead('deaths', '死亡')}
                 ${sortHead('kd', 'KD')}
@@ -160,32 +160,26 @@ export class LeaderboardPanel {
             <tbody>
               ${rows
                 .map((r, idx) => {
-                  const rankNum = idx + 1;
+                  const displayRank = this.sortBy === 'rating' ? r.eloRank : idx + 1;
                   const rankCls =
-                    rankNum === 1 ? 'rk-1' : rankNum === 2 ? 'rk-2' : rankNum === 3 ? 'rk-3' : '';
+                    displayRank === 1 ? 'rk-1' : displayRank === 2 ? 'rk-2' : displayRank === 3 ? 'rk-3' : '';
                   const tagHtml = r.isHuman
                     ? `<span class="lb-tag tag-human">真人</span>`
-                    : r.category === 'official'
-                      ? `<span class="lb-tag tag-official">官方AI</span>`
-                      : `<span class="lb-tag tag-sparring">陪练</span>`;
-                  const eloCls = r.rating > 0 ? 'elo-pos' : r.rating < 0 ? 'elo-neg' : 'elo-zero';
+                    : `<span class="lb-tag tag-official">AI</span>`;
                   return `
                   <tr class="lb-row ${r.isHuman ? 'is-human' : ''}" data-row-id="${r.id}">
-                    <td class="col-rank"><span class="lb-rank ${rankCls}">#${rankNum}</span></td>
+                    <td class="col-rank"><span class="lb-rank ${rankCls}">#${displayRank}</span></td>
                     <td class="col-name">
                       <div class="lb-player-cell">
-                        <img class="lb-avatar" src="${avatarForRow(r)}" alt="" />
+                        <img class="lb-avatar" src="${r.avatar || ''}" alt="" />
                         <span class="lb-pname">${r.name}</span>
                         ${tagHtml}
                       </div>
                     </td>
                     <td class="col-elo">
-                      <span class="lb-elo ${eloCls}">${fmtElo(r.rating)}</span>
-                      <span class="lb-elo-lock">${r.isHuman ? '动态' : '固定'}</span>
+                      <span class="lb-elo ${r.isHuman ? 'elo-human' : 'elo-bot'}">${r.rating}</span>
                     </td>
-                    <td class="col-wr">${fmtWinRate(r.stats.mode2)}</td>
-                    <td class="col-wr">${fmtWinRate(r.stats.mode3)}</td>
-                    <td class="col-wr">${fmtWinRate(r.stats.mode4)}</td>
+                    <td class="col-wr">${fmtWinRate(r.stats)}</td>
                     <td class="col-num">${r.stats.kills}</td>
                     <td class="col-num">${r.stats.deaths}</td>
                     <td class="col-num col-kd">${fmtKd(r)}</td>
@@ -198,7 +192,21 @@ export class LeaderboardPanel {
       </div>
     `;
 
-    // Bind sorting
+    container.querySelector('#lb-back-btn')?.addEventListener('click', () => {
+      this.hideTooltip();
+      this.onClose?.();
+    });
+
+    container.querySelectorAll<HTMLButtonElement>('.lb-mode-btn').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const nextMode = btn.dataset.lbMode as RankedMode;
+        if (nextMode === this.mode) return;
+        this.mode = nextMode;
+        this.onModeChange?.(nextMode);
+        this.renderInto(container);
+      });
+    });
+
     container.querySelectorAll<HTMLElement>('th.lb-sortable').forEach((th) => {
       th.addEventListener('click', () => {
         this.sortBy = th.dataset.sort as SortField;
@@ -206,13 +214,6 @@ export class LeaderboardPanel {
       });
     });
 
-    // Bind filter toggle
-    container.querySelector('#lb-toggle-sparring')?.addEventListener('click', () => {
-      this.includeSparring = !this.includeSparring;
-      this.renderInto(container);
-    });
-
-    // Bind 2-step reset button (clears all stats & human Elo back to 0, keeps bot Elo fixed!)
     container.querySelector('#lb-reset-btn')?.addEventListener('click', () => {
       this.confirmReset = true;
       if (this.confirmTimer !== null) window.clearTimeout(this.confirmTimer);
@@ -233,7 +234,7 @@ export class LeaderboardPanel {
       this.confirmReset = false;
       if (this.confirmTimer !== null) window.clearTimeout(this.confirmTimer);
       this.store.resetAllStats();
-      this.toastText = '已重置所有胜率、击杀、死亡、坠崖记录及人类分数（Bot 分数已保留）';
+      this.toastText = '已重置所有战绩并将 SOLO / 混战玩家分数恢复至 500（Bot 分数已保留）';
       if (this.toastTimer !== null) window.clearTimeout(this.toastTimer);
       this.toastTimer = window.setTimeout(() => {
         this.toastText = null;
@@ -243,7 +244,6 @@ export class LeaderboardPanel {
       this.renderInto(container);
     });
 
-    // Bind crisp hover tooltips on every leaderboard row
     container.querySelectorAll<HTMLTableRowElement>('tr.lb-row').forEach((tr) => {
       const id = tr.dataset.rowId!;
       const row = rowById.get(id);

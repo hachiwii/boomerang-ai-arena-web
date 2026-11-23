@@ -3,7 +3,7 @@ import { SoundFX } from './audio/sfx';
 import { HumanInputController } from './game/humanInput';
 import { LeaderboardStore } from './game/leaderboard';
 import { MatchController } from './game/matchController';
-import { CellType, EngineMapData, MapMeta, MatchConfig, RosterEntry } from './game/types';
+import { CellType, EngineMapData, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
 import { GameRenderer } from './render/renderer';
 import { HudUI } from './ui/hudUI';
 import { LobbyUI, makeHoodieAvatarDataUrl } from './ui/lobbyUI';
@@ -88,8 +88,9 @@ async function bootstrap() {
     }
   };
 
-  const returnToLobby = (tab: 'play' | 'leaderboard' = 'play') => {
+  const returnToLobby = (opts?: { openLeaderboard?: boolean; rankedMode?: RankedMode }) => {
     clearMatchOverTimer();
+    matchRecorded = false;
     restarting = false;
     controller.stop();
     input.setEnabled(false);
@@ -97,7 +98,7 @@ async function bootstrap() {
     mode = 'lobby';
     activeConfig = null;
     activeMapData = null;
-    lobbyUI.show(tab);
+    lobbyUI.show(opts?.openLeaderboard ? 'ranked' : undefined, opts);
     const m = lobbyUI.getSelectedMap();
     void renderer.loadPreviewMap(parseQuickPreviewMap(m), m.theme);
   };
@@ -119,7 +120,7 @@ async function bootstrap() {
     restarting = true;
     clearMatchOverTimer();
 
-    // If an eliminated human restarts before the remaining bots finish, settle human's Elo by current rank!
+    // If an eliminated human restarts before remaining bots finish, settle Ranked Elo by current rank first!
     if (!matchRecorded) {
       const hSeat = controller.getHumanSeat();
       const st = controller.getCurrentState();
@@ -132,13 +133,28 @@ async function bootstrap() {
       }
     }
 
-    hudUI.cancelResultOverlay(true);
+    const isRanked = activeConfig.matchMode !== 'custom';
+    hudUI.cancelResultOverlay(true, isRanked);
     matchRecorded = false;
-    const cfg: MatchConfig = {
-      ...activeConfig,
-      slots: activeConfig.slots.map((s) => ({ ...s })),
-      cliffGuard: input.isCliffGuard(),
-    };
+    lobbyUI.setCliffGuard(input.isCliffGuard());
+
+    let cfg: MatchConfig;
+    if (isRanked) {
+      // Ranked R restart: re-matchmake using the NEW updated Elo score (fresh map + fresh opponents!)
+      const rankedMode: RankedMode = activeConfig.matchMode === 'ranked-solo' ? 'solo' : 'ffa';
+      const prevBotIds = activeConfig.slots
+        .filter((s) => s.kind === 'bot' && Boolean(s.botId))
+        .map((s) => s.botId!);
+      cfg = lobbyUI.createRankedMatchConfig(rankedMode, prevBotIds);
+    } else {
+      // Custom R restart: exact same map, contestants, spawn order, seed, and speed
+      cfg = {
+        ...activeConfig,
+        slots: activeConfig.slots.map((s) => ({ ...s })),
+        cliffGuard: input.isCliffGuard(),
+      };
+    }
+
     activeConfig = cfg;
     void controller
       .start(cfg)

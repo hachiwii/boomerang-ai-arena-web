@@ -1,9 +1,11 @@
 import { LeaderboardStore } from '../game/leaderboard';
-import { MapMeta, MatchConfig, RosterEntry, SlotConfig } from '../game/types';
+import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { getTheme } from '../render/themes';
 import { LeaderboardPanel } from './leaderboardUI';
 
 const DUP_RING_ACCENTS = ['#FF4D6D', '#2EC4B6', '#FFB703', '#8338EC'];
+const MAP_POOLS_STORAGE_KEY = 'boomerang_arena_map_pools_v1';
+const RECENT_MAPS_STORAGE_KEY = 'boomerang_arena_recent_maps_v1';
 
 interface DraftSlot {
   kind: 'human' | 'bot';
@@ -14,6 +16,8 @@ export interface LobbyCallbacks {
   onSelectMap: (map: MapMeta) => void;
   onStartMatch: (config: MatchConfig) => void;
 }
+
+export type LobbyTab = 'ranked' | 'custom';
 
 /**
  * Generates an inline SVG avatar for the built-in generic humanoid (Human & Sparring hoodies)
@@ -39,7 +43,6 @@ export function makeHoodieAvatarDataUrl(hoodColor: string, hairColor: string, la
 
 export function resolveSlots(drafts: DraftSlot[], roster: RosterEntry[]): SlotConfig[] {
   const byId = new Map(roster.map((r) => [r.id, r]));
-  // Count occurrences of each botId to decide duplicate numbering
   const counts = new Map<string, number>();
   for (const d of drafts) {
     if (d.kind === 'bot') {
@@ -97,7 +100,6 @@ function drawMiniMap(canvas: HTMLCanvasElement, map: MapMeta) {
   const h = canvas.height;
   ctx.clearRect(0, 0, w, h);
 
-  // Sky backdrop
   const grad = ctx.createLinearGradient(0, 0, 0, h);
   grad.addColorStop(0, T.skyTop);
   grad.addColorStop(1, T.skyBottom);
@@ -129,17 +131,6 @@ function drawMiniMap(canvas: HTMLCanvasElement, map: MapMeta) {
   }
 }
 
-function formatEloScore(v: number): string {
-  const r = Math.round(v * 10) / 10;
-  return r > 0 ? `+${r.toFixed(1)}` : r.toFixed(1);
-}
-
-function eloScoreClass(v: number): string {
-  if (v > 0.05) return 'elo-pos';
-  if (v < -0.05) return 'elo-neg';
-  return 'elo-zero';
-}
-
 function avatarForBotEntry(entry: RosterEntry): string {
   if (entry.avatar) return entry.avatar;
   if (entry.charKey === 'demo_red') return makeHoodieAvatarDataUrl('#E8483D', '#4A3328');
@@ -150,19 +141,32 @@ function avatarForBotEntry(entry: RosterEntry): string {
 export class LobbyUI {
   private readonly container: HTMLDivElement;
   private readonly dropdownMenu: HTMLDivElement;
+  private readonly mapPoolModal: HTMLDivElement;
   private readonly maps: MapMeta[];
   private readonly roster: RosterEntry[];
   private readonly leaderboard: LeaderboardStore;
   private readonly leaderboardPanel: LeaderboardPanel;
   private readonly callbacks: LobbyCallbacks;
 
-  private activeTab: 'play' | 'leaderboard' = 'play';
+  private activeTab: LobbyTab = 'ranked';
+  private rankedMode: RankedMode = 'solo';
+  private showLeaderboard = false;
+  private mapPoolOpen = false;
+  private mapPoolWarnText: string | null = null;
+
+  // Separate saved map pools for Ranked SOLO and Ranked FFA (default: all maps enabled)
+  private rankedMapPools: Record<RankedMode, Set<string>>;
+  // Rolling history of the last 3 played map IDs (for recent-3-map anti-repeat when pool > 3)
+  private recentMapIds: string[] = [];
+
+  // Custom game settings
   private selectedMapId: string;
   private randomMap = false;
   private drafts: DraftSlot[];
   private randomizeOrder = true;
   private cliffGuard = true;
   private gameSpeed = 1.0;
+
   private openSlotIdx: number | null = null;
   private loadingMessage: string | null = null;
 
@@ -178,9 +182,22 @@ export class LobbyUI {
     this.leaderboard = leaderboard;
     this.callbacks = callbacks;
     this.selectedMapId = maps[0]?.id || 'twinlakes';
-    this.leaderboardPanel = new LeaderboardPanel(leaderboard, () => this.updateHeaderElo());
 
-    // Default setup: Human + 3 diverse top AI bots (4-player melee!)
+    this.rankedMapPools = this.loadMapPools();
+    this.recentMapIds = this.loadRecentMaps();
+
+    this.leaderboardPanel = new LeaderboardPanel(leaderboard, {
+      onChanged: () => this.render(),
+      onModeChange: (m) => {
+        this.rankedMode = m;
+      },
+      onClose: () => {
+        this.showLeaderboard = false;
+        this.render();
+      },
+    });
+
+    // Default custom lineup: Human + 3 official AI bots
     this.drafts = [
       { kind: 'human', botId: 'gpt-6.2-astra' },
       { kind: 'bot', botId: 'gpt-6.2-astra' },
@@ -192,11 +209,16 @@ export class LobbyUI {
     this.container.className = 'lobby-overlay';
     root.appendChild(this.container);
 
-    // Portal custom dropdown mounted on body so it never clips inside overflow containers
+    // Custom contestant dropdown portal
     this.dropdownMenu = document.createElement('div');
     this.dropdownMenu.className = 'picker-menu hidden';
     this.dropdownMenu.setAttribute('role', 'listbox');
     document.body.appendChild(this.dropdownMenu);
+
+    // Ranked map pool modal portal
+    this.mapPoolModal = document.createElement('div');
+    this.mapPoolModal.className = 'mappool-backdrop hidden';
+    document.body.appendChild(this.mapPoolModal);
 
     window.addEventListener('mousedown', (e) => {
       if (this.openSlotIdx === null) return;
@@ -206,8 +228,14 @@ export class LobbyUI {
       this.closeDropdown();
     });
     window.addEventListener('keydown', (e) => {
-      if (e.code === 'Escape' && this.openSlotIdx !== null) {
-        this.closeDropdown();
+      if (e.code === 'Escape') {
+        if (this.mapPoolOpen) {
+          this.closeMapPoolModal();
+          return;
+        }
+        if (this.openSlotIdx !== null) {
+          this.closeDropdown();
+        }
       }
     });
     window.addEventListener('resize', () => {
@@ -217,18 +245,195 @@ export class LobbyUI {
     this.render();
   }
 
-  public show(tab: 'play' | 'leaderboard' = 'play') {
+  private loadMapPools(): Record<RankedMode, Set<string>> {
+    const validIds = new Set(this.maps.map((m) => m.id));
+    const allIds = () => new Set(this.maps.map((m) => m.id));
+    try {
+      const raw = localStorage.getItem(MAP_POOLS_STORAGE_KEY);
+      if (!raw) return { solo: allIds(), ffa: allIds() };
+      const parsed = JSON.parse(raw) as Partial<Record<RankedMode, string[]>>;
+      const parseSet = (arr?: string[]) => {
+        if (!Array.isArray(arr)) return allIds();
+        const filtered = arr.filter((id) => validIds.has(id));
+        return filtered.length > 0 ? new Set(filtered) : allIds();
+      };
+      return {
+        solo: parseSet(parsed.solo),
+        ffa: parseSet(parsed.ffa),
+      };
+    } catch {
+      return { solo: allIds(), ffa: allIds() };
+    }
+  }
+
+  private saveMapPools() {
+    try {
+      localStorage.setItem(
+        MAP_POOLS_STORAGE_KEY,
+        JSON.stringify({
+          solo: Array.from(this.rankedMapPools.solo),
+          ffa: Array.from(this.rankedMapPools.ffa),
+        }),
+      );
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  private loadRecentMaps(): string[] {
+    const validIds = new Set(this.maps.map((m) => m.id));
+    try {
+      const raw = localStorage.getItem(RECENT_MAPS_STORAGE_KEY);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) return [];
+      return parsed.filter((id): id is string => typeof id === 'string' && validIds.has(id)).slice(-3);
+    } catch {
+      return [];
+    }
+  }
+
+  private saveRecentMaps() {
+    try {
+      localStorage.setItem(RECENT_MAPS_STORAGE_KEY, JSON.stringify(this.recentMapIds.slice(-3)));
+    } catch {
+      // Ignore storage errors
+    }
+  }
+
+  public recordPlayedMap(mapId: string) {
+    this.recentMapIds.push(mapId);
+    while (this.recentMapIds.length > 3) {
+      this.recentMapIds.shift();
+    }
+    this.saveRecentMaps();
+  }
+
+  private pickRandomMap(pool: MapMeta[]): MapMeta {
+    const safePool = pool.length > 0 ? pool : this.maps;
+    let candidates = safePool;
+    // When map pool has > 3 maps, exclude maps played in the last 3 matches
+    if (safePool.length > 3 && this.recentMapIds.length > 0) {
+      const recent3 = new Set(this.recentMapIds.slice(-3));
+      const filtered = safePool.filter((m) => !recent3.has(m.id));
+      if (filtered.length > 0) {
+        candidates = filtered;
+      }
+    }
+    return candidates[Math.floor(Math.random() * candidates.length)];
+  }
+
+  private getRankedPoolMaps(mode: RankedMode): MapMeta[] {
+    const set = this.rankedMapPools[mode];
+    const pool = this.maps.filter((m) => set.has(m.id));
+    return pool.length > 0 ? pool : this.maps;
+  }
+
+  public show(
+    tab?: LobbyTab,
+    opts?: { openLeaderboard?: boolean; rankedMode?: RankedMode },
+  ) {
     this.closeDropdown();
+    this.closeMapPoolModal();
     this.loadingMessage = null;
-    this.activeTab = tab;
+    if (tab) this.activeTab = tab;
+    if (opts?.rankedMode) this.rankedMode = opts.rankedMode;
+    this.showLeaderboard = Boolean(opts?.openLeaderboard);
     this.container.classList.remove('hidden');
     this.render();
   }
 
   public hide() {
     this.closeDropdown();
+    this.closeMapPoolModal();
     this.leaderboardPanel.hideTooltip();
     this.container.classList.add('hidden');
+  }
+
+  public setLoading(msg: string | null) {
+    this.loadingMessage = msg;
+    const btn = this.container.querySelector<HTMLButtonElement>('#btn-start-match');
+    if (btn) {
+      btn.disabled = msg !== null;
+      if (msg) {
+        btn.textContent = msg;
+      } else if (this.activeTab === 'ranked') {
+        btn.textContent = '开始对战';
+      } else {
+        btn.textContent = this.hasHuman() ? '开始对战' : '开始 AI 观战';
+      }
+    }
+  }
+
+  public getSelectedMap(): MapMeta {
+    return this.maps.find((m) => m.id === this.selectedMapId) || this.maps[0];
+  }
+
+  public setCliffGuard(enabled: boolean) {
+    this.cliffGuard = enabled;
+  }
+
+  /**
+   * Build a fresh Ranked match config using the player's LATEST Elo score,
+   * nearest 4 (SOLO) / 6 (FFA) ranked opponents, and the mode's saved map pool
+   * (with recent-3-map exclusion when pool > 3).
+   */
+  public createRankedMatchConfig(mode: RankedMode, avoidBotIds?: string[]): MatchConfig {
+    const pool = this.getRankedPoolMaps(mode);
+    const mapMeta = this.pickRandomMap(pool);
+    this.recordPlayedMap(mapMeta.id);
+
+    const opponents = this.leaderboard.pickRankedOpponents(mode, avoidBotIds);
+    const drafts: DraftSlot[] = [
+      { kind: 'human', botId: '' },
+      ...opponents.map((b) => ({ kind: 'bot' as const, botId: b.id })),
+    ];
+    const slots = resolveSlots(drafts, this.roster);
+    // Randomize spawn seats in ranked matches
+    for (let i = slots.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [slots[i], slots[j]] = [slots[j], slots[i]];
+    }
+    const seed = Math.floor(Math.random() * 900000) + 1;
+
+    return {
+      matchMode: mode === 'solo' ? 'ranked-solo' : 'ranked-ffa',
+      mapId: mapMeta.id,
+      mapMeta,
+      slots,
+      seed,
+      speed: 1.0, // Fixed standard speed in Ranked
+      cliffGuard: this.cliffGuard,
+    };
+  }
+
+  private startRankedMatch() {
+    if (this.loadingMessage) return;
+    const cfg = this.createRankedMatchConfig(this.rankedMode);
+    this.callbacks.onStartMatch(cfg);
+  }
+
+  private startCustomMatch() {
+    if (this.loadingMessage) return;
+    const mapMeta = this.randomMap ? this.pickRandomMap(this.maps) : this.getSelectedMap();
+    this.recordPlayedMap(mapMeta.id);
+    const slots = resolveSlots(this.drafts, this.roster);
+    if (this.randomizeOrder) {
+      for (let i = slots.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [slots[i], slots[j]] = [slots[j], slots[i]];
+      }
+    }
+    const seed = Math.floor(Math.random() * 900000) + 1;
+    this.callbacks.onStartMatch({
+      matchMode: 'custom',
+      mapId: mapMeta.id,
+      mapMeta,
+      slots,
+      seed,
+      speed: this.gameSpeed,
+      cliffGuard: this.cliffGuard,
+    });
   }
 
   private closeDropdown() {
@@ -236,6 +441,13 @@ export class LobbyUI {
     this.openSlotIdx = null;
     this.dropdownMenu.classList.add('hidden');
     this.container.querySelectorAll('.picker-trigger.open').forEach((el) => el.classList.remove('open'));
+  }
+
+  private officialBotScoreForCustom(b: RosterEntry): number | null {
+    if (b.category !== 'official') return null;
+    if (this.drafts.length === 2) return b.duelRating ?? b.rating;
+    if (this.drafts.length === 4) return b.ffaRating ?? b.rating;
+    return b.rating;
   }
 
   private openDropdown(slotIdx: number, triggerEl: HTMLElement) {
@@ -251,7 +463,6 @@ export class LobbyUI {
     const humanSlotIdx = this.drafts.findIndex((d) => d.kind === 'human');
     const humanTakenElsewhere = humanSlotIdx >= 0 && humanSlotIdx !== slotIdx;
     const humanSelectedHere = currentDraft.kind === 'human';
-    const humanElo = this.leaderboard.getHumanRating();
     const humanAvatar = makeHoodieAvatarDataUrl('#3B78F0', '#262A33');
 
     const officialBots = this.roster.filter((r) => r.category === 'official');
@@ -259,7 +470,13 @@ export class LobbyUI {
 
     const renderBotItem = (b: RosterEntry) => {
       const selected = currentDraft.kind === 'bot' && currentDraft.botId === b.id;
-      const rankChip = b.rank !== null ? `<span class="pm-rank">#${b.rank}</span>` : `<span class="pm-rank pm-rank-sp">陪练</span>`;
+      const isOfficial = b.category === 'official';
+      const rankChip =
+        isOfficial && b.rank !== null
+          ? `<span class="pm-rank">#${b.rank}</span>`
+          : `<span class="pm-rank pm-rank-sp">陪练</span>`;
+      const score = isOfficial ? this.officialBotScoreForCustom(b) : null;
+      const scoreHtml = score !== null ? `<span class="pm-score elo-zero">${score}</span>` : '';
       return `
         <button type="button" class="pm-item ${selected ? 'is-selected' : ''}" data-pick-kind="bot" data-pick-id="${b.id}" role="option" aria-selected="${selected}">
           <img class="pm-avatar" src="${avatarForBotEntry(b)}" alt="" style="border-color:${b.color}" />
@@ -269,13 +486,13 @@ export class LobbyUI {
               <span class="pm-name">${b.name}</span>
             </div>
           </div>
-          <span class="pm-score ${eloScoreClass(b.rating)}">${formatEloScore(b.rating)}</span>
+          ${scoreHtml}
           <span class="pm-check">${selected ? '✓' : ''}</span>
         </button>`;
     };
 
     this.dropdownMenu.innerHTML = `
-      <div class="pm-section-label">真人玩家（全队限 1 名）</div>
+      <div class="pm-section-label">玩家</div>
       <button
         type="button"
         class="pm-item pm-item-human ${humanSelectedHere ? 'is-selected' : ''} ${humanTakenElsewhere ? 'is-disabled' : ''}"
@@ -294,18 +511,16 @@ export class LobbyUI {
             ${humanTakenElsewhere ? `<span class="pm-taken-pill">已在 P${humanSlotIdx + 1}</span>` : ''}
           </div>
         </div>
-        <span class="pm-score ${eloScoreClass(humanElo)}">${formatEloScore(humanElo)}</span>
         <span class="pm-check">${humanSelectedHere ? '✓' : ''}</span>
       </button>
 
-      <div class="pm-section-label">正式海选 AI（13 位 · WASM）</div>
+      <div class="pm-section-label">官方 AI</div>
       ${officialBots.map(renderBotItem).join('')}
 
-      <div class="pm-section-label">官方陪练（热身推荐）</div>
+      <div class="pm-section-label">陪练</div>
       ${sparringBots.map(renderBotItem).join('')}
     `;
 
-    // Position cleanly relative to trigger, flipping upward if closer to bottom of viewport
     const rect = triggerEl.getBoundingClientRect();
     const pad = 12;
     const width = Math.max(rect.width, 320);
@@ -330,13 +545,9 @@ export class LobbyUI {
 
     this.dropdownMenu.classList.remove('hidden');
 
-    // Scroll active item into view nicely
     const activeItem = this.dropdownMenu.querySelector<HTMLElement>('.pm-item.is-selected');
-    if (activeItem) {
-      activeItem.scrollIntoView({ block: 'nearest' });
-    }
+    if (activeItem) activeItem.scrollIntoView({ block: 'nearest' });
 
-    // Bind item clicks
     this.dropdownMenu.querySelectorAll<HTMLButtonElement>('.pm-item').forEach((item) => {
       item.addEventListener('click', () => {
         if (item.disabled || item.classList.contains('is-disabled')) return;
@@ -344,7 +555,6 @@ export class LobbyUI {
         const pickId = item.dataset.pickId!;
 
         if (pickKind === 'human') {
-          // Guard: never allow duplicate human if another slot is already human
           const existingHuman = this.drafts.findIndex((d) => d.kind === 'human');
           if (existingHuman >= 0 && existingHuman !== slotIdx) return;
           this.drafts[slotIdx] = { kind: 'human', botId: this.drafts[slotIdx].botId };
@@ -357,30 +567,114 @@ export class LobbyUI {
     });
   }
 
-  private updateHeaderElo() {
-    const pill = this.container.querySelector<HTMLElement>('#header-elo-pill');
-    if (!pill) return;
-    const elo = this.leaderboard.getHumanRating();
-    const rk = this.leaderboard.getHumanRank();
-    const fmt = elo > 0 ? `+${elo.toFixed(1)}` : elo.toFixed(1);
-    pill.textContent = `玩家 Elo ${fmt} · #${rk.rank}/${rk.total}`;
+  private openMapPoolModal() {
+    this.mapPoolOpen = true;
+    this.mapPoolWarnText = null;
+    this.renderMapPoolModal();
+    this.mapPoolModal.classList.remove('hidden');
   }
 
-  public setLoading(msg: string | null) {
-    this.loadingMessage = msg;
-    const btn = this.container.querySelector<HTMLButtonElement>('#btn-start-match');
-    if (btn) {
-      btn.disabled = msg !== null;
-      btn.textContent = msg ? msg : (this.hasHuman() ? '开始对战' : '开始 AI 观战');
+  private closeMapPoolModal() {
+    if (!this.mapPoolOpen && this.mapPoolModal.classList.contains('hidden')) return;
+    this.mapPoolOpen = false;
+    this.mapPoolWarnText = null;
+    this.mapPoolModal.classList.add('hidden');
+  }
+
+  private renderMapPoolModal() {
+    const mode = this.rankedMode;
+    const poolSet = this.rankedMapPools[mode];
+    const modeName = mode === 'solo' ? 'SOLO' : '四人混战';
+
+    this.mapPoolModal.innerHTML = `
+      <div class="mappool-card" role="dialog" aria-label="排位赛地图池">
+        <div class="mappool-head">
+          <div>
+            <h3>${modeName} 地图池</h3>
+            <p class="mappool-sub">已选 <strong>${poolSet.size}</strong> / ${this.maps.length} 张地图${poolSet.size > 3 ? ' · 最近 3 场不重复' : ''}</p>
+          </div>
+          <div class="mappool-head-actions">
+            <button type="button" class="mappool-quick-btn" id="mp-select-all">全选</button>
+            <button type="button" class="mappool-quick-btn" id="mp-select-std">仅标准图</button>
+            <button type="button" class="mappool-close-btn" id="mp-close">完成</button>
+          </div>
+        </div>
+        ${this.mapPoolWarnText ? `<div class="mappool-warn">${this.mapPoolWarnText}</div>` : ''}
+        <div class="mappool-grid">
+          ${this.maps
+            .map((m) => {
+              const checked = poolSet.has(m.id);
+              return `
+              <button type="button" class="map-tile mappool-tile ${checked ? 'active' : ''}" data-pool-map="${m.id}" aria-pressed="${checked}">
+                <span class="mappool-check">${checked ? '✓' : ''}</span>
+                <canvas class="map-mini" width="120" height="76" data-pool-canvas="${m.id}"></canvas>
+                <div class="map-tile-meta">
+                  <span class="map-tile-title">${m.title}</span>
+                  <span class="map-tile-tag">${m.category === 'standard' ? '标准' : '大图'}</span>
+                </div>
+              </button>`;
+            })
+            .join('')}
+        </div>
+      </div>
+    `;
+
+    for (const m of this.maps) {
+      const cvs = this.mapPoolModal.querySelector<HTMLCanvasElement>(`canvas[data-pool-canvas="${m.id}"]`);
+      if (cvs) drawMiniMap(cvs, m);
     }
-  }
 
-  public getSelectedMap(): MapMeta {
-    return this.maps.find((m) => m.id === this.selectedMapId) || this.maps[0];
-  }
+    this.mapPoolModal.onclick = (e) => {
+      if (e.target === this.mapPoolModal) {
+        this.closeMapPoolModal();
+        this.render();
+      }
+    };
 
-  public setCliffGuard(enabled: boolean) {
-    this.cliffGuard = enabled;
+    this.mapPoolModal.querySelector('#mp-close')?.addEventListener('click', () => {
+      this.closeMapPoolModal();
+      this.render();
+    });
+
+    this.mapPoolModal.querySelector('#mp-select-all')?.addEventListener('click', () => {
+      this.rankedMapPools[mode] = new Set(this.maps.map((m) => m.id));
+      this.mapPoolWarnText = null;
+      this.saveMapPools();
+      this.renderMapPoolModal();
+      this.render();
+    });
+
+    this.mapPoolModal.querySelector('#mp-select-std')?.addEventListener('click', () => {
+      const std = this.maps.filter((m) => m.category === 'standard').map((m) => m.id);
+      if (std.length > 0) {
+        this.rankedMapPools[mode] = new Set(std);
+        this.mapPoolWarnText = null;
+        this.saveMapPools();
+        this.renderMapPoolModal();
+        this.render();
+      }
+    });
+
+    this.mapPoolModal.querySelectorAll<HTMLButtonElement>('[data-pool-map]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const id = btn.dataset.poolMap!;
+        const set = this.rankedMapPools[mode];
+        if (set.has(id)) {
+          if (set.size <= 1) {
+            this.mapPoolWarnText = '图池内至少保留 1 张地图';
+            this.renderMapPoolModal();
+            return;
+          }
+          set.delete(id);
+        } else {
+          set.add(id);
+        }
+        this.mapPoolWarnText = null;
+        this.saveMapPools();
+        this.renderMapPoolModal();
+        this.render();
+      });
+    });
   }
 
   private hasHuman(): boolean {
@@ -389,12 +683,10 @@ export class LobbyUI {
 
   private toggleHumanMode() {
     if (this.hasHuman()) {
-      // Switch to pure AI spectator mode: replace human slot with Opus
       this.drafts = this.drafts.map((d) =>
         d.kind === 'human' ? { kind: 'bot', botId: 'claude-opus-5.5' } : d,
       );
     } else {
-      // Put human into slot 0
       this.drafts[0] = { kind: 'human', botId: this.drafts[0].botId };
     }
     this.render();
@@ -412,264 +704,346 @@ export class LobbyUI {
     this.render();
   }
 
-  private startMatch() {
-    if (this.loadingMessage) return;
-    const mapMeta = this.randomMap
-      ? this.maps[Math.floor(Math.random() * this.maps.length)]
-      : this.getSelectedMap();
-    const slots = resolveSlots(this.drafts, this.roster);
-    if (this.randomizeOrder) {
-      // Fisher-Yates shuffle spawn order on entry while keeping lobby order intact
-      for (let i = slots.length - 1; i > 0; i--) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [slots[i], slots[j]] = [slots[j], slots[i]];
-      }
+  private renderRankedBody(): string {
+    if (this.showLeaderboard) {
+      return `<div id="leaderboard-mount"></div>`;
     }
-    const seed = Math.floor(Math.random() * 900000) + 1;
-    this.callbacks.onStartMatch({
-      mapId: mapMeta.id,
-      mapMeta,
-      slots,
-      seed,
-      speed: this.gameSpeed,
-      cliffGuard: this.cliffGuard,
-    });
+
+    const mode = this.rankedMode;
+    const elo = this.leaderboard.getHumanRating(mode);
+    const rk = this.leaderboard.getHumanRank(mode);
+    const poolCount = this.getRankedPoolMaps(mode).length;
+    const modeLabel = mode === 'solo' ? 'SOLO' : '四人混战';
+
+    return `
+      <div class="ranked-panel">
+        <div class="ranked-mode-switch" role="tablist">
+          <button type="button" class="ranked-mode-btn ${mode === 'solo' ? 'active' : ''}" data-ranked-mode="solo">
+            <span class="rm-icon">⚔️</span>
+            <span class="rm-text">SOLO</span>
+            <span class="rm-tag">1v1</span>
+          </button>
+          <button type="button" class="ranked-mode-btn ${mode === 'ffa' ? 'active' : ''}" data-ranked-mode="ffa">
+            <span class="rm-icon">👑</span>
+            <span class="rm-text">四人混战</span>
+            <span class="rm-tag">4P</span>
+          </button>
+        </div>
+
+        <button type="button" class="ranked-hero-card" id="btn-open-leaderboard" title="点击查看完整排行榜">
+          <div class="rh-top-row">
+            <span class="rh-mode-badge">${modeLabel} 排位</span>
+            <span class="rh-lb-link">🏆 查看排行榜 →</span>
+          </div>
+          <div class="rh-metrics">
+            <div class="rh-metric">
+              <div class="rh-metric-label">当前 ELO</div>
+              <div class="rh-elo-num" id="ranked-elo-val">${elo}</div>
+            </div>
+            <div class="rh-divider"></div>
+            <div class="rh-metric">
+              <div class="rh-metric-label">当前名次</div>
+              <div class="rh-rank-num" id="ranked-rank-val">#${rk.rank}<span> / ${rk.total}</span></div>
+            </div>
+          </div>
+        </button>
+
+        <div class="ranked-controls-bar">
+          <button type="button" class="mappool-trigger-btn" id="btn-open-map-pool">
+            <span class="mpt-icon">🗺️</span>
+            <span>地图选择</span>
+            <span class="mpt-count" id="mappool-count-badge">${poolCount} / ${this.maps.length}</span>
+          </button>
+
+          <button
+            type="button"
+            class="rand-switch cg-switch ${this.cliffGuard ? 'is-on' : ''}"
+            id="btn-toggle-cliff-guard"
+            role="switch"
+            aria-checked="${this.cliffGuard}"
+            title="开启时人类不会走路坠崖，冲刺、平台塌陷、被踢不受影响"
+          >
+            <span class="rand-track"><span class="rand-thumb"></span></span>
+            <span class="rand-label">🛡️ 跌落防护</span>
+          </button>
+        </div>
+
+        <button class="start-btn ranked-start-btn" id="btn-start-match" ${this.loadingMessage ? 'disabled' : ''}>
+          ${this.loadingMessage || '开始对战'}
+        </button>
+
+        <div class="controls-legend ranked-controls-legend">
+          <div><kbd>WASD</kbd> 移动</div>
+          <div><kbd>左键</kbd> 向鼠标扔镖 / <kbd>长按</kbd> 召回</div>
+          <div><kbd>右键</kbd> 挥砍 / 空手踢人</div>
+          <div><kbd>Shift</kbd> 冲刺越坑</div>
+        </div>
+      </div>
+    `;
   }
 
-  private render() {
-    this.closeDropdown();
+  private renderCustomBody(): string {
     const selectedMap = this.getSelectedMap();
     const resolved = resolveSlots(this.drafts, this.roster);
     const isHumanPlaying = this.hasHuman();
     const rosterById = new Map(this.roster.map((r) => [r.id, r]));
 
-    const humanElo = this.leaderboard.getHumanRating();
-    const humanEloTxt = formatEloScore(humanElo);
-    const humanRk = this.leaderboard.getHumanRank();
+    return `
+      <div class="lobby-grid">
+        <section class="lobby-section">
+          <div class="section-head">
+            <div class="section-title-group">
+              <h2>选择地图</h2>
+              <button
+                type="button"
+                class="rand-switch ${this.randomMap ? 'is-on' : ''}"
+                id="btn-toggle-random-map"
+                role="switch"
+                aria-checked="${this.randomMap}"
+                title="开启后每次开局随机抽取一张地图；选中任意地图自动关闭随机"
+              >
+                <span class="rand-track"><span class="rand-thumb"></span></span>
+                <span class="rand-label">随机地图</span>
+              </button>
+            </div>
+            <span class="section-hint">${this.randomMap ? `随机 · 共 ${this.maps.length} 张地图` : `${selectedMap.title} · ${selectedMap.nx * 0.5}×${selectedMap.ny * 0.5}m`}</span>
+          </div>
+          <div class="map-grid ${this.randomMap ? 'is-random' : ''}" id="map-grid">
+            ${this.maps
+              .map(
+                (m) => `
+              <button class="map-tile ${!this.randomMap && m.id === this.selectedMapId ? 'active' : ''}" data-map="${m.id}">
+                <canvas class="map-mini" width="120" height="76" data-map-canvas="${m.id}"></canvas>
+                <div class="map-tile-meta">
+                  <span class="map-tile-title">${m.title}</span>
+                  <span class="map-tile-tag">${m.category === 'standard' ? '标准' : '大图'}</span>
+                </div>
+              </button>`,
+              )
+              .join('')}
+          </div>
+          <div class="map-desc-box">
+            ${
+              this.randomMap
+                ? `<strong>🎲 随机地图已开启</strong>：每次开局将从全部 ${this.maps.length} 张地图中随机抽取一张（最近 3 场不重复）；点击任意地图自动关闭随机。`
+                : `<strong>${selectedMap.title}</strong>：${selectedMap.desc}`
+            }
+          </div>
+
+          <div class="speed-box">
+            <div class="speed-head">
+              <span class="speed-title">游戏速度</span>
+              <span class="speed-readout" id="speed-readout">
+                <strong>${this.gameSpeed.toFixed(1)}x</strong> · ${Math.round(this.gameSpeed * 20)} Hz 逻辑 tick
+              </span>
+            </div>
+            <input
+              type="range"
+              id="speed-slider"
+              class="speed-slider"
+              min="0.1"
+              max="2.0"
+              step="0.1"
+              value="${this.gameSpeed.toFixed(1)}"
+              style="--speed-pct:${(((this.gameSpeed - 0.1) / 1.9) * 100).toFixed(1)}%"
+            />
+            <div class="speed-ticks">
+              ${[0.1, 0.5, 1.0, 1.5, 2.0]
+                .map(
+                  (v) =>
+                    `<button type="button" class="speed-tick ${Math.abs(this.gameSpeed - v) < 0.01 ? 'active' : ''}" data-speed="${v}">${v.toFixed(1)}x</button>`,
+                )
+                .join('')}
+            </div>
+          </div>
+        </section>
+
+        <section class="lobby-section">
+          <div class="section-head">
+            <div class="section-title-group">
+              <h2>参赛选手 (${this.drafts.length} 人)</h2>
+              <button
+                type="button"
+                class="rand-switch ${this.randomizeOrder ? 'is-on' : ''}"
+                id="btn-toggle-random"
+                role="switch"
+                aria-checked="${this.randomizeOrder}"
+                title="开启后大厅顺序不变，进入对局时随机打乱出生站位"
+              >
+                <span class="rand-track"><span class="rand-thumb"></span></span>
+                <span class="rand-label">随机站位</span>
+              </button>
+            </div>
+            <div class="slot-controls">
+              <div class="seg-group">
+                ${[2, 3, 4]
+                  .map(
+                    (n) =>
+                      `<button class="seg-btn ${this.drafts.length === n ? 'active' : ''}" data-count="${n}">${n}人</button>`,
+                  )
+                  .join('')}
+              </div>
+              <button class="mode-toggle ${isHumanPlaying ? 'human-on' : 'spec-on'}" id="btn-toggle-human">
+                ${isHumanPlaying ? '真人参战中' : '观战模式 (纯AI)'}
+              </button>
+            </div>
+          </div>
+
+          <div class="slots-list">
+            ${resolved
+              .map((slot, idx) => {
+                const isHuman = slot.kind === 'human';
+                const botEntry = !isHuman && slot.botId ? rosterById.get(slot.botId) : undefined;
+                const isOfficial = !isHuman && botEntry?.category === 'official';
+                const officialScore = isOfficial && botEntry ? this.officialBotScoreForCustom(botEntry) : null;
+                const roleChip = isHuman
+                  ? `<span class="pk-chip pk-chip-human">真人</span>`
+                  : isOfficial && botEntry?.rank !== null && botEntry?.rank !== undefined
+                    ? `<span class="pk-chip pk-chip-official">#${botEntry.rank} AI</span>`
+                    : `<span class="pk-chip pk-chip-sparring">陪练</span>`;
+                const subHtml = isOfficial ? `<div class="pk-sub">${slot.baseName}</div>` : '';
+                const scoreHtml =
+                  officialScore !== null ? `<span class="pk-score elo-zero">${officialScore}</span>` : '';
+                return `
+                <div class="slot-row ${isHuman ? 'slot-human' : ''}">
+                  <div class="slot-seat" style="background:${slot.ringAccent || slot.color}">P${idx + 1}</div>
+                  <button type="button" class="picker-trigger" data-slot-picker="${idx}" aria-haspopup="listbox">
+                    <img class="pk-avatar" src="${slot.avatar || ''}" alt="${slot.displayName}" style="border-color:${slot.ringAccent || slot.color}" />
+                    <div class="pk-body">
+                      <div class="pk-title-line">
+                        <span class="pk-name">${slot.displayName}</span>
+                        ${slot.copyNumber ? `<span class="dup-pill">副本 #${slot.copyNumber}</span>` : ''}
+                        ${roleChip}
+                      </div>
+                      ${subHtml}
+                    </div>
+                    <div class="pk-right">
+                      ${scoreHtml}
+                      <svg class="pk-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                        <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                      </svg>
+                    </div>
+                  </button>
+                </div>`;
+              })
+              .join('')}
+          </div>
+
+          <div class="cliff-guard-bar ${isHumanPlaying ? '' : 'is-spectate'}">
+            <div class="cg-meta">
+              <span class="cg-title">🛡️ 跌落防护</span>
+              <span class="cg-desc">${isHumanPlaying ? '防走路坠崖 · 冲刺/塌陷/被踢不受影响' : '仅真人参战生效 · 防走路坠崖'}</span>
+            </div>
+            <button
+              type="button"
+              class="rand-switch cg-switch ${this.cliffGuard ? 'is-on' : ''}"
+              id="btn-toggle-cliff-guard"
+              role="switch"
+              aria-checked="${this.cliffGuard}"
+              title="开启时人类不会走路坠崖，冲刺、平台塌陷、被踢不受影响"
+            >
+              <span class="rand-track"><span class="rand-thumb"></span></span>
+              <span class="rand-label">${this.cliffGuard ? '已开启' : '已关闭'}</span>
+            </button>
+          </div>
+
+          <div class="controls-legend">
+            <div><kbd>WASD</kbd> 移动</div>
+            <div><kbd>左键</kbd> 向鼠标扔镖 / <kbd>长按</kbd> 召回</div>
+            <div><kbd>右键</kbd> 挥砍 / 空手踢人</div>
+            <div><kbd>Shift</kbd> 冲刺越坑</div>
+          </div>
+
+          <button class="start-btn" id="btn-start-match" ${this.loadingMessage ? 'disabled' : ''}>
+            ${this.loadingMessage || (isHumanPlaying ? '开始对战' : '开始 AI 观战')}
+          </button>
+        </section>
+      </div>
+    `;
+  }
+
+  private render() {
+    this.closeDropdown();
 
     this.container.innerHTML = `
-      <div class="lobby-card">
+      <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''}">
         <header class="lobby-header">
           <div class="lobby-title-group">
-            <div class="lobby-badge">MEOW AI ARENA · WEB WASM</div>
             <h1>回旋镖大作战</h1>
-            <p class="lobby-sub">官方 C++ 引擎 & 16 个 AI Bot 全量 WASM · AI 0.2s 延迟 / 真人零延迟 · 20Hz 逻辑 / 240Hz+ 渲染</p>
           </div>
           <div class="lobby-nav-right">
             <div class="lobby-tabs">
-              <button class="lobby-tab ${this.activeTab === 'play' ? 'active' : ''}" id="tab-play">⚔️ 对局配置</button>
-              <button class="lobby-tab ${this.activeTab === 'leaderboard' ? 'active' : ''}" id="tab-leaderboard">
-                🏆 排行榜
-                <span class="tab-elo-pill" id="header-elo-pill">玩家 Elo ${humanEloTxt} · #${humanRk.rank}/${humanRk.total}</span>
-              </button>
+              <button class="lobby-tab ${this.activeTab === 'ranked' ? 'active' : ''}" id="tab-ranked">🏆 排位赛</button>
+              <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">⚙️ 自定义对局</button>
             </div>
           </div>
         </header>
 
-        ${
-          this.activeTab === 'leaderboard'
-            ? `<div id="leaderboard-mount"></div>`
-            : `<div class="lobby-grid">
-          <section class="lobby-section">
-            <div class="section-head">
-              <div class="section-title-group">
-                <h2>选择地图</h2>
-                <button
-                  type="button"
-                  class="rand-switch ${this.randomMap ? 'is-on' : ''}"
-                  id="btn-toggle-random-map"
-                  role="switch"
-                  aria-checked="${this.randomMap}"
-                  title="开启后每次开局随机抽取一张地图；选中任意地图自动关闭随机"
-                >
-                  <span class="rand-track"><span class="rand-thumb"></span></span>
-                  <span class="rand-label">随机地图</span>
-                </button>
-              </div>
-              <span class="section-hint">${this.randomMap ? `随机 · 共 ${this.maps.length} 张地图` : `${selectedMap.title} · ${selectedMap.nx * 0.5}×${selectedMap.ny * 0.5}m`}</span>
-            </div>
-            <div class="map-grid ${this.randomMap ? 'is-random' : ''}" id="map-grid">
-              ${this.maps
-                .map(
-                  (m) => `
-                <button class="map-tile ${!this.randomMap && m.id === this.selectedMapId ? 'active' : ''}" data-map="${m.id}">
-                  <canvas class="map-mini" width="120" height="76" data-map-canvas="${m.id}"></canvas>
-                  <div class="map-tile-meta">
-                    <span class="map-tile-title">${m.title}</span>
-                    <span class="map-tile-tag">${m.category === 'standard' ? '标准' : '大图'}</span>
-                  </div>
-                </button>`,
-                )
-                .join('')}
-            </div>
-            <div class="map-desc-box">
-              ${
-                this.randomMap
-                  ? `<strong>🎲 随机地图已开启</strong>：每次开局将从全部 ${this.maps.length} 张地图中随机抽取一张；点击上方任意地图可自动关闭随机并指定该图。`
-                  : `<strong>${selectedMap.title} (${selectedMap.id})</strong>：${selectedMap.desc}`
-              }
-            </div>
-
-            <div class="speed-box">
-              <div class="speed-head">
-                <span class="speed-title">游戏速度</span>
-                <span class="speed-readout" id="speed-readout">
-                  <strong>${this.gameSpeed.toFixed(1)}x</strong> · ${Math.round(this.gameSpeed * 20)} Hz 逻辑 tick
-                </span>
-              </div>
-              <input
-                type="range"
-                id="speed-slider"
-                class="speed-slider"
-                min="0.1"
-                max="2.0"
-                step="0.1"
-                value="${this.gameSpeed.toFixed(1)}"
-                style="--speed-pct:${(((this.gameSpeed - 0.1) / 1.9) * 100).toFixed(1)}%"
-              />
-              <div class="speed-ticks">
-                ${[0.1, 0.5, 1.0, 1.5, 2.0]
-                  .map(
-                    (v) =>
-                      `<button type="button" class="speed-tick ${Math.abs(this.gameSpeed - v) < 0.01 ? 'active' : ''}" data-speed="${v}">${v.toFixed(1)}x</button>`,
-                  )
-                  .join('')}
-              </div>
-            </div>
-          </section>
-
-          <section class="lobby-section">
-            <div class="section-head">
-              <div class="section-title-group">
-                <h2>参赛选手 (${this.drafts.length} 人)</h2>
-                <button
-                  type="button"
-                  class="rand-switch ${this.randomizeOrder ? 'is-on' : ''}"
-                  id="btn-toggle-random"
-                  role="switch"
-                  aria-checked="${this.randomizeOrder}"
-                  title="开启后大厅顺序不变，进入对局时随机打乱出生站位"
-                >
-                  <span class="rand-track"><span class="rand-thumb"></span></span>
-                  <span class="rand-label">随机站位</span>
-                </button>
-              </div>
-              <div class="slot-controls">
-                <div class="seg-group">
-                  ${[2, 3, 4]
-                    .map(
-                      (n) =>
-                        `<button class="seg-btn ${this.drafts.length === n ? 'active' : ''}" data-count="${n}">${n}人</button>`,
-                    )
-                    .join('')}
-                </div>
-                <button class="mode-toggle ${isHumanPlaying ? 'human-on' : 'spec-on'}" id="btn-toggle-human">
-                  ${isHumanPlaying ? '真人参战中' : '观战模式 (纯AI)'}
-                </button>
-              </div>
-            </div>
-
-            <div class="slots-list">
-              ${resolved
-                .map((slot, idx) => {
-                  const isHuman = slot.kind === 'human';
-                  const botEntry = !isHuman && slot.botId ? rosterById.get(slot.botId) : undefined;
-                  const score = isHuman ? humanElo : (botEntry?.rating ?? 0);
-                  const roleChip = isHuman
-                    ? `<span class="pk-chip pk-chip-human">真人</span>`
-                    : botEntry?.rank !== null && botEntry?.rank !== undefined
-                      ? `<span class="pk-chip pk-chip-official">#${botEntry.rank} AI</span>`
-                      : `<span class="pk-chip pk-chip-sparring">陪练</span>`;
-                  const subText = isHuman
-                    ? '示范小人 (蓝帽衫) · 零延迟操控'
-                    : botEntry?.category === 'official'
-                      ? `${slot.baseName} · WASM (0.2s 延迟)`
-                      : `${slot.baseName} · 陪练 WASM`;
-                  return `
-                  <div class="slot-row ${isHuman ? 'slot-human' : ''}">
-                    <div class="slot-seat" style="background:${slot.ringAccent || slot.color}">P${idx + 1}</div>
-                    <button type="button" class="picker-trigger" data-slot-picker="${idx}" aria-haspopup="listbox">
-                      <img class="pk-avatar" src="${slot.avatar || ''}" alt="${slot.displayName}" style="border-color:${slot.ringAccent || slot.color}" />
-                      <div class="pk-body">
-                        <div class="pk-title-line">
-                          <span class="pk-name">${slot.displayName}</span>
-                          ${slot.copyNumber ? `<span class="dup-pill">副本 #${slot.copyNumber}</span>` : ''}
-                          ${roleChip}
-                        </div>
-                        <div class="pk-sub">${subText}</div>
-                      </div>
-                      <div class="pk-right">
-                        <span class="pk-score ${eloScoreClass(score)}">${formatEloScore(score)}</span>
-                        <svg class="pk-chevron" viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
-                          <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
-                        </svg>
-                      </div>
-                    </button>
-                  </div>`;
-                })
-                .join('')}
-            </div>
-
-            <div class="cliff-guard-bar ${isHumanPlaying ? '' : 'is-spectate'}">
-              <div class="cg-meta">
-                <span class="cg-title">🛡️ 跌落防护</span>
-                <span class="cg-desc">${isHumanPlaying ? '防走路坠崖 · 冲刺/塌陷/被踢不受影响' : '仅真人参战生效 · 防走路坠崖'}</span>
-              </div>
-              <button
-                type="button"
-                class="rand-switch cg-switch ${this.cliffGuard ? 'is-on' : ''}"
-                id="btn-toggle-cliff-guard"
-                role="switch"
-                aria-checked="${this.cliffGuard}"
-                title="开启时人类不会走路坠崖，冲刺、平台塌陷、被踢不受影响"
-              >
-                <span class="rand-track"><span class="rand-thumb"></span></span>
-                <span class="rand-label">${this.cliffGuard ? '已开启' : '已关闭'}</span>
-              </button>
-            </div>
-
-            <div class="controls-legend">
-              <div><kbd>WASD</kbd> 移动</div>
-              <div><kbd>左键</kbd> 向鼠标扔镖 / <kbd>长按</kbd> 召回</div>
-              <div><kbd>右键</kbd> 挥砍 / 空手踢人</div>
-              <div><kbd>Shift</kbd> 冲刺越坑</div>
-            </div>
-
-            <button class="start-btn" id="btn-start-match" ${this.loadingMessage ? 'disabled' : ''}>
-              ${this.loadingMessage || (isHumanPlaying ? '开始对战' : '开始 AI 观战')}
-            </button>
-          </section>
-        </div>`
-        }
+        ${this.activeTab === 'ranked' ? this.renderRankedBody() : this.renderCustomBody()}
       </div>
     `;
 
-    // Bind tabs
-    this.container.querySelector('#tab-play')?.addEventListener('click', () => {
-      if (this.activeTab === 'play') return;
-      this.activeTab = 'play';
+    // Bind top tabs
+    this.container.querySelector('#tab-ranked')?.addEventListener('click', () => {
+      if (this.activeTab === 'ranked' && !this.showLeaderboard) return;
+      this.activeTab = 'ranked';
+      this.showLeaderboard = false;
       this.leaderboardPanel.hideTooltip();
       this.render();
     });
-    this.container.querySelector('#tab-leaderboard')?.addEventListener('click', () => {
-      if (this.activeTab === 'leaderboard') return;
-      this.activeTab = 'leaderboard';
+    this.container.querySelector('#tab-custom')?.addEventListener('click', () => {
+      if (this.activeTab === 'custom') return;
+      this.activeTab = 'custom';
+      this.showLeaderboard = false;
+      this.closeMapPoolModal();
+      this.leaderboardPanel.hideTooltip();
       this.render();
     });
 
-    if (this.activeTab === 'leaderboard') {
-      const mount = this.container.querySelector<HTMLElement>('#leaderboard-mount');
-      if (mount) this.leaderboardPanel.renderInto(mount);
+    // Ranked tab bindings
+    if (this.activeTab === 'ranked') {
+      if (this.showLeaderboard) {
+        this.leaderboardPanel.setMode(this.rankedMode);
+        const mount = this.container.querySelector<HTMLElement>('#leaderboard-mount');
+        if (mount) this.leaderboardPanel.renderInto(mount);
+        return;
+      }
+
+      this.container.querySelectorAll<HTMLButtonElement>('[data-ranked-mode]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const next = btn.dataset.rankedMode as RankedMode;
+          if (next === this.rankedMode) return;
+          this.rankedMode = next;
+          this.render();
+        });
+      });
+
+      this.container.querySelector('#btn-open-leaderboard')?.addEventListener('click', () => {
+        this.showLeaderboard = true;
+        this.render();
+      });
+
+      this.container.querySelector('#btn-open-map-pool')?.addEventListener('click', () => {
+        this.openMapPoolModal();
+      });
+
+      this.container.querySelector('#btn-toggle-cliff-guard')?.addEventListener('click', () => {
+        this.cliffGuard = !this.cliffGuard;
+        this.render();
+      });
+
+      this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {
+        this.startRankedMatch();
+      });
       return;
     }
 
-    // Paint minimaps
+    // Custom tab bindings
     for (const m of this.maps) {
       const cvs = this.container.querySelector<HTMLCanvasElement>(`canvas[data-map-canvas="${m.id}"]`);
       if (cvs) drawMiniMap(cvs, m);
     }
 
-    // Bind events
     this.container.querySelector('#btn-toggle-random-map')?.addEventListener('click', () => {
       this.randomMap = !this.randomMap;
       this.render();
@@ -747,7 +1121,7 @@ export class LobbyUI {
     });
 
     this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {
-      this.startMatch();
+      this.startCustomMatch();
     });
   }
 }

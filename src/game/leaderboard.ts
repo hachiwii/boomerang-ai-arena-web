@@ -1,15 +1,9 @@
-import { CauseType, MatchConfig, RosterEntry, TickSnapshot } from './types';
+import { CauseType, MatchConfig, RankedMode, RosterEntry, TickSnapshot } from './types';
 
-export interface ModeRecord {
+export interface ModeStats {
   games: number;
   wins: number;
   draws: number;
-}
-
-export interface ContestantStats {
-  mode2: ModeRecord;
-  mode3: ModeRecord;
-  mode4: ModeRecord;
   kills: number;
   deaths: number;
   dartKills: number;    // 飞镖击杀
@@ -19,6 +13,7 @@ export interface ContestantStats {
 }
 
 export interface EloUpdateResult {
+  mode: RankedMode;
   oldRating: number;
   newRating: number;
   delta: number;
@@ -29,30 +24,32 @@ export interface LeaderboardRow {
   isHuman: boolean;
   name: string;
   shortName: string;
-  category: 'human' | 'official' | 'sparring';
   avatar: string | null;
   color: string;
-  rating: number;
-  duelRating: number | null;
-  ffaRating: number | null;
-  stats: ContestantStats;
-  kd: number | null; // null if no games played
+  rating: number; // Integer Elo (fixed for official bots, dynamic >= 0 for human)
+  eloRank: number; // 1..14 rank strictly by Elo
+  stats: ModeStats;
+  kd: number | null;
 }
 
-interface StoredLeaderboardV1 {
-  version: 1;
-  humanRating: number;
-  stats: Record<string, ContestantStats>;
+interface StoredLeaderboardV2 {
+  version: 2;
+  humanSoloRating: number;
+  humanFfaRating: number;
+  soloStats: Record<string, ModeStats>;
+  ffaStats: Record<string, ModeStats>;
 }
 
-const STORAGE_KEY = 'boomerang_arena_leaderboard_v1';
+const STORAGE_KEY = 'boomerang_arena_leaderboard_v2';
+const INITIAL_HUMAN_ELO = 500;
+const MIN_HUMAN_ELO = 0;
 const ELO_K = 32;
 
-function emptyStats(): ContestantStats {
+function emptyStats(): ModeStats {
   return {
-    mode2: { games: 0, wins: 0, draws: 0 },
-    mode3: { games: 0, wins: 0, draws: 0 },
-    mode4: { games: 0, wins: 0, draws: 0 },
+    games: 0,
+    wins: 0,
+    draws: 0,
     kills: 0,
     deaths: 0,
     dartKills: 0,
@@ -62,25 +59,12 @@ function emptyStats(): ContestantStats {
   };
 }
 
-function normalizeStats(raw?: Partial<ContestantStats>): ContestantStats {
-  const base = emptyStats();
-  if (!raw) return base;
+function normalizeStats(raw?: Partial<ModeStats>): ModeStats {
+  if (!raw) return emptyStats();
   return {
-    mode2: {
-      games: Number(raw.mode2?.games) || 0,
-      wins: Number(raw.mode2?.wins) || 0,
-      draws: Number(raw.mode2?.draws) || 0,
-    },
-    mode3: {
-      games: Number(raw.mode3?.games) || 0,
-      wins: Number(raw.mode3?.wins) || 0,
-      draws: Number(raw.mode3?.draws) || 0,
-    },
-    mode4: {
-      games: Number(raw.mode4?.games) || 0,
-      wins: Number(raw.mode4?.wins) || 0,
-      draws: Number(raw.mode4?.draws) || 0,
-    },
+    games: Number(raw.games) || 0,
+    wins: Number(raw.wins) || 0,
+    draws: Number(raw.draws) || 0,
     kills: Number(raw.kills) || 0,
     deaths: Number(raw.deaths) || 0,
     dartKills: Number(raw.dartKills) || 0,
@@ -90,15 +74,33 @@ function normalizeStats(raw?: Partial<ContestantStats>): ContestantStats {
   };
 }
 
+function clampHumanElo(v: number): number {
+  if (!Number.isFinite(v)) return INITIAL_HUMAN_ELO;
+  return Math.max(MIN_HUMAN_ELO, Math.round(v));
+}
+
+function rankedModeOf(config: MatchConfig): RankedMode | null {
+  if (config.matchMode === 'ranked-solo') return 'solo';
+  if (config.matchMode === 'ranked-ffa') return 'ffa';
+  return null;
+}
+
 export class LeaderboardStore {
-  private readonly roster: RosterEntry[];
+  private readonly officialBots: RosterEntry[];
   private readonly rosterById: Map<string, RosterEntry>;
-  private humanRating = 0;
-  private stats: Record<string, ContestantStats> = {};
   private readonly humanAvatar: string;
 
+  private humanRatings: Record<RankedMode, number> = {
+    solo: INITIAL_HUMAN_ELO,
+    ffa: INITIAL_HUMAN_ELO,
+  };
+  private statsByMode: Record<RankedMode, Record<string, ModeStats>> = {
+    solo: {},
+    ffa: {},
+  };
+
   constructor(roster: RosterEntry[], humanAvatar: string) {
-    this.roster = roster;
+    this.officialBots = roster.filter((r) => r.category === 'official');
     this.rosterById = new Map(roster.map((r) => [r.id, r]));
     this.humanAvatar = humanAvatar;
     this.load();
@@ -108,26 +110,36 @@ export class LeaderboardStore {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (!raw) return;
-      const parsed = JSON.parse(raw) as Partial<StoredLeaderboardV1>;
-      if (typeof parsed.humanRating === 'number' && Number.isFinite(parsed.humanRating)) {
-        this.humanRating = parsed.humanRating;
+      const parsed = JSON.parse(raw) as Partial<StoredLeaderboardV2>;
+      if (typeof parsed.humanSoloRating === 'number') {
+        this.humanRatings.solo = clampHumanElo(parsed.humanSoloRating);
       }
-      if (parsed.stats && typeof parsed.stats === 'object') {
-        for (const [k, v] of Object.entries(parsed.stats)) {
-          this.stats[k] = normalizeStats(v);
+      if (typeof parsed.humanFfaRating === 'number') {
+        this.humanRatings.ffa = clampHumanElo(parsed.humanFfaRating);
+      }
+      if (parsed.soloStats && typeof parsed.soloStats === 'object') {
+        for (const [k, v] of Object.entries(parsed.soloStats)) {
+          this.statsByMode.solo[k] = normalizeStats(v);
+        }
+      }
+      if (parsed.ffaStats && typeof parsed.ffaStats === 'object') {
+        for (const [k, v] of Object.entries(parsed.ffaStats)) {
+          this.statsByMode.ffa[k] = normalizeStats(v);
         }
       }
     } catch {
-      this.humanRating = 0;
-      this.stats = {};
+      this.humanRatings = { solo: INITIAL_HUMAN_ELO, ffa: INITIAL_HUMAN_ELO };
+      this.statsByMode = { solo: {}, ffa: {} };
     }
   }
 
   private save() {
-    const payload: StoredLeaderboardV1 = {
-      version: 1,
-      humanRating: this.humanRating,
-      stats: this.stats,
+    const payload: StoredLeaderboardV2 = {
+      version: 2,
+      humanSoloRating: this.humanRatings.solo,
+      humanFfaRating: this.humanRatings.ffa,
+      soloStats: this.statsByMode.solo,
+      ffaStats: this.statsByMode.ffa,
     };
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
@@ -136,25 +148,33 @@ export class LeaderboardStore {
     }
   }
 
-  public getHumanRating(): number {
-    return this.humanRating;
+  public getHumanRating(mode: RankedMode): number {
+    return this.humanRatings[mode];
   }
 
-  public getBotFixedRating(botId: string): number {
-    return this.rosterById.get(botId)?.rating ?? 0;
+  public getBotFixedRating(botId: string, mode: RankedMode): number | null {
+    const entry = this.rosterById.get(botId);
+    if (!entry || entry.category !== 'official') return null;
+    const raw = mode === 'solo' ? entry.duelRating : entry.ffaRating;
+    return typeof raw === 'number' ? raw : entry.rating;
   }
 
-  private ensureStats(id: string): ContestantStats {
-    if (!this.stats[id]) this.stats[id] = emptyStats();
-    return this.stats[id];
+  private ensureStats(mode: RankedMode, entityId: string): ModeStats {
+    const bucket = this.statsByMode[mode];
+    if (!bucket[entityId]) bucket[entityId] = emptyStats();
+    return bucket[entityId];
   }
 
-  private applyHumanEloUpdate(config: MatchConfig, state: TickSnapshot): EloUpdateResult | null {
+  private applyHumanEloUpdate(
+    mode: RankedMode,
+    config: MatchConfig,
+    state: TickSnapshot,
+  ): EloUpdateResult | null {
     const n = config.slots.length;
     const humanSeat = config.slots.findIndex((s) => s.kind === 'human');
     if (humanSeat < 0 || humanSeat >= state.players.length) return null;
 
-    const oldRating = this.humanRating;
+    const oldRating = this.humanRatings[mode];
     const humanP = state.players[humanSeat];
     let oppCount = 0;
     let sumDiff = 0;
@@ -163,12 +183,11 @@ export class LeaderboardStore {
       if (j === humanSeat) continue;
       const oppSlot = config.slots[j];
       const oppP = state.players[j];
-      const oppRating = oppSlot.kind === 'bot' && oppSlot.botId ? this.getBotFixedRating(oppSlot.botId) : 0;
+      const oppRating = oppSlot.kind === 'bot' && oppSlot.botId ? this.getBotFixedRating(oppSlot.botId, mode) : null;
+      if (oppRating === null) continue;
 
-      // Expected score (standard 400-scale Elo matching meow-ai-arena Bradley-Terry scale)
       const expected = 1 / (1 + Math.pow(10, (oppRating - oldRating) / 400));
 
-      // Actual score vs this opponent: rank first, then kills on tie, else 0.5 draw
       let actual = 0.5;
       if (humanP.rank < oppP.rank) actual = 1.0;
       else if (humanP.rank > oppP.rank) actual = 0.0;
@@ -180,40 +199,36 @@ export class LeaderboardStore {
     }
 
     const rawDelta = oppCount > 0 ? (ELO_K / oppCount) * sumDiff : 0;
-    const newRating = Math.round((oldRating + rawDelta) * 10) / 10;
-    const delta = Math.round((newRating - oldRating) * 10) / 10;
-    this.humanRating = newRating;
-    return { oldRating, newRating, delta };
+    const newRating = clampHumanElo(oldRating + rawDelta);
+    const delta = newRating - oldRating;
+    this.humanRatings[mode] = newRating;
+    return { mode, oldRating, newRating, delta };
   }
 
   /**
-   * Record a finished match for all participants (2p/3p/4p win rates, kills, deaths,
-   * dart/melee/terrain kills, cliff falls). If a human participated, update ONLY the
-   * human's Elo rating (all bot Elo ratings remain permanently fixed).
+   * Record a finished ranked match (SOLO or FFA). Custom matches do not affect ranked Elo or leaderboards.
    */
   public recordMatch(config: MatchConfig, finalState: TickSnapshot): EloUpdateResult | null {
-    const n = config.slots.length;
-    const modeKey: 'mode2' | 'mode3' | 'mode4' = n === 2 ? 'mode2' : n === 3 ? 'mode3' : 'mode4';
+    const mode = rankedModeOf(config);
+    if (!mode) return null;
 
-    // 1. Update battle stats for every participant seat
+    const n = config.slots.length;
     for (let k = 0; k < n && k < finalState.players.length; k++) {
       const slot = config.slots[k];
       const p = finalState.players[k];
       const entityId = slot.kind === 'human' ? 'human' : slot.botId!;
-      const st = this.ensureStats(entityId);
-      const mr = st[modeKey];
+      if (slot.kind === 'bot' && this.getBotFixedRating(entityId, mode) === null) continue;
 
-      mr.games += 1;
+      const st = this.ensureStats(mode, entityId);
+      st.games += 1;
       if (finalState.winner === k) {
-        mr.wins += 1;
+        st.wins += 1;
       } else if (finalState.winner === -1 && p.rank === 1) {
-        mr.draws += 1;
+        st.draws += 1;
       }
 
       st.kills += p.kills;
-      if (!p.alive) {
-        st.deaths += 1;
-      }
+      if (!p.alive) st.deaths += 1;
       st.dartKills += p.kDart || 0;
       st.meleeKills += p.kSlash || 0;
       st.terrainKills += p.kFall || 0;
@@ -222,29 +237,26 @@ export class LeaderboardStore {
       }
     }
 
-    // 2. If human participated, update human Elo using pairwise Elo (scale 400, K=32)
-    // Bot scores are ALWAYS fixed.
-    const eloResult = this.applyHumanEloUpdate(config, finalState);
-
+    const eloResult = this.applyHumanEloUpdate(mode, config, finalState);
     this.save();
     return eloResult;
   }
 
   /**
-   * Called when an eliminated human presses R to restart before the remaining bots finish.
-   * Since the human is already dead, their relative rank vs every opponent is already final:
-   * update human's Elo and personal stats without corrupting unfinished bots' win rates.
+   * Called when an eliminated human presses R in Ranked mode before remaining bots finish.
+   * Updates human's Elo and personal stats by current rank without corrupting unfinished bots.
    */
   public recordHumanEarlyExit(config: MatchConfig, state: TickSnapshot): EloUpdateResult | null {
-    const n = config.slots.length;
+    const mode = rankedModeOf(config);
+    if (!mode) return null;
+
     const humanSeat = config.slots.findIndex((s) => s.kind === 'human');
     if (humanSeat < 0 || humanSeat >= state.players.length) return null;
     const humanP = state.players[humanSeat];
     if (humanP.alive) return null;
 
-    const modeKey: 'mode2' | 'mode3' | 'mode4' = n === 2 ? 'mode2' : n === 3 ? 'mode3' : 'mode4';
-    const st = this.ensureStats('human');
-    st[modeKey].games += 1;
+    const st = this.ensureStats(mode, 'human');
+    st.games += 1;
     st.kills += humanP.kills;
     st.deaths += 1;
     st.dartKills += humanP.kDart || 0;
@@ -254,24 +266,28 @@ export class LeaderboardStore {
       st.cliffFalls += 1;
     }
 
-    const eloResult = this.applyHumanEloUpdate(config, state);
+    const eloResult = this.applyHumanEloUpdate(mode, config, state);
     this.save();
     return eloResult;
   }
 
   /**
-   * Reset ALL local stats & human Elo (back to 0). Bot fixed Elo ratings remain untouched!
+   * Reset ALL local stats & both SOLO/FFA human Elo ratings (back to 500). Bot scores remain fixed.
    */
   public resetAllStats() {
-    this.humanRating = 0;
-    this.stats = {};
+    this.humanRatings = { solo: INITIAL_HUMAN_ELO, ffa: INITIAL_HUMAN_ELO };
+    this.statsByMode = { solo: {}, ffa: {} };
     this.save();
   }
 
+  /**
+   * Returns ONLY Human + the 13 Official Bots (no sparring bots) for the specified ranked mode.
+   */
   public getRows(
-    sortBy: 'rating' | 'wr2' | 'wr3' | 'wr4' | 'kills' | 'deaths' | 'kd' = 'rating',
-    includeSparring = true,
+    mode: RankedMode,
+    sortBy: 'rating' | 'wr' | 'kills' | 'deaths' | 'kd' = 'rating',
   ): LeaderboardRow[] {
+    const bucket = this.statsByMode[mode];
     const rows: LeaderboardRow[] = [];
 
     const makeRow = (
@@ -279,31 +295,26 @@ export class LeaderboardStore {
       isHuman: boolean,
       name: string,
       shortName: string,
-      category: 'human' | 'official' | 'sparring',
       avatar: string | null,
       color: string,
       rating: number,
-      duelRating: number | null,
-      ffaRating: number | null,
     ): LeaderboardRow => {
-      const st = normalizeStats(this.stats[id]);
-      const totalGames = st.mode2.games + st.mode3.games + st.mode4.games;
-      const kd = totalGames === 0 && st.kills === 0 && st.deaths === 0
-        ? null
-        : st.deaths > 0
-          ? st.kills / st.deaths
-          : st.kills;
+      const st = normalizeStats(bucket[id]);
+      const kd =
+        st.games === 0 && st.kills === 0 && st.deaths === 0
+          ? null
+          : st.deaths > 0
+            ? st.kills / st.deaths
+            : st.kills;
       return {
         id,
         isHuman,
         name,
         shortName,
-        category,
         avatar,
         color,
         rating,
-        duelRating,
-        ffaRating,
+        eloRank: 1,
         stats: st,
         kd,
       };
@@ -315,54 +326,99 @@ export class LeaderboardStore {
         true,
         '玩家 (YOU)',
         '玩家',
-        'human',
         this.humanAvatar,
         '#3D7EFF',
-        this.humanRating,
-        null,
-        null,
+        this.humanRatings[mode],
       ),
     );
 
-    for (const b of this.roster) {
-      if (!includeSparring && b.category === 'sparring') continue;
-      rows.push(
-        makeRow(
-          b.id,
-          false,
-          b.name,
-          b.shortName,
-          b.category,
-          b.avatar,
-          b.color,
-          b.rating,
-          b.duelRating ?? null,
-          b.ffaRating ?? null,
-        ),
-      );
+    for (const b of this.officialBots) {
+      const rating = (mode === 'solo' ? b.duelRating : b.ffaRating) ?? b.rating ?? 1000;
+      rows.push(makeRow(b.id, false, b.name, b.shortName, b.avatar, b.color, rating));
     }
 
-    const wr = (m: ModeRecord) => (m.games > 0 ? (m.wins + 0.5 * m.draws) / m.games : -1);
-
-    rows.sort((a, b) => {
-      let diff = 0;
-      if (sortBy === 'rating') diff = b.rating - a.rating;
-      else if (sortBy === 'wr2') diff = wr(b.stats.mode2) - wr(a.stats.mode2);
-      else if (sortBy === 'wr3') diff = wr(b.stats.mode3) - wr(a.stats.mode3);
-      else if (sortBy === 'wr4') diff = wr(b.stats.mode4) - wr(a.stats.mode4);
-      else if (sortBy === 'kills') diff = b.stats.kills - a.stats.kills;
-      else if (sortBy === 'deaths') diff = b.stats.deaths - a.stats.deaths;
-      else if (sortBy === 'kd') diff = (b.kd ?? -1) - (a.kd ?? -1);
-      if (Math.abs(diff) > 1e-9) return diff;
-      return b.rating - a.rating;
+    // Assign authoritative Elo rank (1..14)
+    rows.sort((a, b) => b.rating - a.rating || (a.isHuman ? -1 : b.isHuman ? 1 : a.name.localeCompare(b.name)));
+    rows.forEach((r, idx) => {
+      r.eloRank = idx + 1;
     });
+
+    if (sortBy !== 'rating') {
+      const wr = (s: ModeStats) => (s.games > 0 ? (s.wins + 0.5 * s.draws) / s.games : -1);
+      rows.sort((a, b) => {
+        let diff = 0;
+        if (sortBy === 'wr') diff = wr(b.stats) - wr(a.stats);
+        else if (sortBy === 'kills') diff = b.stats.kills - a.stats.kills;
+        else if (sortBy === 'deaths') diff = b.stats.deaths - a.stats.deaths;
+        else if (sortBy === 'kd') diff = (b.kd ?? -1) - (a.kd ?? -1);
+        if (Math.abs(diff) > 1e-9) return diff;
+        return b.rating - a.rating;
+      });
+    }
 
     return rows;
   }
 
-  public getHumanRank(): { rank: number; total: number } {
-    const rows = this.getRows('rating', false); // Rank among official 13 bots + human
-    const idx = rows.findIndex((r) => r.isHuman);
-    return { rank: idx >= 0 ? idx + 1 : rows.length, total: rows.length };
+  public getHumanRank(mode: RankedMode): { rank: number; total: number } {
+    const rows = this.getRows(mode, 'rating');
+    const humanRow = rows.find((r) => r.isHuman);
+    return { rank: humanRow ? humanRow.eloRank : rows.length, total: rows.length };
+  }
+
+  /**
+   * Ranked matchmaking: randomly pick 1 (SOLO) or 3 (FFA) DISTINCT official bots from the
+   * nearest 4 (SOLO) / 6 (FFA) ranked opponents to the human's current rank position.
+   * When `avoidSameAs` is provided (e.g. pressing R after death), guarantees opponent(s) change.
+   */
+  public pickRankedOpponents(mode: RankedMode, avoidSameAs?: string[]): RosterEntry[] {
+    const rows = this.getRows(mode, 'rating');
+    const humanIdx = rows.findIndex((r) => r.isHuman);
+    const humanRating = this.humanRatings[mode];
+
+    const rankedBots = rows
+      .map((row, idx) => ({ row, idx }))
+      .filter((x) => !x.row.isHuman)
+      .sort((a, b) => {
+        const dRank = Math.abs(a.idx - humanIdx) - Math.abs(b.idx - humanIdx);
+        if (dRank !== 0) return dRank;
+        return Math.abs(a.row.rating - humanRating) - Math.abs(b.row.rating - humanRating);
+      });
+
+    const poolSize = mode === 'solo' ? 4 : 6;
+    const need = mode === 'solo' ? 1 : 3;
+    const candidateEntries = rankedBots
+      .slice(0, Math.min(poolSize, rankedBots.length))
+      .map((x) => this.rosterById.get(x.row.id)!)
+      .filter(Boolean);
+
+    const prevSet = avoidSameAs && avoidSameAs.length > 0 ? new Set(avoidSameAs) : null;
+
+    if (need === 1) {
+      let pool = candidateEntries;
+      if (prevSet && pool.length > 1) {
+        const filtered = pool.filter((b) => !prevSet.has(b.id));
+        if (filtered.length > 0) pool = filtered;
+      }
+      return [pool[Math.floor(Math.random() * pool.length)]];
+    }
+
+    const shufflePick = (arr: RosterEntry[]): RosterEntry[] => {
+      const copy = [...arr];
+      for (let i = copy.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [copy[i], copy[j]] = [copy[j], copy[i]];
+      }
+      return copy.slice(0, need);
+    };
+
+    let chosen = shufflePick(candidateEntries);
+    if (prevSet && candidateEntries.length > need) {
+      for (let attempt = 0; attempt < 8; attempt++) {
+        const sameAll = chosen.length === prevSet.size && chosen.every((b) => prevSet.has(b.id));
+        if (!sameAll) break;
+        chosen = shufflePick(candidateEntries);
+      }
+    }
+    return chosen;
   }
 }

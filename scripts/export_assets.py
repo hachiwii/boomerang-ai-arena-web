@@ -165,20 +165,21 @@ def export_characters():
     (OUT_CHARS / "sparring_weak.json").write_text(json.dumps(d_weak, ensure_ascii=False), encoding="utf-8")
     char_colors["sparring_weak"] = "#4CC480"
 
-    # Pull exact official Elo ratings (overall, duel, ffa) from 海选成绩.json
+    # Pull exact official Elo ratings (overall, duel, ffa) from 海选成绩.json, scaled x2 + 1000 and rounded
     scores_path = BOOM / "results" / "海选成绩.json"
     official_scores = json.loads(scores_path.read_text(encoding="utf-8"))["players"] if scores_path.exists() else {}
 
-    # Build roster catalog for frontend
+    # Build roster catalog for frontend (sparring bots have no Elo ratings)
     roster = []
     for b in OFFICIAL_BOTS:
         entry = dict(b)
         sc = official_scores.get(b["seat"])
-        if sc:
-            entry["rating"] = round(float(sc["rating"]), 2)
-            entry["duelRating"] = round(float(sc["duel_rating"]), 2)
-            entry["ffaRating"] = round(float(sc["ffa_rating"]), 2)
+        if sc and b.get("category") == "official":
+            entry["rating"] = int(round(float(sc["rating"]) * 2.0 + 1000.0))
+            entry["duelRating"] = int(round(float(sc["duel_rating"]) * 2.0 + 1000.0))
+            entry["ffaRating"] = int(round(float(sc["ffa_rating"]) * 2.0 + 1000.0))
         else:
+            entry["rating"] = None
             entry["duelRating"] = None
             entry["ffaRating"] = None
         entry["color"] = char_colors[b["charKey"]]
