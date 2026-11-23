@@ -114,6 +114,12 @@ export class MatchController {
     if (this.config) {
       this.config.cliffGuard = enabled;
     }
+  }
+
+  public setDashGuard(enabled: boolean) {
+    if (this.config) {
+      this.config.dashGuard = enabled;
+    }
     this.engineWorker?.postMessage({ type: 'set_cliff_guard', enabled });
   }
 
@@ -191,7 +197,7 @@ export class MatchController {
       seed: config.seed,
       botSeats: this.botSeats,
       humanSeat: this.humanSeat,
-      cliffGuard: config.cliffGuard,
+      cliffGuard: config.dashGuard ?? config.cliffGuard,
       humanSlashTicks: config.humanSlashTicks ?? 5,
     });
     if (this.stopped) return;

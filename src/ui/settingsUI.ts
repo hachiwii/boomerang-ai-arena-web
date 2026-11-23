@@ -335,6 +335,7 @@ export class SettingsModal {
     setSwitch('#settings-winnercam-toggle', s.winnerCam, s.winnerCam ? '已开启' : '已关闭');
     setSwitch('#settings-dash-buffer-toggle', s.dashInputBuffer, s.dashInputBuffer ? '已开启' : '已关闭');
     setSwitch('#settings-cliff-guard-toggle', s.cliffGuard, s.cliffGuard ? '已开启' : '已关闭');
+    setSwitch('#settings-dash-guard-toggle', s.dashGuard, s.dashGuard ? '已开启' : '已关闭');
 
     this.body.querySelectorAll<HTMLButtonElement>('[data-slash-judgment]').forEach((btn) => {
       const active = btn.dataset.slashJudgment === s.slashJudgment;
@@ -432,19 +433,16 @@ export class SettingsModal {
 
           <!-- Graphics & Display Settings Section -->
           <section class="settings-section">
-            <div class="settings-sec-head">
-              <span class="settings-sec-title">🎨 画面设置</span>
-              <span class="settings-sec-hint">高画质还原原版地形与建筑；特写含慢放与胜者镜头</span>
-            </div>
+            <div class="settings-sec-title">🎨 画面设置</div>
             <div class="settings-toggle-stack">
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">画面质量</div>
                 </div>
-                <div class="quality-seg" role="group" aria-label="画面质量">
+                <div class="settings-seg" role="group" aria-label="画面质量">
                   ${GRAPHICS_QUALITY_OPTIONS.map((opt) => {
                     const active = s.graphicsQuality === opt.value;
-                    return `<button type="button" class="fps-btn quality-seg-btn ${active ? 'active' : ''}" data-graphics-quality="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-graphics-quality="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
                   }).join('')}
                 </div>
               </div>
@@ -515,27 +513,6 @@ export class SettingsModal {
             </div>
           </section>
 
-          <!-- Combat Input Buffer Section -->
-          <section class="settings-section">
-            <div class="settings-sec-title">🎮 操作机制</div>
-            <div class="settings-toggle-row">
-              <div class="settings-toggle-meta">
-                <div class="settings-toggle-title">冲刺预输入</div>
-                <div class="settings-toggle-desc">冲刺中按下扔镖或挥砍不打断冲刺，结束即释放</div>
-              </div>
-              <button
-                type="button"
-                class="rand-switch ${s.dashInputBuffer ? 'is-on' : ''}"
-                id="settings-dash-buffer-toggle"
-                role="switch"
-                aria-checked="${s.dashInputBuffer}"
-              >
-                <span class="rand-track"><span class="rand-thumb"></span></span>
-                <span class="rand-label">${s.dashInputBuffer ? '已开启' : '已关闭'}</span>
-              </button>
-            </div>
-          </section>
-
           <!-- Accessibility / Assist Section -->
           <section class="settings-section">
             <div class="settings-sec-head">
@@ -546,7 +523,7 @@ export class SettingsModal {
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">跌落防护</div>
-                  <div class="settings-toggle-desc">不会走路坠崖；冲刺末尾 25% 若有安全落点会自动停在最远安全点</div>
+                  <div class="settings-toggle-desc">防止正常走路坠崖（冲刺、塌陷、被踢不受影响）</div>
                 </div>
                 <button
                   type="button"
@@ -562,13 +539,47 @@ export class SettingsModal {
 
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">冲刺保护</div>
+                  <div class="settings-toggle-desc">冲刺尾部坠崖时，若末尾 25% 存在安全落点则停在最远安全点</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${s.dashGuard ? 'is-on' : ''}"
+                  id="settings-dash-guard-toggle"
+                  role="switch"
+                  aria-checked="${s.dashGuard}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${s.dashGuard ? '已开启' : '已关闭'}</span>
+                </button>
+              </div>
+
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">冲刺预输入</div>
+                  <div class="settings-toggle-desc">冲刺中按下扔镖或挥砍不打断冲刺，结束即释放</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${s.dashInputBuffer ? 'is-on' : ''}"
+                  id="settings-dash-buffer-toggle"
+                  role="switch"
+                  aria-checked="${s.dashInputBuffer}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${s.dashInputBuffer ? '已开启' : '已关闭'}</span>
+                </button>
+              </div>
+
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">挥砍判定</div>
                   <div class="settings-toggle-desc" id="settings-slash-desc">${getSlashJudgmentDesc(s.slashJudgment)}</div>
                 </div>
-                <div class="slash-seg" role="group" aria-label="挥砍判定">
+                <div class="settings-seg" role="group" aria-label="挥砍判定">
                   ${SLASH_JUDGMENT_OPTIONS.map((opt) => {
                     const active = s.slashJudgment === opt.value;
-                    return `<button type="button" class="fps-btn quality-seg-btn ${active ? 'active' : ''}" data-slash-judgment="${opt.value}" aria-pressed="${active}" title="${opt.desc}">${opt.label}</button>`;
+                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-slash-judgment="${opt.value}" aria-pressed="${active}" title="${opt.desc}">${opt.label}</button>`;
                   }).join('')}
                 </div>
               </div>
@@ -583,28 +594,28 @@ export class SettingsModal {
             <div class="export-opts-card">
               <div class="export-opt-row">
                 <span class="export-opt-label">分辨率</span>
-                <div class="export-opt-grid">
+                <div class="settings-seg settings-seg-full" role="group" aria-label="导出分辨率">
                   ${EXPORT_RESOLUTION_OPTIONS.map((opt) => {
                     const active = s.exportResolution === opt.value;
-                    return `<button type="button" class="fps-btn export-opt-btn ${active ? 'active' : ''}" data-export-res="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-export-res="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
                   }).join('')}
                 </div>
               </div>
               <div class="export-opt-row">
                 <span class="export-opt-label">码率</span>
-                <div class="export-opt-grid">
+                <div class="settings-seg settings-seg-full" role="group" aria-label="导出码率">
                   ${EXPORT_BITRATE_OPTIONS.map((opt) => {
                     const active = s.exportBitrateMbps === opt.value;
-                    return `<button type="button" class="fps-btn export-opt-btn ${active ? 'active' : ''}" data-export-bitrate="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-export-bitrate="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
                   }).join('')}
                 </div>
               </div>
               <div class="export-opt-row">
                 <span class="export-opt-label">播放速度</span>
-                <div class="export-opt-grid">
+                <div class="settings-seg settings-seg-full" role="group" aria-label="导出播放速度">
                   ${EXPORT_SPEED_OPTIONS.map((opt) => {
                     const active = s.exportSpeed === opt.value;
-                    return `<button type="button" class="fps-btn export-opt-btn ${active ? 'active' : ''}" data-export-speed="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-export-speed="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
                   }).join('')}
                 </div>
               </div>
@@ -708,9 +719,13 @@ export class SettingsModal {
       this.syncControlsInPlace();
     });
 
-    // Accessibility / Assist toggles (cliff guard & slash judgment)
+    // Accessibility / Assist toggles (cliff guard, dash guard, dash pre-input & slash judgment)
     this.body.querySelector('#settings-cliff-guard-toggle')?.addEventListener('click', () => {
       this.store.setCliffGuard(!this.store.get().cliffGuard);
+      this.syncControlsInPlace();
+    });
+    this.body.querySelector('#settings-dash-guard-toggle')?.addEventListener('click', () => {
+      this.store.setDashGuard(!this.store.get().dashGuard);
       this.syncControlsInPlace();
     });
     this.body.querySelectorAll<HTMLButtonElement>('[data-slash-judgment]').forEach((btn) => {

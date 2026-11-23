@@ -395,6 +395,7 @@ async function bootstrap() {
         ...activeConfig,
         slots: activeConfig.slots.map((s) => ({ ...s })),
         cliffGuard: s.cliffGuard,
+        dashGuard: s.dashGuard,
         humanSlashTicks: getSlashJudgmentTicks(s.slashJudgment),
       };
     }
@@ -475,6 +476,7 @@ async function bootstrap() {
   settings.onChange((s) => {
     sfx.applySettings(s.soundEnabled, s.volume);
     controller.setCliffGuard(s.cliffGuard);
+    controller.setDashGuard(s.dashGuard);
     controller.setHumanSlashTicks(getSlashJudgmentTicks(s.slashJudgment));
     if (s.lockFps !== activeLockFps) {
       activeLockFps = s.lockFps;

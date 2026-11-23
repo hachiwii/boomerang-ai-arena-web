@@ -30,7 +30,8 @@ export interface GameSettings {
   graphicsQuality: GraphicsQualityOption; // 'low' = lightweight instanced, 'high' = faithful open-source art
   lockFps: boolean; // true = monitor refresh rate (VSync), false = uncapped
   dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
-  cliffGuard: boolean; // Prevent walking off cliffs + dash-tail 25% cliff save
+  cliffGuard: boolean; // Prevent walking off cliffs
+  dashGuard: boolean; // Dash-tail 25% cliff save
   slashJudgment: SlashJudgmentOption; // 'normal' (5f) | 'strict' (3f) | 'ai' (windup + 1f)
   killCam: boolean; // Non-final kill slow-mo & eye-level camera (0.5x)
   finisherCam: boolean; // Final kill slow-mo & eye-level camera (0.25x)
@@ -144,6 +145,7 @@ export function defaultSettings(): GameSettings {
     lockFps: true,
     dashInputBuffer: true,
     cliffGuard: true,
+    dashGuard: true,
     slashJudgment: 'normal',
     killCam: true,
     finisherCam: true,
@@ -279,6 +281,8 @@ export class SettingsStore {
         typeof parsed.dashInputBuffer === 'boolean' ? parsed.dashInputBuffer : def.dashInputBuffer;
       const cliffGuard =
         typeof parsed.cliffGuard === 'boolean' ? parsed.cliffGuard : def.cliffGuard;
+      const dashGuard =
+        typeof parsed.dashGuard === 'boolean' ? parsed.dashGuard : cliffGuard;
       const slashJudgment: SlashJudgmentOption =
         parsed.slashJudgment !== undefined && VALID_SLASH_JUDGMENT.has(parsed.slashJudgment)
           ? parsed.slashJudgment
@@ -328,6 +332,7 @@ export class SettingsStore {
         lockFps,
         dashInputBuffer,
         cliffGuard,
+        dashGuard,
         slashJudgment,
         killCam,
         finisherCam,
@@ -400,6 +405,12 @@ export class SettingsStore {
   public setCliffGuard(enabled: boolean) {
     if (this.settings.cliffGuard === enabled) return;
     this.settings.cliffGuard = enabled;
+    this.emit();
+  }
+
+  public setDashGuard(enabled: boolean) {
+    if (this.settings.dashGuard === enabled) return;
+    this.settings.dashGuard = enabled;
     this.emit();
   }
 
