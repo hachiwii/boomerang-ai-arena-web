@@ -125,7 +125,7 @@ export interface GameSettings {
   bossMusicEnabled: boolean;
   graphicsQuality: GraphicsQualityOption; // 'low' = lightweight instanced, 'high' = faithful open-source art
   lockFps: boolean; // true = monitor refresh rate (VSync), false = uncapped
-  dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
+  dashInputBuffer: boolean; // Unified pre-input across all action-locked states (retains last command per lock window)
   meleeAssist: boolean; // Auto-rotate slash/kick aim minimally to include reachable target when mouse cone misses
   cliffGuard: boolean; // Prevent walking off cliffs
   dashGuard: boolean; // Dash-tail 25% cliff save

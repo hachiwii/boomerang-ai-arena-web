@@ -290,10 +290,10 @@ export class MobileControls {
     }
 
     // Aim stick phase transitions driven by authoritative state
-    if (this.aimPhase === 'pending' && me.st !== PState.DASH && this.input.getInputMode() === 'active') {
+    if (this.aimPhase === 'pending' && this.input.getInputMode() === 'active') {
       if (dart.st === DState.HAND && me.st === PState.FREE) {
         this.beginAiming();
-      } else if (dart.st !== DState.HAND) {
+      } else if (dart.st !== DState.HAND && (me.st === PState.FREE || me.st === PState.RECALL)) {
         this.aimPhase = 'recall';
         this.setCancelVisible(false);
         this.input.setVirtualRecallHeld(true);
@@ -430,14 +430,8 @@ export class MobileControls {
         return;
       }
       if (dart.st === DState.HAND) {
-        if (
-          this.input.getInputMode() !== 'active' ||
-          me.st === PState.DASH ||
-          me.st === PState.THROW ||
-          me.st === PState.SLASH ||
-          me.st === PState.KICK
-        ) {
-          // Countdown / mid-dash / mid-swing: enter slow-mo aim the moment we are free (and live) again
+        if (this.input.getInputMode() !== 'active' || (me.st !== PState.FREE && me.st !== PState.RECALL)) {
+          // Countdown / any locked action state: wait to enter slow-mo aim once free, or pre-input throw on release
           this.aimPhase = 'pending';
           this.setCancelVisible(true);
         } else {

@@ -18,9 +18,40 @@ import {
  * - Throw / Hold Recall (2 slots)
  * - Melee: Slash / Kick (2 slots)
  * - Dash (2 slots)
- * Includes responsive input buffering so clicks between logic ticks are never lost!
+ * Supports unified pre-input across all action-locked states (preserving the mouse target
+ * captured at press time, keeping only the last command per locked interval, and discarding
+ * it if invalid on the unlock tick) as well as dash-cancel melee ("冲刺斩/踢") on both desktop & mobile.
  */
 export type InputMode = 'off' | 'countdown' | 'active';
+
+type DesktopPressKind = 'throw' | 'melee' | 'dash' | 'dashToMouse';
+
+interface DesktopPress {
+  kind: DesktopPressKind;
+  at: number;
+  hasTarget: boolean;
+  targetX: number;
+  targetY: number;
+  moveX: number;
+  moveY: number;
+}
+
+type TouchPressKind = 'throw' | 'melee' | 'dash';
+
+interface TouchPress {
+  kind: TouchPressKind;
+  at: number;
+  dirX: number;
+  dirY: number;
+}
+
+function isActionLockedState(st: number): boolean {
+  return st !== PState.FREE && st !== PState.RECALL;
+}
+
+function isDashMovingWindow(p: PlayerSnapshot): boolean {
+  return p.st === PState.DASH && p.timer >= 3 && p.timer <= 6;
+}
 
 export class HumanInputController {
   private pressedCodes = new Set<string>();
@@ -41,18 +72,10 @@ export class HumanInputController {
   private throwConsumed = false;
   private groundSinceMs = -1;
 
-  // Buffered one-shot actions (timestamp in ms)
-  private queuedThrowAt = -1;
-  private queuedMeleeAt = -1;
-  private queuedDashAt = -1;
-  private queuedDashToMouseAt = -1;
-  private queuedDashTargetX = 0;
-  private queuedDashTargetY = 0;
-  private queuedDashHasTarget = false;
-
-  // Dash pre-input buffer: retains throw pressed during dash and fires it on the
-  // first operable tick after dash completes without interrupting dash (never blocks dash-slash melee).
-  private dashBufferedThrowAt = -1;
+  // Desktop FIFO inter-tick press queue + single locked-state pre-input slot
+  private pendingPresses: DesktopPress[] = [];
+  private lockedPreInput: DesktopPress | null = null;
+  private lastSampledLocked = false;
 
   private bufferMs = 140;
   private recallHoldDelayMs = 160;
@@ -67,15 +90,9 @@ export class HumanInputController {
   private vMoveX = 0;
   private vMoveY = 0;
   private vAimHeld = false;
-  private vThrowAt = -1;
-  private vThrowDirX = 0;
-  private vThrowDirY = 0;
-  private vThrowAfterDash = false;
-  private vMeleeAt = -1;
-  private vMeleeDirX = 0;
-  private vMeleeDirY = 0;
-  private vMeleeAfterDash = false;
-  private vDashAt = -1;
+  private touchPendingPresses: TouchPress[] = [];
+  private touchLockedPreInput: TouchPress | null = null;
+  private touchLastSampledLocked = false;
 
   constructor(canvas: HTMLCanvasElement, settings: SettingsStore) {
     this.canvas = canvas;
@@ -109,12 +126,9 @@ export class HumanInputController {
     if (v) {
       this.pressedCodes.clear();
       this.throwConsumed = false;
-      this.queuedThrowAt = -1;
-      this.queuedMeleeAt = -1;
-      this.queuedDashAt = -1;
-      this.queuedDashToMouseAt = -1;
-      this.queuedDashHasTarget = false;
-      this.dashBufferedThrowAt = -1;
+      this.pendingPresses.length = 0;
+      this.lockedPreInput = null;
+      this.lastSampledLocked = false;
       this.resetVirtual();
     }
   }
@@ -140,11 +154,9 @@ export class HumanInputController {
     this.vMoveX = 0;
     this.vMoveY = 0;
     this.vAimHeld = false;
-    this.vThrowAt = -1;
-    this.vThrowAfterDash = false;
-    this.vMeleeAt = -1;
-    this.vMeleeAfterDash = false;
-    this.vDashAt = -1;
+    this.touchPendingPresses.length = 0;
+    this.touchLockedPreInput = null;
+    this.touchLastSampledLocked = false;
   }
 
   /** Left stick: analog vector in screen space, magnitude 0..1. */
@@ -162,37 +174,42 @@ export class HumanInputController {
 
   /**
    * Right stick released after aiming: throw toward (dirX, dirY) (screen space, any length;
-   * zero = current facing). `afterDash` keeps the throw buffered through a dash so it fires on the
-   * first free tick after the dash ends.
+   * zero = current facing). When pre-input is enabled, throws queued during any locked state
+   * fire on the first free tick (or discard if invalid on unlock).
    */
-  public queueVirtualThrow(dirX: number, dirY: number, afterDash = false) {
+  public queueVirtualThrow(dirX: number, dirY: number, _afterDash = false) {
     if (this.inputMode !== 'active' || this.paused) return;
     const len = Math.hypot(dirX, dirY);
-    this.vThrowDirX = len > 1e-4 ? dirX / len : 0;
-    this.vThrowDirY = len > 1e-4 ? dirY / len : 0;
-    this.vThrowAt = performance.now();
-    this.vThrowAfterDash = afterDash;
+    this.touchPendingPresses.push({
+      kind: 'throw',
+      at: performance.now(),
+      dirX: len > 1e-4 ? dirX / len : 0,
+      dirY: len > 1e-4 ? dirY / len : 0,
+    });
   }
 
-  /** Slash button: melee toward the move-stick direction when held, else current facing. */
+  /** Slash/Kick button: melee toward the move-stick direction when held, else current facing. Supports dash-slash/kick. */
   public queueVirtualMelee() {
     if (this.inputMode !== 'active' || this.paused) return;
-    this.vMeleeAt = performance.now();
-    this.vMeleeAfterDash = false;
     const len = Math.hypot(this.vMoveX, this.vMoveY);
-    if (len >= 0.2) {
-      this.vMeleeDirX = this.vMoveX / len;
-      this.vMeleeDirY = this.vMoveY / len;
-    } else {
-      this.vMeleeDirX = 0;
-      this.vMeleeDirY = 0;
-    }
+    this.touchPendingPresses.push({
+      kind: 'melee',
+      at: performance.now(),
+      dirX: len >= 0.2 ? this.vMoveX / len : 0,
+      dirY: len >= 0.2 ? this.vMoveY / len : 0,
+    });
   }
 
   /** Dash button: dash toward the move-stick direction when held, else current facing. */
   public queueVirtualDash() {
     if (this.inputMode !== 'active' || this.paused) return;
-    this.vDashAt = performance.now();
+    const len = Math.hypot(this.vMoveX, this.vMoveY);
+    this.touchPendingPresses.push({
+      kind: 'dash',
+      at: performance.now(),
+      dirX: len >= 0.2 ? this.vMoveX / len : 0,
+      dirY: len >= 0.2 ? this.vMoveY / len : 0,
+    });
   }
 
   public setAimProjector(fn: ((clientX: number, clientY: number) => [number, number] | null) | null) {
@@ -208,6 +225,20 @@ export class HumanInputController {
     }
   }
 
+  private recordDesktopPress(kind: DesktopPressKind) {
+    this.refreshAimFromPointer();
+    const [moveX, moveY] = this.getMoveVector();
+    this.pendingPresses.push({
+      kind,
+      at: performance.now(),
+      hasTarget: this.hasMouse,
+      targetX: this.aimWorldMmX,
+      targetY: this.aimWorldMmY,
+      moveX,
+      moveY,
+    });
+  }
+
   public setInputMode(mode: InputMode) {
     const prev = this.inputMode;
     this.inputMode = mode;
@@ -217,12 +248,10 @@ export class HumanInputController {
       // Keep pre-held movement keys from countdown, while clearing any stale action state
       this.throwConsumed = false;
       this.groundSinceMs = -1;
-      this.queuedThrowAt = -1;
-      this.queuedMeleeAt = -1;
-      this.queuedDashAt = -1;
-      this.queuedDashToMouseAt = -1;
-      this.queuedDashHasTarget = false;
-      this.dashBufferedThrowAt = -1;
+      this.pendingPresses.length = 0;
+      this.lockedPreInput = null;
+      this.lastSampledLocked = false;
+      this.resetVirtualActions();
     }
   }
 
@@ -234,12 +263,9 @@ export class HumanInputController {
     this.pressedCodes.clear();
     this.throwConsumed = false;
     this.groundSinceMs = -1;
-    this.queuedThrowAt = -1;
-    this.queuedMeleeAt = -1;
-    this.queuedDashAt = -1;
-    this.queuedDashToMouseAt = -1;
-    this.queuedDashHasTarget = false;
-    this.dashBufferedThrowAt = -1;
+    this.pendingPresses.length = 0;
+    this.lockedPreInput = null;
+    this.lastSampledLocked = false;
     this.resetVirtual();
   }
 
@@ -282,26 +308,19 @@ export class HumanInputController {
       }
 
       if (this.inputMode === 'active') {
-        const now = performance.now();
         if (isBoundToAction(kb, 'dash', code)) {
           if (code === 'Space') e.preventDefault();
-          if (!e.repeat) this.queuedDashAt = now;
+          if (!e.repeat) this.recordDesktopPress('dash');
           this.pressedCodes.add(code);
         }
         if (isBoundToAction(kb, 'dashToMouse', code)) {
           if (code === 'Space') e.preventDefault();
-          if (!e.repeat) {
-            this.refreshAimFromPointer();
-            this.queuedDashToMouseAt = now;
-            this.queuedDashHasTarget = this.hasMouse;
-            this.queuedDashTargetX = this.aimWorldMmX;
-            this.queuedDashTargetY = this.aimWorldMmY;
-          }
+          if (!e.repeat) this.recordDesktopPress('dashToMouse');
           this.pressedCodes.add(code);
         }
         if (isBoundToAction(kb, 'melee', code)) {
           if (code === 'Space') e.preventDefault();
-          if (!e.repeat) this.queuedMeleeAt = now;
+          if (!e.repeat) this.recordDesktopPress('melee');
           this.pressedCodes.add(code);
         }
         if (isBoundToAction(kb, 'throwRecall', code)) {
@@ -309,7 +328,7 @@ export class HumanInputController {
           this.pressedCodes.add(code);
           if (!e.repeat) {
             this.throwConsumed = false;
-            this.queuedThrowAt = now;
+            this.recordDesktopPress('throw');
           }
         }
       }
@@ -360,31 +379,27 @@ export class HumanInputController {
       }
 
       if (this.inputMode !== 'active') return;
-      const now = performance.now();
 
       if (isBoundToAction(kb, 'throwRecall', code)) {
         if (e.button !== 0) e.preventDefault();
         this.pressedCodes.add(code);
         this.throwConsumed = false;
-        this.queuedThrowAt = now;
+        this.recordDesktopPress('throw');
       }
       if (isBoundToAction(kb, 'melee', code)) {
         e.preventDefault();
         this.pressedCodes.add(code);
-        this.queuedMeleeAt = now;
+        this.recordDesktopPress('melee');
       }
       if (isBoundToAction(kb, 'dash', code)) {
         e.preventDefault();
         this.pressedCodes.add(code);
-        this.queuedDashAt = now;
+        this.recordDesktopPress('dash');
       }
       if (isBoundToAction(kb, 'dashToMouse', code)) {
         e.preventDefault();
         this.pressedCodes.add(code);
-        this.queuedDashToMouseAt = now;
-        this.queuedDashHasTarget = this.hasMouse;
-        this.queuedDashTargetX = this.aimWorldMmX;
-        this.queuedDashTargetY = this.aimWorldMmY;
+        this.recordDesktopPress('dashToMouse');
       }
     });
 
@@ -423,6 +438,84 @@ export class HumanInputController {
   }
 
   /**
+   * Computes directional aim from actual release position `(playerX, playerY)` toward the
+   * snapshotted mouse world coordinates captured when the command was pressed.
+   */
+  private getAimVectorForPress(press: DesktopPress, playerX: number, playerY: number, face: number): [number, number] {
+    if (press.hasTarget) {
+      const dx = press.targetX - playerX;
+      const dy = press.targetY - playerY;
+      const len = Math.hypot(dx, dy);
+      if (len > 10) {
+        return [Math.round((dx / len) * 1000), Math.round((dy / len) * 1000)];
+      }
+    }
+    return this.getAimVector(playerX, playerY, face);
+  }
+
+  private tryBuildDesktopAction(
+    press: DesktopPress,
+    state: TickSnapshot,
+    seat: number,
+    me: PlayerSnapshot,
+    dart: DartSnapshot,
+    mx: number,
+    my: number,
+  ): HumanAction | null {
+    const canStartNew = !isActionLockedState(me.st);
+    const canDashMelee = isDashMovingWindow(me);
+
+    if (press.kind === 'melee') {
+      if (!canStartNew && !canDashMelee) return null;
+      let [ax, ay] = this.getAimVectorForPress(press, me.x, me.y, me.face);
+      if (this.settings.get().meleeAssist && this.mapData) {
+        [ax, ay] = applyMeleeAssist(this.mapData, state, seat, ax, ay);
+      }
+      return { mx, my, act: ActType.MELEE, ax, ay, msg: 0 };
+    }
+
+    if (press.kind === 'dash') {
+      if (!canStartNew || me.cd > 0) return null;
+      let dx: number;
+      let dy: number;
+      if (mx !== 0 || my !== 0) {
+        dx = mx;
+        dy = my;
+      } else if (press.moveX !== 0 || press.moveY !== 0) {
+        dx = press.moveX;
+        dy = press.moveY;
+      } else {
+        [dx, dy] = this.getAimVectorForPress(press, me.x, me.y, me.face);
+      }
+      return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
+    }
+
+    if (press.kind === 'dashToMouse') {
+      if (!canStartNew || me.cd > 0) return null;
+      const [dx, dy] = this.getAimVectorForPress(press, me.x, me.y, me.face);
+      if (press.hasTarget) {
+        return {
+          mx,
+          my,
+          act: ActType.DASH,
+          ax: dx,
+          ay: dy,
+          msg: 0,
+          dashTargetX: press.targetX,
+          dashTargetY: press.targetY,
+        };
+      }
+      return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
+    }
+
+    // press.kind === 'throw'
+    if (me.st !== PState.FREE || dart.st !== DState.HAND) return null;
+    const [ax, ay] = this.getAimVectorForPress(press, me.x, me.y, me.face);
+    this.throwConsumed = true;
+    return { mx, my, act: ActType.THROW, ax, ay, msg: 0 };
+  }
+
+  /**
    * Sample human action at the exact logic tick boundary.
    */
   public sampleAction(state: TickSnapshot | null, seat: number): HumanAction {
@@ -440,7 +533,9 @@ export class HumanInputController {
     const me = state.players[seat];
     const dart = state.darts[seat];
     if (!me || !me.alive) {
-      this.dashBufferedThrowAt = -1;
+      this.pendingPresses.length = 0;
+      this.lockedPreInput = null;
+      this.lastSampledLocked = false;
       this.resetVirtualActions();
       return { mx: 0, my: 0, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
@@ -451,7 +546,6 @@ export class HumanInputController {
 
     const now = performance.now();
     const [mx, my] = this.getMoveVector();
-    const [aimX, aimY] = this.getAimVector(me.x, me.y, me.face);
 
     if (dart.st === DState.GROUND) {
       if (this.groundSinceMs < 0) this.groundSinceMs = now;
@@ -459,142 +553,89 @@ export class HumanInputController {
       this.groundSinceMs = -1;
     }
 
-    const dashBufferEnabled = this.settings.get().dashInputBuffer;
-    if (!dashBufferEnabled) {
-      this.dashBufferedThrowAt = -1;
+    const preInputEnabled = this.settings.get().dashInputBuffer;
+    if (!preInputEnabled) {
+      this.lockedPreInput = null;
     }
 
-    const hasBufferedDash = this.queuedDashAt > 0 && now - this.queuedDashAt <= this.bufferMs;
-    const hasBufferedDashToMouse = this.queuedDashToMouseAt > 0 && now - this.queuedDashToMouseAt <= this.bufferMs;
-    const hasBufferedMelee = this.queuedMeleeAt > 0 && now - this.queuedMeleeAt <= this.bufferMs;
-    const hasBufferedThrow = this.queuedThrowAt > 0 && now - this.queuedThrowAt <= this.bufferMs;
+    const locked = isActionLockedState(me.st);
+    const canDashMelee = isDashMovingWindow(me);
 
-    const makeMeleeAction = (): HumanAction => {
-      let ax = aimX;
-      let ay = aimY;
-      if (this.settings.get().meleeAssist && this.mapData) {
-        [ax, ay] = applyMeleeAssist(this.mapData, state, seat, aimX, aimY);
-      }
-      return { mx, my, act: ActType.MELEE, ax, ay, msg: 0 };
-    };
-
-    // A. During DASH
-    if (me.st === PState.DASH) {
-      // Dash-cancel melee ("冲刺斩") ALWAYS works during dash moving ticks (timer 3..6),
-      // completely unaffected by dash throw pre-input!
-      const canDashMelee = me.timer >= 3 && me.timer <= 6;
-      if (hasBufferedMelee && canDashMelee) {
-        this.queuedMeleeAt = -1;
-        this.dashBufferedThrowAt = -1;
-        return makeMeleeAction();
-      }
-      if (this.queuedMeleeAt > 0 && now - this.queuedMeleeAt > this.bufferMs) {
-        this.queuedMeleeAt = -1;
-      }
-
-      if (dashBufferEnabled) {
-        // Buffer ONLY Throw during dash without interrupting dash
-        if (hasBufferedThrow && this.queuedThrowAt >= this.dashBufferedThrowAt) {
-          this.dashBufferedThrowAt = this.queuedThrowAt;
+    // 1. Inside any action-locked state (THROW / THROWN / SLASH / SLASHED / KICK / KICKED / DASH / STUN)
+    if (locked) {
+      this.lastSampledLocked = true;
+      if (preInputEnabled) {
+        // Retain ONLY the last command pressed during this locked interval
+        if (this.pendingPresses.length > 0) {
+          this.lockedPreInput = this.pendingPresses[this.pendingPresses.length - 1];
+          this.pendingPresses.length = 0;
         }
-        this.queuedThrowAt = -1;
-      } else if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.bufferMs) {
-        this.queuedThrowAt = -1;
+        // Dash-cancel melee ("冲刺斩/踢"): immediately allowed during dash moving ticks (timer 3..6)
+        if (canDashMelee && this.lockedPreInput && this.lockedPreInput.kind === 'melee') {
+          const cmd = this.lockedPreInput;
+          this.lockedPreInput = null;
+          const act = this.tryBuildDesktopAction(cmd, state, seat, me, dart, mx, my);
+          if (act) return act;
+        }
+      } else {
+        // Pre-input disabled: allow immediate dash-cancel melee if pressed in moving window; drop everything else
+        const fresh = this.pendingPresses.filter((p) => now - p.at <= this.bufferMs);
+        this.pendingPresses.length = 0;
+        if (canDashMelee) {
+          for (let i = fresh.length - 1; i >= 0; i--) {
+            if (fresh[i].kind === 'melee') {
+              const act = this.tryBuildDesktopAction(fresh[i], state, seat, me, dart, mx, my);
+              if (act) return act;
+            }
+          }
+        }
       }
       return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
 
-    // B. First operable tick after DASH completes -> fire buffered Throw (unless a newer Melee was pressed)
-    if (dashBufferEnabled && this.dashBufferedThrowAt > 0) {
-      if (me.st === PState.FREE) {
-        const savedThrowAt = this.dashBufferedThrowAt;
-        this.dashBufferedThrowAt = -1;
-        if (hasBufferedMelee && this.queuedMeleeAt >= savedThrowAt) {
-          this.queuedMeleeAt = -1;
-          this.queuedThrowAt = -1;
-          return makeMeleeAction();
-        }
-        this.queuedThrowAt = -1;
-        if (dart.st === DState.HAND) {
-          this.throwConsumed = true;
-          return { mx, my, act: ActType.THROW, ax: aimX, ay: aimY, msg: 0 };
-        }
-      } else {
-        // Exited dash abnormally (e.g. stunned/slashing): discard stale dash throw buffer
-        this.dashBufferedThrowAt = -1;
+    // 2. Unlocked state (FREE or RECALL)
+    if (preInputEnabled && this.lastSampledLocked) {
+      // Exact unlock tick: any press arriving in the final locked inter-tick window overwrites lockedPreInput
+      if (this.pendingPresses.length > 0) {
+        this.lockedPreInput = this.pendingPresses[this.pendingPresses.length - 1];
+        this.pendingPresses.length = 0;
       }
-    }
-
-    const canStartNew = me.st === PState.FREE || me.st === PState.RECALL;
-    const anyBufferedDash = hasBufferedDash || hasBufferedDashToMouse;
-    const latestDashAt = Math.max(
-      hasBufferedDash ? this.queuedDashAt : -1,
-      hasBufferedDashToMouse ? this.queuedDashToMouseAt : -1,
-    );
-
-    // If Dash was pressed strictly BEFORE Melee inside the same inter-tick window,
-    // execute Dash first and keep the newer Melee queued so it can dash-slash naturally.
-    const dashPrecedesMelee =
-      anyBufferedDash &&
-      canStartNew &&
-      me.cd === 0 &&
-      hasBufferedMelee &&
-      latestDashAt < this.queuedMeleeAt;
-
-    // 1. Priority: Melee (Slash / Kick)
-    if (hasBufferedMelee && canStartNew && !dashPrecedesMelee) {
-      this.queuedMeleeAt = -1;
-      return makeMeleeAction();
-    }
-
-    // 2. Priority: Dash (movement-direction dash or exact-target dash toward mouse cursor)
-    if (anyBufferedDash && canStartNew && me.cd === 0) {
-      const useMouseDir =
-        hasBufferedDashToMouse && (!hasBufferedDash || this.queuedDashToMouseAt >= this.queuedDashAt);
-      const hasSnapTarget = useMouseDir && this.queuedDashHasTarget;
-      const targetX = this.queuedDashTargetX;
-      const targetY = this.queuedDashTargetY;
-      this.queuedDashAt = -1;
-      this.queuedDashToMouseAt = -1;
-      this.queuedDashHasTarget = false;
-
-      if (dashBufferEnabled) {
-        // Promote ONLY Throw pressed AFTER Dash in the same tick window into dash pre-input buffer.
-        if (hasBufferedThrow && this.queuedThrowAt > latestDashAt) {
-          this.dashBufferedThrowAt = this.queuedThrowAt;
-        } else {
-          this.dashBufferedThrowAt = -1;
+      this.lastSampledLocked = false;
+      if (this.lockedPreInput) {
+        const cmd = this.lockedPreInput;
+        this.lockedPreInput = null;
+        const act = this.tryBuildDesktopAction(cmd, state, seat, me, dart, mx, my);
+        if (act) {
+          this.lastSampledLocked = true;
+          return act;
         }
-        this.queuedThrowAt = -1;
+        // Invalid on the unlock tick (e.g. no dart for throw, or dash on CD) -> discarded cleanly!
       }
+    } else {
+      this.lastSampledLocked = false;
+      this.lockedPreInput = null;
+      if (this.pendingPresses.length > 0) {
+        const presses = preInputEnabled
+          ? this.pendingPresses.slice()
+          : this.pendingPresses.filter((p) => now - p.at <= this.bufferMs);
+        this.pendingPresses.length = 0;
 
-      if (useMouseDir) {
-        let dx = aimX;
-        let dy = aimY;
-        if (hasSnapTarget) {
-          const rx = targetX - me.x;
-          const ry = targetY - me.y;
-          const len = Math.hypot(rx, ry);
-          if (len > 10) {
-            dx = Math.round((rx / len) * 1000);
-            dy = Math.round((ry / len) * 1000);
+        for (let i = 0; i < presses.length; i++) {
+          const act = this.tryBuildDesktopAction(presses[i], state, seat, me, dart, mx, my);
+          if (act) {
+            // Multiple commands within one 50ms inter-tick burst while FREE:
+            // execute the first valid one now and keep ONLY the last subsequent press as lockedPreInput.
+            if (preInputEnabled && i < presses.length - 1) {
+              this.lockedPreInput = presses[presses.length - 1];
+            }
+            this.lastSampledLocked = true;
+            return act;
           }
-          return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0, dashTargetX: targetX, dashTargetY: targetY };
         }
-        return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
       }
-      const [dx, dy] = mx !== 0 || my !== 0 ? [mx, my] : [aimX, aimY];
-      return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
     }
 
-    // 3. Priority: Throw when holding dart
-    if (hasBufferedThrow && dart.st === DState.HAND && me.st === PState.FREE) {
-      this.queuedThrowAt = -1;
-      this.throwConsumed = true;
-      return { mx, my, act: ActType.THROW, ax: aimX, ay: aimY, msg: 0 };
-    }
-
-    // 4. Hold Throw/Recall key -> Recall when dart is on the ground or already rising
+    // 3. Hold Throw/Recall key -> Recall when dart is on the ground or already rising
     const recallHeld = this.isThrowRecallHeld();
     const wantsRecall =
       recallHeld &&
@@ -612,19 +653,13 @@ export class HumanInputController {
       return { mx: cancelMx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
 
-    if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.bufferMs) {
-      this.queuedThrowAt = -1;
-    }
-
     return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
   }
 
   private resetVirtualActions() {
-    this.vThrowAt = -1;
-    this.vThrowAfterDash = false;
-    this.vMeleeAt = -1;
-    this.vMeleeAfterDash = false;
-    this.vDashAt = -1;
+    this.touchPendingPresses.length = 0;
+    this.touchLockedPreInput = null;
+    this.touchLastSampledLocked = false;
   }
 
   /**
@@ -644,12 +679,72 @@ export class HumanInputController {
     return [Math.round((this.vMoveX / m) * speed * 1000), Math.round((this.vMoveY / m) * speed * 1000)];
   }
 
+  private tryBuildTouchAction(
+    press: TouchPress,
+    state: TickSnapshot,
+    seat: number,
+    p: PlayerSnapshot,
+    dart: DartSnapshot,
+    mx: number,
+    my: number,
+    stickDir: [number, number] | null,
+    faceX: number,
+    faceY: number,
+  ): HumanAction | null {
+    const canStartNew = !isActionLockedState(p.st);
+    const canDashMelee = isDashMovingWindow(p);
+
+    if (press.kind === 'melee') {
+      if (!canStartNew && !canDashMelee) return null;
+      let ax: number;
+      let ay: number;
+      if (stickDir) {
+        [ax, ay] = stickDir;
+      } else if (press.dirX !== 0 || press.dirY !== 0) {
+        ax = Math.round(press.dirX * 1000);
+        ay = Math.round(press.dirY * 1000);
+      } else {
+        ax = faceX;
+        ay = faceY;
+      }
+      if (this.settings.get().meleeAssist && this.mapData) {
+        // Touch: 360° auto-turn toward the first dart entering reach within the slash judgment window
+        const ticks = getSlashJudgmentTicks(this.settings.get().slashJudgment);
+        [ax, ay] = applyMobileMeleeAssist(this.mapData, state, seat, ax, ay, ticks);
+      }
+      return { mx, my, act: ActType.MELEE, ax, ay, msg: 0 };
+    }
+
+    if (press.kind === 'dash') {
+      if (!canStartNew || p.cd > 0) return null;
+      let dx: number;
+      let dy: number;
+      if (stickDir) {
+        [dx, dy] = stickDir;
+      } else if (press.dirX !== 0 || press.dirY !== 0) {
+        dx = Math.round(press.dirX * 1000);
+        dy = Math.round(press.dirY * 1000);
+      } else {
+        dx = faceX;
+        dy = faceY;
+      }
+      return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
+    }
+
+    // press.kind === 'throw'
+    if (p.st !== PState.FREE || dart.st !== DState.HAND) return null;
+    const hasDir = press.dirX !== 0 || press.dirY !== 0;
+    this.throwConsumed = true;
+    const ax = hasDir ? Math.round(press.dirX * 1000) : faceX;
+    const ay = hasDir ? Math.round(press.dirY * 1000) : faceY;
+    return { mx, my, act: ActType.THROW, ax, ay, msg: 0 };
+  }
+
   /**
-   * Touch-control sampling with explicit dash pre-input:
-   * - Slash pressed during a dash → buffered (dash is never cut short) and fired on the first free tick
-   *   after it, toward the live move-stick direction (falls back to the stick at press time, then facing).
-   * - Throw released while dashing → buffered and fired on the first free tick after the dash.
-   * - Otherwise one-shot presses live for `bufferMs`, earliest press executes first.
+   * Touch-control sampling with unified pre-input & mobile dash-slash/kick ("冲刺斩/踢"):
+   * - Melee during dash moving ticks (timer 3..6) immediately cancels dash into slash/kick.
+   * - When pre-input is enabled, commands pressed during any locked state retain only the last one
+   *   and execute on the first allowed tick (or are discarded if invalid on unlock).
    */
   private sampleTouchAction(state: TickSnapshot, seat: number, p: PlayerSnapshot, dart: DartSnapshot): HumanAction {
     const now = performance.now();
@@ -669,90 +764,84 @@ export class HumanInputController {
       this.groundSinceMs = -1;
     }
 
-    const meleeDir = (): [number, number] => {
-      if (stickDir) return stickDir;
-      if (this.vMeleeDirX !== 0 || this.vMeleeDirY !== 0) {
-        return [Math.round(this.vMeleeDirX * 1000), Math.round(this.vMeleeDirY * 1000)];
-      }
-      return [faceX, faceY];
-    };
-    const makeMelee = (): HumanAction => {
-      let [ax, ay] = meleeDir();
-      if (this.settings.get().meleeAssist && this.mapData) {
-        // Touch: 360° auto-turn toward the first dart entering reach within the slash judgment window
-        const ticks = getSlashJudgmentTicks(this.settings.get().slashJudgment);
-        [ax, ay] = applyMobileMeleeAssist(this.mapData, state, seat, ax, ay, ticks);
-      }
-      this.vMeleeAt = -1;
-      this.vMeleeAfterDash = false;
-      return { mx, my, act: ActType.MELEE, ax, ay, msg: 0 };
-    };
-    const expired = (at: number, sticky: boolean) => at > 0 && !sticky && now - at > this.bufferMs;
+    const preInputEnabled = this.settings.get().dashInputBuffer;
+    if (!preInputEnabled) {
+      this.touchLockedPreInput = null;
+    }
 
-    // A. During DASH: never interrupt it — slash / throw pressed now are held for the first free tick
-    if (p.st === PState.DASH) {
-      if (this.vMeleeAt > 0) this.vMeleeAfterDash = true;
-      if (this.vThrowAt > 0) this.vThrowAfterDash = true;
-      if (expired(this.vDashAt, false)) this.vDashAt = -1;
+    const locked = isActionLockedState(p.st);
+    const canDashMelee = isDashMovingWindow(p);
+
+    // 1. Inside any action-locked state
+    if (locked) {
+      this.touchLastSampledLocked = true;
+      if (preInputEnabled) {
+        if (this.touchPendingPresses.length > 0) {
+          this.touchLockedPreInput = this.touchPendingPresses[this.touchPendingPresses.length - 1];
+          this.touchPendingPresses.length = 0;
+        }
+        // Mobile dash-slash / dash-kick ("冲刺斩/踢") immediately fires in moving ticks (timer 3..6)
+        if (canDashMelee && this.touchLockedPreInput && this.touchLockedPreInput.kind === 'melee') {
+          const cmd = this.touchLockedPreInput;
+          this.touchLockedPreInput = null;
+          const act = this.tryBuildTouchAction(cmd, state, seat, p, dart, mx, my, stickDir, faceX, faceY);
+          if (act) return act;
+        }
+      } else {
+        const fresh = this.touchPendingPresses.filter((pr) => now - pr.at <= this.bufferMs);
+        this.touchPendingPresses.length = 0;
+        if (canDashMelee) {
+          for (let i = fresh.length - 1; i >= 0; i--) {
+            if (fresh[i].kind === 'melee') {
+              const act = this.tryBuildTouchAction(fresh[i], state, seat, p, dart, mx, my, stickDir, faceX, faceY);
+              if (act) return act;
+            }
+          }
+        }
+      }
       return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
 
-    const canStartNew = p.st === PState.FREE || p.st === PState.RECALL;
-    // Got hit (stunned / slashed / kicked) before the buffered follow-up could land → drop it
-    const interrupted = p.st === PState.STUN || p.st === PState.SLASHED || p.st === PState.KICKED;
-    if (interrupted) {
-      if (this.vMeleeAfterDash) {
-        this.vMeleeAt = -1;
-        this.vMeleeAfterDash = false;
+    // 2. Unlocked state (FREE or RECALL)
+    if (preInputEnabled && this.touchLastSampledLocked) {
+      if (this.touchPendingPresses.length > 0) {
+        this.touchLockedPreInput = this.touchPendingPresses[this.touchPendingPresses.length - 1];
+        this.touchPendingPresses.length = 0;
       }
-      if (this.vThrowAfterDash) {
-        this.vThrowAt = -1;
-        this.vThrowAfterDash = false;
+      this.touchLastSampledLocked = false;
+      if (this.touchLockedPreInput) {
+        const cmd = this.touchLockedPreInput;
+        this.touchLockedPreInput = null;
+        const act = this.tryBuildTouchAction(cmd, state, seat, p, dart, mx, my, stickDir, faceX, faceY);
+        if (act) {
+          this.touchLastSampledLocked = true;
+          return act;
+        }
+        // Invalid on unlock tick -> discard cleanly
       }
-    }
-    if (expired(this.vMeleeAt, this.vMeleeAfterDash)) this.vMeleeAt = -1;
-    if (expired(this.vThrowAt, this.vThrowAfterDash)) {
-      this.vThrowAt = -1;
-    }
-    if (expired(this.vDashAt, false)) this.vDashAt = -1;
+    } else {
+      this.touchLastSampledLocked = false;
+      this.touchLockedPreInput = null;
+      if (this.touchPendingPresses.length > 0) {
+        const presses = preInputEnabled
+          ? this.touchPendingPresses.slice()
+          : this.touchPendingPresses.filter((pr) => now - pr.at <= this.bufferMs);
+        this.touchPendingPresses.length = 0;
 
-    if (canStartNew) {
-      type Cand = { at: number; run: () => HumanAction | null };
-      const cands: Cand[] = [];
-      if (this.vMeleeAt > 0) cands.push({ at: this.vMeleeAt, run: makeMelee });
-      if (this.vDashAt > 0 && p.cd === 0) {
-        cands.push({
-          at: this.vDashAt,
-          run: () => {
-            this.vDashAt = -1;
-            const [dx, dy] = stickDir ?? [faceX, faceY];
-            return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
-          },
-        });
-      }
-      if (this.vThrowAt > 0) {
-        cands.push({
-          at: this.vThrowAt,
-          run: () => {
-            const hasDir = this.vThrowDirX !== 0 || this.vThrowDirY !== 0;
-            this.vThrowAt = -1;
-            this.vThrowAfterDash = false;
-            if (dart.st !== DState.HAND || p.st !== PState.FREE) return null;
-            this.throwConsumed = true;
-            const ax = hasDir ? Math.round(this.vThrowDirX * 1000) : faceX;
-            const ay = hasDir ? Math.round(this.vThrowDirY * 1000) : faceY;
-            return { mx, my, act: ActType.THROW, ax, ay, msg: 0 };
-          },
-        });
-      }
-      cands.sort((a, b) => a.at - b.at);
-      for (const c of cands) {
-        const act = c.run();
-        if (act) return act;
+        for (let i = 0; i < presses.length; i++) {
+          const act = this.tryBuildTouchAction(presses[i], state, seat, p, dart, mx, my, stickDir, faceX, faceY);
+          if (act) {
+            if (preInputEnabled && i < presses.length - 1) {
+              this.touchLockedPreInput = presses[presses.length - 1];
+            }
+            this.touchLastSampledLocked = true;
+            return act;
+          }
+        }
       }
     }
 
-    // Hold right stick (dart not in hand) → recall, identical rules to holding the Throw/Recall key
+    // 3. Hold right stick (dart not in hand) → recall, identical rules to holding the Throw/Recall key
     const recallHeld = this.isThrowRecallHeld();
     const wantsRecall =
       recallHeld &&
@@ -760,7 +849,7 @@ export class HumanInputController {
         (dart.st === DState.GROUND &&
           (!this.throwConsumed || (this.groundSinceMs > 0 && now - this.groundSinceMs >= this.recallHoldDelayMs))));
 
-    if (wantsRecall && canStartNew) {
+    if (wantsRecall && (p.st === PState.FREE || p.st === PState.RECALL)) {
       return { mx: 0, my: 0, act: ActType.RECALL, ax: 0, ay: 0, msg: 0 };
     }
     if (!wantsRecall && p.st === PState.RECALL) {

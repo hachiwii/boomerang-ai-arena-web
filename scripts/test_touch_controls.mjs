@@ -178,36 +178,98 @@ for (const afterDash of [true, false]) {
   console.log(`  [TEST 4 PASS] throw pre-input during dash (afterDash=${afterDash}) fires right after the dash`);
 }
 
-// ---------- 5. Slash during dash (+ stick held) → after the dash, toward the stick ----------
-for (const pressTick of [1, 3, 5]) {
+// ---------- 5. Mobile dash-slash & dash-kick ("冲刺斩/踢") + recovery pre-input ----------
+{
+  // 5a. Slash pressed during dash moving phase (tick 3, timer=5) → immediately cuts dash into SLASH toward stick
   const h = setup();
   const y0 = h.st.players[0].y;
   h.input.setVirtualMove(0, 1);
   h.at(10);
   h.input.queueVirtualDash();
-  h.step();
-  let slashTick = -1;
+  h.step(); // tick 0: DASH starts (timer=7)
+  let slashOffset = -1;
   let slashEv = null;
-  let firstFree = -1;
-  for (let i = 1; i <= 12; i++) {
-    if (i === pressTick) {
+  for (let i = 1; i <= 10; i++) {
+    if (i === 3) {
       h.at(20);
-      h.input.setVirtualMove(-1, 0); // stick now points LEFT
+      h.input.setVirtualMove(-1, 0); // stick points LEFT
       h.input.queueVirtualMelee();
     }
     const { st } = h.step();
-    if (firstFree < 0 && st.players[0].st !== 7) firstFree = h.tick;
     const s = ev(st, 'SLASH');
-    if (s && slashTick < 0) {
-      slashTick = h.tick;
+    if (s && slashOffset < 0) {
+      slashOffset = i;
       slashEv = s;
     }
   }
-  assert.ok(slashTick > 0, 'SLASH fired');
-  assert.equal(slashTick, firstFree + 1, `SLASH right after dash ends (free@${firstFree}, slash@${slashTick})`);
-  assert.ok(slashEv.b < -700, `slash toward the stick (left), got (${slashEv.b}, ${slashEv.c})`);
-  assert.ok(h.st.players[0].y - y0 >= 2900, 'dash not cut short by the buffered slash');
-  console.log(`  [TEST 5 PASS] slash pressed at dash tick ${pressTick} → fires after dash toward the stick`);
+  assert.equal(slashOffset, 3, `Mobile dash-slash must fire immediately on moving tick 3, got ${slashOffset}`);
+  assert.ok(slashEv.b < -700, `dash-slash aimed left, got (${slashEv.b}, ${slashEv.c})`);
+  assert.ok(h.st.players[0].y - y0 < 2600, `dash cut short by mobile dash-slash (dy=${h.st.players[0].y - y0})`);
+
+  // 5b. Slash pressed during dash windup (tick 1, timer=7) → pre-input fires dash-slash on first moving tick 2 (timer=6)
+  const hWind = setup();
+  hWind.input.setVirtualMove(0, 1);
+  hWind.at(10);
+  hWind.input.queueVirtualDash();
+  hWind.step(); // dash tick 0 (timer=7)
+  let windSlashOffset = -1;
+  for (let i = 1; i <= 10; i++) {
+    if (i === 1) {
+      hWind.at(20);
+      hWind.input.setVirtualMove(-1, 0);
+      hWind.input.queueVirtualMelee();
+    }
+    const { st } = hWind.step();
+    if (ev(st, 'SLASH') && windSlashOffset < 0) windSlashOffset = i;
+  }
+  assert.equal(windSlashOffset, 2, `Melee pressed during dash windup fires dash-slash on first moving tick 2, got ${windSlashOffset}`);
+
+  // 5c. Empty-handed mobile dash-kick during dash moving phase → immediately fires KICK!
+  const hKick = setup(wallRows);
+  hKick.at(5);
+  hKick.input.queueVirtualThrow(1, 0, false);
+  // Wait for throw to finish & dart to fly out (st === 0, dart.st !== 0)
+  for (let i = 0; i < 8; i++) hKick.step();
+  assert.equal(hKick.st.players[0].st, 0, 'player free after throw');
+  assert.notEqual(hKick.st.darts[0].st, 0, 'player empty-handed');
+  hKick.input.setVirtualMove(0, 1);
+  hKick.at(100);
+  hKick.input.queueVirtualDash();
+  hKick.step(); // dash tick 0
+  let kickOffset = -1;
+  for (let i = 1; i <= 10; i++) {
+    if (i === 3) {
+      hKick.at(200);
+      hKick.input.setVirtualMove(-1, 0);
+      hKick.input.queueVirtualMelee();
+    }
+    const { st } = hKick.step();
+    if (ev(st, 'KICK') && kickOffset < 0) kickOffset = i;
+  }
+  assert.equal(kickOffset, 3, `Mobile dash-kick must fire immediately on moving tick 3, got ${kickOffset}`);
+
+  // 5d. Slash pressed during dash recovery (tick 6, timer=2) → fires on first FREE tick after dash
+  const hRec = setup();
+  const yRec0 = hRec.st.players[0].y;
+  hRec.input.setVirtualMove(0, 1);
+  hRec.at(10);
+  hRec.input.queueVirtualDash();
+  hRec.step();
+  let recSlashTick = -1;
+  let firstFree = -1;
+  for (let i = 1; i <= 12; i++) {
+    if (i === 6) {
+      hRec.at(20);
+      hRec.input.setVirtualMove(-1, 0);
+      hRec.input.queueVirtualMelee();
+    }
+    const { st } = hRec.step();
+    if (firstFree < 0 && st.players[0].st !== 7) firstFree = hRec.tick;
+    if (ev(st, 'SLASH') && recSlashTick < 0) recSlashTick = hRec.tick;
+  }
+  assert.equal(recSlashTick, firstFree + 1, `Recovery pre-input SLASH fires on first free tick (free@${firstFree}, slash@${recSlashTick})`);
+  assert.ok(hRec.st.players[0].y - yRec0 >= 2900, 'full dash completed before recovery slash');
+  console.log('  [TEST 5 PASS] mobile dash-slash (moving & windup), dash-kick, and dash-recovery pre-input all work');
 }
 
 // ---------- 6. Hold right stick with dart on the ground → recall channel → CALL ----------

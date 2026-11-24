@@ -748,8 +748,12 @@ export class SettingsModal {
 
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
-                  <div class="settings-toggle-title">冲刺预输入</div>
-                  <div class="settings-toggle-desc">冲刺中按下扔镖不打断冲刺，结束即释放（不影响冲刺斩）</div>
+                  <div class="settings-toggle-title">预输入</div>
+                  <div class="settings-toggle-desc">${
+                    mobile
+                      ? '在锁动作状态下输入的指令会在首个允许帧自动释放（同区间仅保留最后一条；支持冲刺斩/踢）'
+                      : '在锁动作状态下输入的指令会在首个允许帧自动释放（按输入时鼠标位置瞄准，同区间仅保留最后一条；不阻断冲刺斩/踢）'
+                  }</div>
                 </div>
                 <button
                   type="button"
