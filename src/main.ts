@@ -11,6 +11,7 @@ import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from '.
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { PlatformManager } from './game/platform';
 import { ReplayController } from './game/replayController';
+import { createTrainingConfig, TRAINING_ZONE_LABELS } from './game/training';
 import {
   formatPrimaryBind,
   getCinematicOptions,
@@ -39,9 +40,10 @@ import { HistoryModal } from './ui/historyUI';
 import { HudUI } from './ui/hudUI';
 import { AutoFitter } from './ui/autoFit';
 import { showLaunchScreen } from './ui/launchScreen';
-import { LobbyUI, makeHoodieAvatarDataUrl } from './ui/lobbyUI';
+import { LobbyUI, makeHoodieAvatarDataUrl, resolveSlots } from './ui/lobbyUI';
 import { MobileControls, MobileLayoutEditor } from './ui/mobileControls';
 import { SettingsModal } from './ui/settingsUI';
+import { TrainingPanel } from './ui/trainingUI';
 
 function parseQuickPreviewMap(map: MapMeta): EngineMapData {
   const cells: number[] = [];
@@ -175,6 +177,7 @@ async function bootstrap() {
 
   let lobbyUI: LobbyUI;
   let hudUI: HudUI;
+  let trainingPanel: TrainingPanel;
   let controller: MatchController;
   let replayController: ReplayController;
   let historyModal: HistoryModal;
@@ -342,8 +345,16 @@ async function bootstrap() {
     enqueueHistorySave(bundle);
   };
 
+  /** Training ground chrome: hides the match timer / collapse pill and the scarecrows' HUD cards (CSS), shows the status pill. */
+  const setTrainingChrome = (on: boolean) => {
+    document.body.classList.toggle('training-mode', on);
+    if (on) trainingPanel.show(platform.isMobile());
+    else trainingPanel.hide();
+  };
+
   const returnToLobby = (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => {
     setUiHidden(false);
+    setTrainingChrome(false);
     clearMatchOverTimer();
     matchRecorded = false;
     historyRecorded = false;
@@ -371,6 +382,7 @@ async function bootstrap() {
   };
 
   const startCustomAiSpectator = (cfg: MatchConfig): Promise<void> => {
+    setTrainingChrome(false);
     clearMatchOverTimer();
     matchRecorded = false;
     historyRecorded = false;
@@ -461,6 +473,7 @@ async function bootstrap() {
   };
 
   const startReplayBundle = async (bundle: MatchReplayBundle, fallbackOpenHistory = false) => {
+    setTrainingChrome(false);
     clearMatchOverTimer();
     matchRecorded = false;
     historyRecorded = false;
@@ -493,6 +506,36 @@ async function bootstrap() {
       alert(`回放加载失败：${err instanceof Error ? err.message : String(err)}`);
       returnToLobby(fallbackOpenHistory ? { openHistory: true } : undefined);
     }
+  };
+
+  /** Training ground: endless, invincible player, scarecrow dummies (see src/game/training.ts). Exit with ESC / 主界面. */
+  const startTraining = () => {
+    const s = settings.get();
+    const cfg = createTrainingConfig(resolveSlots([{ kind: 'human', botId: '' }], roster)[0]);
+    cfg.cliffGuard = s.cliffGuard;
+    cfg.dashGuard = s.dashGuard;
+    cfg.meleeAssist = s.meleeAssist;
+    cfg.humanSlashTicks = getSlashJudgmentTicks(s.slashJudgment);
+    clearMatchOverTimer();
+    matchRecorded = false;
+    historyRecorded = false;
+    pendingMatchElo = null;
+    resultOverlayShown = false;
+    restarting = false;
+    replayIsLiveAi = false;
+    lastFinishedBundle = null;
+    replayController.stop();
+    renderer.resetCameraToOverview();
+    historyModal.close();
+    activeConfig = cfg;
+    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, bgmSeed: cfg.seed, slots: cfg.slots });
+    lobbyUI.setLoading('进入训练场...');
+    void controller.start(cfg, { cinematic: getCinematicOptions(settings.get()) }).catch((err) => {
+      console.error(err);
+      lobbyUI.setLoading(null);
+      alert(`训练场启动失败：${err instanceof Error ? err.message : String(err)}`);
+      returnToLobby();
+    });
   };
 
   const startReplayById = async (matchId: string) => {
@@ -826,6 +869,7 @@ async function bootstrap() {
   });
   renderer.setNameplateLayer(hudUI.nameplateLayer);
   hudUI.setMobile(platform.isMobile());
+  trainingPanel = new TrainingPanel(uiRoot);
 
   mobileControls = new MobileControls(uiRoot, input, settings, {
     onAimSlowmo: (active) => {
@@ -933,10 +977,14 @@ async function bootstrap() {
       await renderer.setupMatch(mapData, cfg.mapMeta.theme, cfg.slots, initialState, hSeat, cfg.speed);
       if (activeConfig !== cfg) return;
       renderer.setCinematicDirector(director ?? null);
+      const isTraining = cfg.matchMode === 'training';
+      renderer.setTrainingMode(isTraining);
+      if (isTraining) renderer.setWorldLabels(TRAINING_ZONE_LABELS);
       mode = 'playing';
       lobbyUI.hide();
       bgm.beginMatch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots }, initialState);
       hudUI.showMatch(cfg, hSeat);
+      setTrainingChrome(isTraining);
       hudUI.updateTick(initialState, mapData.colStart, mapData.colEvery);
       document.body.classList.remove('m-aim-slowmo');
       if (platform.isMobile() && hSeat >= 0) {
@@ -951,6 +999,7 @@ async function bootstrap() {
       bgm.updateMatchTick(next);
       hudUI.updateTick(next, activeMapData?.colStart, activeMapData?.colEvery);
       mobileControls?.onTick(next, tickDurationMs);
+      if (controller.isTraining()) trainingPanel.onTick(next, controller.getHumanSeat());
     },
     onMatchOver: (finalState, director) => {
       mobileControls?.hide();
@@ -1071,6 +1120,9 @@ async function bootstrap() {
     onOpenSettings: () => {
       settingsModal.open();
     },
+    onStartTraining: () => {
+      if (mode === 'lobby') startTraining();
+    },
     onOpenBotManager: () => {
       if (!platform.isMobile()) botManager.open();
     },
@@ -1114,6 +1166,7 @@ async function bootstrap() {
     input.setTouchMode(isMobile);
     renderer.setMobileView(isMobile);
     hudUI.setMobile(isMobile);
+    trainingPanel.setMobile(isMobile);
     if (!isMobile) layoutEditor.close(false);
     if (isMobile) botManager.close(); // desktop-only panel
     lobbyUI.refreshPlatformButtons();

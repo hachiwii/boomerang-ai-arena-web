@@ -206,6 +206,8 @@ export class CharacterRig {
   public lastStunTick = -999;
   public lastStunFaceYaw: number | null = null;
   public lastDartLandTick = -999;
+  /** Training ground: last tick an invincible target was hit (white flash); stays -999 in every other mode. */
+  public lastHurtTick = -999;
   public actionDirAngle = 0;
 
   // Smoothed continuous walk phase and facing
@@ -534,6 +536,7 @@ export class CharacterRig {
     this.lastStunTick = -999;
     this.lastStunFaceYaw = null;
     this.lastDartLandTick = -999;
+    this.lastHurtTick = -999;
     this.walkDist = 0;
     this.initializedPos = false;
     this.stealthBlend = 0;
@@ -837,6 +840,16 @@ export class CharacterRig {
       sy = 1.04 + 0.018 * Math.sin(gt * 1.7);
       lean = -0.04;
       hairBack = 0.14 + 0.06 * Math.sin(gt * 1.2);
+    }
+
+    // Training ground: invincible target got hit → white flash + a quick squash
+    if (this.lastHurtTick > -900 && gt >= this.lastHurtTick) {
+      const u = gt - this.lastHurtTick;
+      flash = Math.max(flash, clamp(1 - u / 3.2) * 0.95);
+      const sq = clamp(1 - u / 2.4);
+      sy *= 1 - 0.14 * sq;
+      sx *= 1 + 0.1 * sq;
+      if (faceMode === 'open') faceMode = u < 4 ? 'tight' : faceMode;
     }
 
     // Grass stealth crouch & tint

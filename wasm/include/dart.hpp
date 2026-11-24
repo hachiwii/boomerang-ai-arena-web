@@ -1213,6 +1213,17 @@ struct Game {
     bool human_melee_assist = true;  // 保留字段以兼容 WASM 导出接口（砍镖判定范围不再受近战吸附影响，仅由挥砍判定模式决定）
     bool human_dash_target_active = false;
     i64 human_dash_target_x = 0, human_dash_target_y = 0;
+#ifdef DART_TRAINING
+    // —— 训练模式（只编进网页引擎 engine_wasm.cpp，它在 #include 前定义 DART_TRAINING；裁判、选手程序、自定义 Bot 编译时
+    //    这些代码全部不存在）。只有 engine_init_training 会把 training 设成 true；training == false 的对局规则逐字节不变。
+    static constexpr int TF_NODIE = 1;      // 被镖打中 / 被砍不出局（HIT / CUT 事件照记，前端据此播受击特效）
+    static constexpr int TF_ANCHOR = 2;     // 定身：不被踢飞、不被别人推开（推挤全部算到对方身上）
+    static constexpr int TF_FALLBACK = 4;   // 坠崖（落坑 / 掉出地图）不出局：记 FALL 事件，放回离落点最近的安全地面
+    bool training = false;
+    int train_flags[MAXP] = {};             // 每个座位的 TF_* 组合
+    i64 train_revive[MAXP] = {};            // > 0：出局后过这么多步，在本局出生点原样复活（训练假人）
+    i64 train_face[MAXP] = {};              // 复活时的朝向
+#endif
     bool record = false;
     std::vector<Event> events;
     std::shared_ptr<const Map> live;  // 当前步的地图（塌掉的是坑）；按塌了几波缓存
@@ -1724,6 +1735,18 @@ struct Game {
                     }
                     const i64 dl = ilen(dx, dy);
                     if (!dl) continue;  // 非法地图的重复出生点无法提供几何方向
+#ifdef DART_TRAINING
+                    if (training && ((train_flags[a] | train_flags[b]) & TF_ANCHOR)) {  // 训练：定身的一方不动，对方让开全部重叠
+                        const bool fa = (train_flags[a] & TF_ANCHOR) != 0, fb = (train_flags[b] & TF_ANCHOR) != 0;
+                        if (fa && fb) continue;
+                        const i64 full = D2 - isqrt(dd);
+                        const i64 ux = rdiv(dx * full, dl), uy = rdiv(dy * full, dl);
+                        if (fa) { sx[b] += ux; sy[b] += uy; }
+                        else { sx[a] -= ux; sy[a] -= uy; }
+                        moved = true;
+                        continue;
+                    }
+#endif
                     const i64 half = (D2 - isqrt(dd) + 1) / 2;
                     const i64 ux = rdiv(dx * half, dl), uy = rdiv(dy * half, dl);
                     sx[a] -= ux; sy[a] -= uy;
@@ -1757,6 +1780,9 @@ struct Game {
         auto kill = [&](int victim, i64 cause, i64 killer, i64 prio) {
             // 同一步被几种方式打中：挥砍 > 飞镖 > 落坑；同种按凶手号小的
             (void)prio;
+#ifdef DART_TRAINING
+            if (training && (train_flags[victim] & TF_NODIE) && cause != K_FALL) return;  // 训练：无敌（只记事件不出局）
+#endif
             if (!dies[victim]) {
                 dies[victim] = true;
                 dcause[victim] = cause;
@@ -2171,6 +2197,9 @@ struct Game {
         // 6. 被踢：打断当前动作，开始滑行
         for (int q = 0; q < n; ++q) {
             if (kick_by[q] < 0 || !p[q].alive) continue;
+#ifdef DART_TRAINING
+            if (training && (train_flags[q] & TF_ANCHOR)) continue;  // 训练：定身的不被踢飞（KICKHIT 事件已记）
+#endif
             Player& Q = p[q];
             Q.st = S_STUN;
             Q.dashing = 0;
@@ -2201,6 +2230,13 @@ struct Game {
             if (!P.alive || P.unknown || P.dashing || P.st == S_STUN) continue;
             if (cell_of_point(cf, m, P.x, P.y, t) == C_PIT) {
                 const i64 who = P.kicked_by;  // 保留至滑行最后一步落坑结算之后
+#ifdef DART_TRAINING
+                if (training && (train_flags[k] & TF_FALLBACK)) {  // 训练：不出局，放回最近的安全地面
+                    ev(EV_FALL, k, who, P.x, P.y);
+                    train_put_back(k, m);
+                    continue;
+                }
+#endif
                 kill(k, K_FALL, who, 2);
                 ev(EV_FALL, k, who, P.x, P.y);
             }
@@ -2278,6 +2314,11 @@ struct Game {
             if (f == t + 1) ev(EV_COLLAPSE, r);
             if (f - cf.col_warn == t + 1) ev(EV_WARN, r);
         }
+#ifdef DART_TRAINING
+        if (training)  // 训练：假人出局满 train_revive 步，在出生点复活
+            for (int k = 0; k < n; ++k)
+                if (!p[k].alive && train_revive[k] > 0 && p[k].dead_t >= 0 && t - p[k].dead_t >= train_revive[k]) train_revive_seat(k);
+#endif
         ++t;
         check_over();
         snapshot();
@@ -2294,7 +2335,84 @@ struct Game {
         P.timer = timer;
     }
 
+#ifdef DART_TRAINING
+    // —— 训练模式专用（只在 training == true 时被调用）
+    // 清掉动作、冲刺、滑行和速度，回到站定
+    void train_clear_motion(Player& P) {
+        P.vx = P.vy = 0;
+        P.st = S_FREE;
+        P.timer = 0;
+        P.ax = P.ay = 0;
+        P.kicked_by = -1;
+        P.dashing = 0;
+        P.dash_pit = 0;
+        P.dash_has_target = 0;
+        P.dash_rem_x = P.dash_rem_y = 0;
+        P.dash_pt_n = 0;
+        P.slash_win = 0;
+        P.slash_win_hits = 0;
+    }
+    // 坠崖后放回离落点最近的安全地面：格子中心，圆心在地面 / 草丛，身体既不碰墙也不压到坑（四周一圈都能站）
+    void train_put_back(int k, const Map& m) {
+        Player& P = p[k];
+        i64 best = -1, bx = spx[k], by = spy[k];
+        const i64 r2 = cf.body_r * cf.body_r;
+        for (int gy = 0; gy < m.ny; ++gy)
+            for (int gx = 0; gx < m.nx; ++gx) {
+                const int c = m.at(gx, gy);
+                if (c != C_FLOOR && c != C_GRASS) continue;
+                const i64 cx = i64(gx) * CELL + CELL / 2, cy = i64(gy) * CELL + CELL / 2;
+                bool ok = true;
+                for (int ny = gy - 1; ny <= gy + 1 && ok; ++ny)
+                    for (int nx = gx - 1; nx <= gx + 1 && ok; ++nx) {
+                        const int nc = m.at(nx, ny);  // 地图外算坑
+                        if (nc != C_WALL && nc != C_PIT) continue;
+                        const i64 qx = iclamp(cx, i64(nx) * CELL, i64(nx + 1) * CELL), qy = iclamp(cy, i64(ny) * CELL, i64(ny + 1) * CELL);
+                        if ((cx - qx) * (cx - qx) + (cy - qy) * (cy - qy) < r2) ok = false;
+                    }
+                if (!ok) continue;
+                const i64 dx = cx - P.x, dy = cy - P.y, dd = dx * dx + dy * dy;
+                if (best < 0 || dd < best) { best = dd; bx = cx; by = cy; }
+            }
+        train_clear_motion(P);
+        P.x = bx;
+        P.y = by;
+        Dart& D = d[k];
+        if (D.st == D_RISE) {  // 召回引导被打断
+            D.st = D_GROUND;
+            D.left = 0;
+            ev(EV_CANCEL, k);
+        }
+        if (D.st == D_HAND) {
+            D.x = P.x;
+            D.y = P.y;
+            D.vx = D.vy = 0;
+        }
+    }
+    // 假人复活：回到出生点和初始朝向，镖在手里；击杀等统计保留
+    void train_revive_seat(int k) {
+        Player& P = p[k];
+        train_clear_motion(P);
+        P.alive = 1;
+        P.x = P.px = spx[k];
+        P.y = P.py = spy[k];
+        P.face = train_face[k];
+        P.cd = 0;
+        P.expose = 0;
+        P.kick_t = -1;
+        P.dead_t = -1;
+        P.cause = K_NONE;
+        P.killer = -1;
+        d[k] = Dart();
+        d[k].x = P.x;
+        d[k].y = P.y;
+    }
+#endif
+
     void check_over() {
+#ifdef DART_TRAINING
+        if (training) return;  // 训练：不限时、不结束
+#endif
         if (cf.mode == M_TEAM) {
             int alive_t[2] = {0, 0};
             for (int k = 0; k < n; ++k)

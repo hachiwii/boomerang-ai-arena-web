@@ -61,7 +61,7 @@ export interface MapMeta {
 }
 
 export type RankedMode = 'solo' | 'ffa';
-export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'cricket' | 'custom';
+export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'cricket' | 'custom' | 'training';
 
 export function isRankedMatchMode(mode: MatchMode): boolean {
   return mode === 'ranked-solo' || mode === 'ranked-ffa';
@@ -142,6 +142,8 @@ export interface EngineMapData {
   waves: number[];
   waveSteps: number[];
   spawns: [number, number][];
+  /** Optional cell indices (y * nx + x) of WALL cells drawn as trees instead of the theme's rocks (training ground). */
+  treeCells?: number[];
 }
 
 export interface PlayerSnapshot {

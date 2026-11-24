@@ -178,6 +178,11 @@ export class GameRenderer {
   private predLastIntentX = 0;
   private predLastIntentY = 0;
 
+  // Training ground (训练场): revive / invincible-hit / fall-back visuals + ground zone captions. Off in every other mode.
+  private trainingMode = false;
+  private worldLabels: { x: number; y: number; el: HTMLDivElement }[] = [];
+  private readonly hurtSfxTick: number[] = [];
+
   // Floating nameplate DOM elements (positioned via CSS transform3d for 240Hz smoothness!)
   private nameplateLayer: HTMLDivElement | null = null;
   private nameplates: HTMLDivElement[] = [];
@@ -308,6 +313,30 @@ export class GameRenderer {
 
   public setNameplateLayer(el: HTMLDivElement) {
     this.nameplateLayer = el;
+  }
+
+  /** Training ground visuals (dummy revive, hit flash on invincible targets, fall-back snap). Call after setupMatch. */
+  public setTrainingMode(on: boolean) {
+    this.trainingMode = on;
+    this.hurtSfxTick.length = 0;
+    if (!on) this.setWorldLabels([]);
+  }
+
+  /** Captions pinned to ground points (world mm), drawn in the nameplate layer. Call after setupMatch. */
+  public setWorldLabels(labels: { text: string; sub?: string; x: number; y: number }[]) {
+    for (const l of this.worldLabels) l.el.remove();
+    this.worldLabels = [];
+    if (!this.nameplateLayer) return;
+    for (const l of labels) {
+      const el = document.createElement('div');
+      el.className = 'world-label';
+      el.innerHTML = `<span class="wl-title"></span>${l.sub ? '<span class="wl-sub"></span>' : ''}`;
+      (el.querySelector('.wl-title') as HTMLSpanElement).textContent = l.text;
+      if (l.sub) (el.querySelector('.wl-sub') as HTMLSpanElement).textContent = l.sub;
+      el.style.opacity = '0';
+      this.nameplateLayer.appendChild(el);
+      this.worldLabels.push({ x: l.x, y: l.y, el });
+    }
   }
 
   /**
@@ -866,6 +895,7 @@ export class GameRenderer {
   }
 
   public pushTick(prev: TickSnapshot, next: TickSnapshot, tickDurationMs?: number) {
+    if (this.trainingMode) prev = this.applyTrainingTransitions(prev, next);
     this.prevState = prev;
     this.currState = next;
     if (tickDurationMs && tickDurationMs > 0) {
@@ -1054,6 +1084,8 @@ export class GameRenderer {
       this.graphicsQuality === 'high' &&
       (Boolean(this.cinematicDirector?.hasKillFx()) || (isSpectatingLive && this.liveSpectatorKillFx));
     const killBornSec = useUpstreamKillFx ? nowSec + deathBornOffsetSec : nowSec;
+
+    if (this.trainingMode) this.processTrainingEvents(curr, events, nowSec);
 
     for (const ev of events) {
       switch (ev.name) {
@@ -1283,6 +1315,82 @@ export class GameRenderer {
           break;
         }
       }
+    }
+  }
+
+  /**
+   * Training ground only: a seat that comes back to life (dummy revive) gets its death animation cleared, and a
+   * seat put back on the ground after a fall is drawn at its new spot right away instead of sliding there.
+   * Returns the (possibly patched) previous snapshot used for interpolation.
+   */
+  private applyTrainingTransitions(prev: TickSnapshot, next: TickSnapshot): TickSnapshot {
+    const nowSec = this.elapsedSec;
+    let patched: PlayerSnapshot[] | null = null;
+    const putBack = new Set<number>();
+    for (const ev of next.events) {
+      if (ev.name === 'FALL' && next.players[ev.a]?.alive === 1) putBack.add(ev.a);
+    }
+    for (let k = 0; k < next.players.length; k++) {
+      const p0 = prev.players[k];
+      const p1 = next.players[k];
+      if (!p0 || !p1) continue;
+      const revived = p0.alive === 0 && p1.alive === 1;
+      if (!revived && !putBack.has(k)) continue;
+      patched ??= prev.players.slice();
+      patched[k] = { ...p1 };
+      const rig = this.rigs[k];
+      if (rig && revived) rig.resetDynamicState();
+      if (rig) rig.lastHurtTick = -999;
+      if (k === this.humanSeat) this.resetHumanPrediction();
+      if (this.fx) {
+        const x = p1.x / 1000;
+        const z = p1.y / 1000;
+        this.fx.spawnPoof(x, 0.5, z, this.slots[k]?.color || '#ffffff', nowSec, revived ? 1.1 : 0.9);
+        this.fx.spawnDust(x, z, nowSec, 4, 1.2);
+      }
+    }
+    return patched ? { ...prev, players: patched } : prev;
+  }
+
+  /** Training ground only: feedback for hits that don't kill (invincible player / dart dummies) and fall put-backs. */
+  private processTrainingEvents(curr: TickSnapshot, events: GameEvent[], nowSec: number) {
+    if (!this.fx) return;
+    const gt = curr.t;
+    for (const ev of events) {
+      let victim = -1;
+      let attacker = -1;
+      if (ev.name === 'HIT' || ev.name === 'CUT') {
+        victim = ev.b;
+        attacker = ev.a;
+      } else if (ev.name === 'KICKHIT' && curr.players[ev.b]?.alive === 1 && curr.players[ev.b]?.st !== PState.STUN) {
+        victim = ev.b; // anchored dart dummy: kick lands but it doesn't budge (the normal KICKHIT case plays the FX)
+        attacker = ev.a;
+      } else if (ev.name === 'FALL' && curr.players[ev.a]?.alive === 1) {
+        // Fell into the lake / off the island: splash at the fall point (the player is already back on the ground)
+        this.fx.spawnFallCry(ev.c / 1000, ev.d / 1000, nowSec);
+        this.fx.spawnDust(ev.c / 1000, ev.d / 1000, nowSec, 6, 1.6);
+        this.shakeAmp = Math.max(this.shakeAmp, 0.14);
+        this.sfx.playFall();
+        continue;
+      } else {
+        continue;
+      }
+      const vp = curr.players[victim];
+      const rig = this.rigs[victim];
+      if (!vp || vp.alive !== 1 || !rig) continue;
+      rig.lastHurtTick = gt;
+      // The human 4-frame slash window can register the same swing on consecutive ticks: one burst + sound per hit
+      const lastSfx = this.hurtSfxTick[victim] ?? -999;
+      if (gt - lastSfx < 6) continue;
+      this.hurtSfxTick[victim] = gt;
+      const col = attacker >= 0 ? this.slots[attacker]?.color || '#ffffff' : '#ffffff';
+      if (ev.name === 'KICKHIT') {
+        // fx / sfx for the kick itself come from the regular KICKHIT handler
+      } else {
+        this.fx.spawnHit(vp.x / 1000, vp.y / 1000, col, nowSec);
+        this.sfx.playKickHit();
+      }
+      if (victim === this.humanSeat) this.shakeAmp = Math.max(this.shakeAmp, 0.2);
     }
   }
 
@@ -1897,6 +2005,20 @@ export class GameRenderer {
         }
       }
 
+      // Ground captions (training zones)
+      for (const wl of this.worldLabels) {
+        this._projVec.set(wl.x / 1000, 0.05, wl.y / 1000);
+        this._projVec.project(this.camera);
+        if (this._projVec.z > 1.0 || this._projVec.z < -1.0) {
+          wl.el.style.opacity = '0';
+          continue;
+        }
+        const sxPx = (this._projVec.x * 0.5 + 0.5) * screenW;
+        const syPx = (-this._projVec.y * 0.5 + 0.5) * screenH;
+        wl.el.style.opacity = '1';
+        wl.el.style.transform = `translate3d(${sxPx.toFixed(1)}px, ${syPx.toFixed(1)}px, 0) translate(-50%, -50%)`;
+      }
+
       // Periodic festive confetti ribbons around winner during winner close-up
       if (!this.playbackPaused) {
         this.maybeEmitWinnerConfetti(this.currState, cinePose, this.elapsedSec, gt);
@@ -2373,6 +2495,9 @@ export class GameRenderer {
     if (this.nameplateLayer) {
       this.nameplateLayer.innerHTML = '';
     }
+    this.worldLabels = [];
+    this.trainingMode = false;
+    this.hurtSfxTick.length = 0;
     this.nameplates = [];
     this.nameplateEyeEls = [];
     this.nameplateEyeStates = [];

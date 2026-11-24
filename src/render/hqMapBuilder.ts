@@ -904,7 +904,45 @@ export class HqArenaMap3D implements IArenaMap {
       this.registerOccluder(meshes, chunk.wave, false);
     };
 
-    const components = getWallComponents(this.mapData);
+    // Optional per-map tree cells (training ground): drawn as arena trees whatever the theme's rock kind is
+    const treeSet = new Set(this.mapData.treeCells ?? []);
+    if (treeSet.size > 0) {
+      const nx = this.mapData.nx;
+      const isTree = (x: number, y: number) =>
+        x >= 0 && y >= 0 && x < nx && y < this.mapData.ny && treeSet.has(y * nx + x) && this.mapData.cells[y * nx + x] === CellType.WALL;
+      const treeCrowns: [string, string, string][] = [
+        P.crown_pal ?? ['#2F8050', '#4FA65C', '#9AD476'],
+        ['#2F8050', '#5CB058', '#BCE070'],
+        ['#22705A', '#3C9670', '#86CCA0'],
+      ];
+      const k1 = Math.max(1, Math.round(1.0 / cs));
+      for (let y = 0; y < this.mapData.ny; y++) {
+        for (let x = 0; x < nx; x++) {
+          if (!isTree(x, y) || used.has(`${x},${y}`)) continue;
+          // one tree per k1×k1 block (1 m trunk), single leftover cells get a small tree
+          let size = 1;
+          let ok = true;
+          for (let i = 0; i < k1 && ok; i++) for (let j = 0; j < k1 && ok; j++) if (!isTree(x + i, y + j) || used.has(`${x + i},${y + j}`)) ok = false;
+          if (ok) size = k1;
+          const tx = (x + size * 0.5) * cs;
+          const tz = (y + size * 0.5) * cs;
+          const mb = new HqMeshBuilder();
+          addArenaTree(mb, tx, -tz, size * cs * 0.5, rng, {
+            crown: rng.choice(treeCrowns),
+            h: rng.uniform(1.2, 1.4),
+            cr: rng.uniform(1.6, 1.85),
+            mush: rng.next() < 0.6,
+          });
+          commitObstacle(mb, tx, tz);
+          for (let i = 0; i < size; i++) for (let j = 0; j < size; j++) used.add(`${x + i},${y + j}`);
+        }
+      }
+    }
+    const components = treeSet.size > 0
+      ? getWallComponents(this.mapData)
+          .map((comp) => comp.filter(([x, y]) => !treeSet.has(y * this.mapData.nx + x)))
+          .filter((comp) => comp.length > 0)
+      : getWallComponents(this.mapData);
 
     if (R.kind === 'garden') {
       const k1 = Math.max(1, Math.round(1.0 / cs));

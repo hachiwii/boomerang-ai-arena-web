@@ -1,4 +1,5 @@
 #define DART_NO_MAIN
+#define DART_TRAINING  // 网页引擎带训练场规则（engine_init_training）；dart.hpp 的其他使用者不定义它
 #include "dart.hpp"
 #include <emscripten/emscripten.h>
 #include <cmath>
@@ -416,6 +417,51 @@ int engine_init(const char* map_text, int n_players, unsigned int seed) {
 EMSCRIPTEN_KEEPALIVE
 int engine_init_with_spawn_seed(const char* map_text, int n_players, unsigned int seed, unsigned int spawn_seed) {
     return init_engine_impl(map_text, n_players, seed, spawn_seed);
+}
+
+// 训练场：地图必须有 MODES 2（8 个出生点）。座位分工固定：
+//   0 = 玩家（无敌：被镖 / 被砍不出局；坠崖放回最近的安全地面）
+//   1-3 = 击打区假人、4-5 = 湖边假人（能砍、能踢下水，出局 2 秒后在原位复活）
+//   6-7 = 飞镖假人（无敌 + 定身：不出局、不被踢飞也不被推开；扔镖由前端驱动）
+// 场地不塌、不限时。只有这里会打开 Game::training，正常对局走 engine_init / engine_init_with_spawn_seed，规则不受影响。
+EMSCRIPTEN_KEEPALIVE
+int engine_init_training(const char* map_text) {
+    g_err_buf.clear();
+    auto m = std::make_shared<dart::Map>();
+    std::string err = dart::parse_map(map_text ? map_text : "", *m);
+    if (!err.empty()) {
+        g_err_buf = err;
+        return 0;
+    }
+    if (!m->modes[2]) {
+        g_err_buf = "training map needs MODES 2 (8 spawns)";
+        return 0;
+    }
+    m->w.assign(m->c.size(), -1);  // 训练场不塌
+    m->nwave = 0;
+
+    dart::Config cf;
+    cf.mode = dart::M_TEAM;  // 借 4v4 的 8 个座位；队伍下面改成各自为战
+    cf.delay = 4;
+    cf.steps = 100000;
+    g_game = std::make_unique<dart::Game>(cf, m, true, dart::u64(0));
+    dart::Game& g = *g_game;
+    g.training = true;
+    constexpr int REVIVE_TICKS = 40;  // 2 秒（20 步 / 秒）
+    for (int k = 0; k < g.n; ++k) {
+        dart::Player& P = g.p[k];
+        P.team = k;
+        P.face = k >= 6 ? 18000 : 9000;  // 飞镖假人面朝 -x（它们扔镖的方向），其余面朝 +y（朝向镜头）
+        g.train_face[k] = P.face;
+        g.train_flags[k] = 0;
+        g.train_revive[k] = 0;
+    }
+    g.train_flags[0] = dart::Game::TF_NODIE | dart::Game::TF_FALLBACK;
+    for (int k = 1; k <= 5 && k < g.n; ++k) g.train_revive[k] = REVIVE_TICKS;
+    for (int k = 6; k <= 7 && k < g.n; ++k) g.train_flags[k] = dart::Game::TF_NODIE | dart::Game::TF_ANCHOR;
+    g.snapshot();
+    g_last_event_idx = 0;
+    return 1;
 }
 
 EMSCRIPTEN_KEEPALIVE

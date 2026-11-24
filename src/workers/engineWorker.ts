@@ -8,6 +8,7 @@ let engineInit: ((mapText: string, nPlayers: number, seed: number) => number) | 
 let engineInitWithSpawnSeed:
   | ((mapText: string, nPlayers: number, seed: number, spawnSeed: number) => number)
   | null = null;
+let engineInitTraining: ((mapText: string) => number) | null = null;
 let engineSetHumanSeat: ((seat: number) => void) | null = null;
 let engineSetHumanSlashTicks: ((ticks: number) => void) | null = null;
 let engineSetHumanCliffGuard: ((enabled: number) => void) | null = null;
@@ -38,6 +39,7 @@ async function ensureLoaded(origin: string, buildId?: string) {
     s: number,
     ss: number,
   ) => number;
+  engineInitTraining = mod.cwrap('engine_init_training', 'number', ['string']) as (m: string) => number;
   engineSetHumanSeat = mod.cwrap('engine_set_human_seat', null, ['number']) as (s: number) => void;
   engineSetHumanSlashTicks = mod.cwrap('engine_set_human_slash_ticks', null, ['number']) as (t: number) => void;
   engineSetHumanCliffGuard = mod.cwrap('engine_set_human_cliff_guard', null, ['number']) as (e: number) => void;
@@ -55,7 +57,7 @@ self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      const { reqId, origin, buildId, mapText, nPlayers, seed, spawnSeed, botSeats, humanSeat, cliffGuard, meleeAssist, humanSlashTicks } = msg as {
+      const { reqId, origin, buildId, mapText, nPlayers, seed, spawnSeed, botSeats, humanSeat, cliffGuard, meleeAssist, humanSlashTicks, training } = msg as {
         reqId: number;
         origin: string;
         buildId?: string;
@@ -68,10 +70,16 @@ self.onmessage = async (ev: MessageEvent) => {
         cliffGuard?: boolean;
         meleeAssist?: boolean;
         humanSlashTicks?: number;
+        training?: boolean;
       };
       await ensureLoaded(origin, buildId);
       const ss = typeof spawnSeed === 'number' && spawnSeed !== 0 ? (spawnSeed >>> 0) : 0;
-      const ok = ss !== 0 ? engineInitWithSpawnSeed!(mapText, nPlayers, seed, ss) : engineInit!(mapText, nPlayers, seed);
+      // Training ground: fixed 8-seat layout with training-only rules (see engine_init_training in engine_wasm.cpp)
+      const ok = training
+        ? engineInitTraining!(mapText)
+        : ss !== 0
+          ? engineInitWithSpawnSeed!(mapText, nPlayers, seed, ss)
+          : engineInit!(mapText, nPlayers, seed);
       if (!ok) {
         self.postMessage({ type: 'error', reqId, error: engineLastErr!() });
         return;

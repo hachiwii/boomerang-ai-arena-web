@@ -1,6 +1,7 @@
 import { HumanInputController } from './humanInput';
 import { CinematicDirector, normalizeCinematicOptions } from './killCamDirector';
 import { CinematicOptions } from './settings';
+import { parseTreeCells, TRAINING_MAP_URL, TrainingDummyBrain } from './training';
 import {
   CauseType,
   EngineMapData,
@@ -74,6 +75,8 @@ export class MatchController {
   private countdownOnGo: (() => void) | null = null;
   private pendingBots: PendingBotDecision[] = [];
   private stepping = false;
+  /** Training ground: drives the dart scarecrows; null in every other mode. */
+  private trainingBrain: TrainingDummyBrain | null = null;
 
   // Measured logic tick rate telemetry
   public actualLogicHz = LOGIC_HZ;
@@ -98,6 +101,10 @@ export class MatchController {
 
   public getRecordedTicks(): TickSnapshot[] {
     return this.recordedTicks;
+  }
+
+  public isTraining(): boolean {
+    return this.trainingBrain !== null;
   }
 
   public isRunning(): boolean {
@@ -271,14 +278,18 @@ export class MatchController {
 
     this.humanSeat = config.slots.findIndex((s) => s.kind === 'human');
     this.botSeats = [];
+    // Training ground: the scarecrows are not bots (no bot workers); the dart ones are driven by TrainingDummyBrain
+    const isTraining = config.matchMode === 'training';
+    this.trainingBrain = isTraining ? new TrainingDummyBrain() : null;
     config.slots.forEach((s, i) => {
-      if (s.kind === 'bot') this.botSeats.push(i);
+      if (s.kind === 'bot' && !isTraining) this.botSeats.push(i);
     });
 
     const origin = window.location.origin;
 
     this.callbacks.onStatus?.('加载地图与引擎 WASM...');
-    const mapResp = await fetch(`${origin}/assets/maps/${config.mapId}.txt?v=${__BUILD_ID__}`);
+    const mapUrl = isTraining ? `${origin}${TRAINING_MAP_URL}` : `${origin}/assets/maps/${config.mapId}.txt`;
+    const mapResp = await fetch(`${mapUrl}?v=${__BUILD_ID__}`);
     if (!mapResp.ok) throw new Error(`无法加载地图 ${config.mapId}`);
     const mapText = await mapResp.text();
     if (this.stopped) return;
@@ -297,10 +308,15 @@ export class MatchController {
       cliffGuard: config.dashGuard ?? config.cliffGuard,
       meleeAssist: config.meleeAssist ?? true,
       humanSlashTicks: config.humanSlashTicks ?? 4,
+      training: isTraining,
     });
     if (this.stopped) return;
 
     const mapData = initRes.mapData as EngineMapData;
+    if (isTraining) {
+      const trees = parseTreeCells(mapText, mapData.nx);
+      if (trees.length > 0) mapData.treeCells = trees;
+    }
     const initialState = initRes.state as TickSnapshot;
     initialState.timestampMs = performance.now();
     const headers = initRes.headers as Record<number, string>;
@@ -426,6 +442,15 @@ export class MatchController {
     this.input.setCliffGuard(config.cliffGuard);
     this.input.setTickIntervalMs(this.tickIntervalMs);
     this.dispatchBots(initialObs);
+
+    if (isTraining) {
+      // Training ground: no countdown, start moving right away
+      this.input.setInputMode('active');
+      this.running = true;
+      this.nextTickDeadline = performance.now();
+      this.scheduleNextTick();
+      return;
+    }
 
     // 3-second real-time pre-match countdown (3 -> 2 -> 1 -> GO!) for both human & pure-AI matches
     this.input.setInputMode(this.humanSeat >= 0 ? 'countdown' : 'off');
@@ -619,6 +644,7 @@ export class MatchController {
           dashTarget = [ha.dashTargetX, ha.dashTargetY];
         }
       }
+      this.trainingBrain?.decide(prevState, actionLines);
 
       const stepRes = await this.rpc(this.engineWorker, {
         type: 'step',
@@ -659,6 +685,10 @@ export class MatchController {
       const stepDurationMs = this.tickIntervalMs + spectatorHitStopMs;
 
       this.currentState = nextState;
+      if (this.trainingBrain) {
+        // Training is endless and never saved to history: keep only the latest two ticks
+        if (this.recordedTicks.length >= 2) this.recordedTicks.shift();
+      }
       this.recordedTicks.push(nextState);
       this.callbacks.onTick(prevState, nextState, stepDurationMs);
 
@@ -874,5 +904,6 @@ export class MatchController {
     this.precomputedIndex = 0;
     this.mapDataCache = null;
     this.cinematicDirector = null;
+    this.trainingBrain = null;
   }
 }

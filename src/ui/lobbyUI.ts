@@ -32,6 +32,8 @@ export interface LobbyCallbacks {
   onStartMatch: (config: MatchConfig) => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
+  /** Enters the training ground (训练场). */
+  onStartTraining?: () => void;
   /** Desktop only: opens the custom bot manager (upload / compile / configure user bots). */
   onOpenBotManager?: () => void;
   /** PC / mobile presentation state for the header toggle + fullscreen buttons. */
@@ -1918,14 +1920,15 @@ export class LobbyUI {
           </div>
           <div class="lobby-nav-right lobby-nav-row">
             <div class="lobby-tabs">
-              <button class="lobby-tab ${this.activeTab === 'ranked' ? 'active' : ''}" id="tab-ranked">🏆 排位赛</button>
-              <button class="lobby-tab ${this.activeTab === 'cricket' ? 'active' : ''}" id="tab-cricket">🦗 斗蛐蛐</button>
-              <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">🎛️ 自定义对局</button>
+              <button class="lobby-tab ${this.activeTab === 'ranked' ? 'active' : ''}" id="tab-ranked"><span class="nav-ico">🏆</span> 排位赛</button>
+              <button class="lobby-tab ${this.activeTab === 'cricket' ? 'active' : ''}" id="tab-cricket"><span class="nav-ico">🦗</span> 斗蛐蛐</button>
+              <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom"><span class="nav-ico">🎛️</span> 自定义</button>
             </div>
             <div class="lobby-nav-actions">
-              <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）">📜 对局历史</button>
+              <button type="button" class="lobby-settings-btn lobby-training-btn" id="btn-start-training" title="训练场：打稻草人、练走位冲刺、练躲镖挡镖（不限时，玩家无敌）"><span class="nav-ico">🎯</span> 训练</button>
+              <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）"><span class="nav-ico">📜</span> 对局历史</button>
               <button type="button" class="lobby-settings-btn lobby-bots-btn" id="btn-open-bot-manager" title="上传 C++ 源码在浏览器里编译成自定义 Bot，可在自定义对局和斗蛐蛐中使用">🤖 管理 Bot</button>
-              <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置">⚙️ 设置</button>
+              <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置"><span class="nav-ico">⚙️</span> 设置</button>
               <button
                 type="button"
                 class="lobby-bgm-btn ${bgmOn ? 'is-on' : 'is-off'}"
@@ -1976,7 +1979,11 @@ export class LobbyUI {
       this.callbacks.onToggleFullscreen?.();
     });
 
-    // Bind top tabs, history & settings buttons
+    // Bind top tabs, training, history & settings buttons
+    this.container.querySelector('#btn-start-training')?.addEventListener('click', () => {
+      this.closeDropdown();
+      this.callbacks.onStartTraining?.();
+    });
     this.container.querySelector('#btn-open-history')?.addEventListener('click', () => {
       this.closeDropdown();
       this.callbacks.onOpenHistory();

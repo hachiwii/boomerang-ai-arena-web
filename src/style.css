@@ -7825,3 +7825,197 @@ body.is-mobile .map-desc-box {
 .botmgr-model-chip.is-custom {
   color: #dcc6ff;
 }
+
+/* =====================================================================
+   TRAINING GROUND (训练场) — everything keyed off .training-* / body.training-mode
+   ===================================================================== */
+.lobby-training-btn:hover {
+  background: rgba(76, 196, 128, 0.22);
+  border-color: rgba(120, 226, 160, 0.55);
+  color: #eafff2;
+}
+
+/* Mobile lobby header: the training button joined the action row — keep tabs + actions + platform buttons on one
+   line without overlapping (tighter paddings everywhere; narrow phones drop the nav emojis, labels stay) */
+body.is-mobile .lobby-tab {
+  padding: 6px 7px;
+}
+
+body.is-mobile .lobby-settings-btn {
+  padding: 0 8px;
+}
+
+body.is-mobile .lobby-nav-actions {
+  gap: 5px;
+}
+
+@media (max-width: 735px) {
+  body.is-mobile .lobby-nav-row .nav-ico {
+    display: none;
+  }
+}
+
+/* Training is endless and the scarecrows are not opponents: hide the match timer / collapse countdown
+   and the scarecrows' player cards (desktop) / avatars (mobile); the status pill takes the timer's place. */
+body.training-mode .hud-center-pill,
+body.training-mode .hud-pcard:not(.is-human),
+body.training-mode .m-av:not(.is-human),
+body.training-mode .nameplate:not(.nameplate-human) {
+  display: none;
+}
+
+.training-panel {
+  position: fixed;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 16px 8px;
+  border-radius: 14px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--border-glass);
+  color: #eef4ff;
+  pointer-events: none;
+  max-width: min(560px, 46vw);
+  text-align: center;
+}
+
+.training-panel.hidden {
+  display: none;
+}
+
+.tp-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.tp-title {
+  font-size: 15px;
+  font-weight: 900;
+  color: #b9f5cf;
+}
+
+.tp-sub {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tp-stats {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.tp-stat b {
+  margin-right: 3px;
+  font-size: 15px;
+  font-weight: 900;
+  color: #fff;
+  font-variant-numeric: tabular-nums;
+}
+
+.tp-exit-hint {
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 10.5px;
+}
+
+/* Mobile: one-line pill in the HUD's top row, in place of the plain map label (keeps the playfield clear) */
+body.training-mode .m-hud-center {
+  visibility: hidden;
+}
+
+.training-panel.is-mobile {
+  top: calc(max(8px, var(--sa-top, 0px)) + 4px);
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px;
+  border-radius: 999px;
+  background: rgba(10, 15, 28, 0.5);
+  backdrop-filter: none;
+  border: none;
+  max-width: 58vw;
+}
+
+.training-panel.is-mobile .tp-sub,
+.training-panel.is-mobile .tp-exit-hint {
+  display: none;
+}
+
+.training-panel.is-mobile .tp-title {
+  font-size: 12px;
+}
+
+.training-panel.is-mobile .tp-stats {
+  gap: 8px;
+  font-size: 10.5px;
+}
+
+.training-panel.is-mobile .tp-stat b {
+  font-size: 13px;
+}
+
+body.ui-hidden .training-panel {
+  opacity: 0 !important;
+  visibility: hidden !important;
+}
+
+/* Ground captions for the three zones (positioned by the renderer every frame) */
+.world-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 3px 10px 4px;
+  border-radius: 10px;
+  background: rgba(16, 32, 22, 0.42);
+  border: 1px solid rgba(190, 255, 210, 0.28);
+  color: #f2fff6;
+  white-space: nowrap;
+  pointer-events: none;
+  will-change: transform, opacity;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.55);
+}
+
+.wl-title {
+  font-size: 13px;
+  font-weight: 900;
+  letter-spacing: 2px;
+}
+
+.wl-sub {
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(226, 246, 233, 0.86);
+}
+
+body.is-mobile .world-label {
+  padding: 2px 7px 3px;
+}
+
+body.is-mobile .wl-title {
+  font-size: 11px;
+}
+
+body.is-mobile .wl-sub {
+  display: none;
+}
