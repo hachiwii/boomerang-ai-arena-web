@@ -1176,6 +1176,8 @@ export class LobbyUI {
     `).join('');
 
     const noticeHtml = this.renderCricketNoticeHtml();
+    const mLotteryCols = Math.min(4, Math.max(1, Math.ceil(lotteryIds.length / 4)));
+    const mExcludedCols = Math.min(4, Math.max(1, Math.ceil(excludedIds.length / 4)));
 
     return `
       <div class="cricket-panel">
@@ -1209,7 +1211,10 @@ export class LobbyUI {
 
         <div id="cricket-notice-slot" class="${noticeHtml ? '' : 'hidden'}">${noticeHtml}</div>
 
-        <div class="cricket-board">
+        <div
+          class="cricket-board"
+          style="--m-lottery-cols:${mLotteryCols};--m-excluded-cols:${mExcludedCols};--m-board-cols:minmax(0, 1fr) minmax(0, ${mLotteryCols}fr) minmax(0, ${mExcludedCols}fr)"
+        >
           <section
             class="cricket-zone cricket-zone-invited ${invitedIds.length >= maxP ? 'is-at-cap' : ''} ${this.cricketShakeInvited ? 'is-shake' : ''}"
             data-drop-tier="invited"

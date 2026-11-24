@@ -7025,11 +7025,33 @@ body.is-mobile .settings-body > section.m-tab-hidden {
   display: none;
 }
 
-/* ---------- Mobile cricket board: 直邀 | 抽签 | 落选 side by side ---------- */
+/* ---------- Mobile cricket board: 直邀 | 抽签 | 落选 side by side (fixed 4 rows, dynamic 1–4 cols) ---------- */
+body.is-mobile .cricket-panel {
+  position: relative;
+}
+
+body.is-mobile #cricket-notice-slot {
+  position: absolute;
+  top: 44px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  pointer-events: none;
+  max-width: min(520px, 90%);
+}
+
+body.is-mobile #cricket-notice-slot .cricket-notice {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.52);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+}
+
 body.is-mobile .cricket-board {
+  --m-cricket-row-h: 58px;
+  --m-cricket-row-gap: 6px;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 3fr) minmax(0, 1.1fr);
-  gap: 10px;
+  grid-template-columns: var(--m-board-cols, minmax(0, 1fr) minmax(0, 4fr) minmax(0, 1fr));
+  gap: 8px;
   align-items: stretch;
 }
 
@@ -7037,30 +7059,48 @@ body.is-mobile .cricket-bottom-split {
   display: contents;
 }
 
+body.is-mobile .cricket-invited-row,
+body.is-mobile .cricket-card-grid {
+  grid-template-rows: repeat(4, var(--m-cricket-row-h));
+  grid-auto-rows: var(--m-cricket-row-h);
+  gap: var(--m-cricket-row-gap);
+  height: calc(var(--m-cricket-row-h) * 4 + var(--m-cricket-row-gap) * 3);
+  min-height: calc(var(--m-cricket-row-h) * 4 + var(--m-cricket-row-gap) * 3);
+  align-content: start;
+}
+
 body.is-mobile .cricket-invited-row {
   grid-template-columns: minmax(0, 1fr);
-  gap: 6px;
 }
 
 body.is-mobile .cricket-zone-lottery .cricket-card-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--m-lottery-cols, 4), minmax(0, 1fr));
 }
 
 body.is-mobile .cricket-zone-excluded .cricket-card-grid {
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: repeat(var(--m-excluded-cols, 1), minmax(0, 1fr));
 }
 
-body.is-mobile .cricket-card-grid {
-  min-height: 60px;
-  gap: 6px;
+body.is-mobile .cricket-card {
+  height: var(--m-cricket-row-h);
+  justify-content: space-between;
+  box-sizing: border-box;
 }
 
 body.is-mobile .cricket-empty-slot {
-  min-height: 46px;
+  height: var(--m-cricket-row-h);
+  min-height: 0;
+  box-sizing: border-box;
 }
 
 body.is-mobile .cricket-zone-empty {
-  min-height: 60px;
+  grid-column: 1 / -1;
+  grid-row: 1 / -1;
+  height: 100%;
+  min-height: 0;
+  padding: 8px;
+  text-align: center;
+  line-height: 1.45;
 }
 
 body.is-mobile .cricket-zone .cz-sub {
