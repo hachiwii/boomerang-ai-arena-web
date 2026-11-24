@@ -803,6 +803,44 @@ kbd {
   border-color: #ff7a7a;
 }
 
+/* ---------- Hide UI Hotkey (Shift+F) ---------- */
+body.ui-hidden .hud-root,
+body.ui-hidden .nameplate-layer,
+body.ui-hidden .lobby-overlay {
+  opacity: 0 !important;
+  visibility: hidden !important;
+  pointer-events: none !important;
+}
+
+.ui-hidden-toast {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translate(-50%, -8px);
+  z-index: 40;
+  padding: 7px 14px;
+  border-radius: 999px;
+  background: rgba(13, 19, 34, 0.84);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(130, 180, 255, 0.34);
+  color: #e6f0ff;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, transform 0.2s ease, visibility 0.2s ease;
+}
+
+.ui-hidden-toast.is-visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
 .hud-btn.hud-fav-btn {
   display: inline-flex;
   align-items: center;

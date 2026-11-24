@@ -11,10 +11,12 @@ import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from '.
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { ReplayController } from './game/replayController';
 import {
+  formatPrimaryBind,
   getCinematicOptions,
   getSlashJudgmentTicks,
   GraphicsQualityOption,
   isBoundToAction,
+  matchesActionKeyEvent,
   SettingsStore,
 } from './game/settings';
 import { CellType, EngineMapData, isRankedMatchMode, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
@@ -197,6 +199,44 @@ async function bootstrap() {
     },
   });
 
+  let uiHidden = false;
+  let uiHiddenToastTimer: number | null = null;
+  const uiHiddenToast = document.createElement('div');
+  uiHiddenToast.id = 'ui-hidden-toast';
+  uiHiddenToast.className = 'ui-hidden-toast';
+  uiHiddenToast.setAttribute('role', 'status');
+  uiHiddenToast.setAttribute('aria-live', 'polite');
+  document.body.appendChild(uiHiddenToast);
+
+  const setUiHidden = (hidden: boolean, showHint = false) => {
+    uiHidden = hidden;
+    document.body.classList.toggle('ui-hidden', hidden);
+    if (uiHiddenToastTimer !== null) {
+      window.clearTimeout(uiHiddenToastTimer);
+      uiHiddenToastTimer = null;
+    }
+    if (hidden && showHint) {
+      const keyLabel = formatPrimaryBind(settings.get().keybindings.toggleHideUi, 'Shift+F');
+      uiHiddenToast.textContent = `已隐藏界面 · 按 ${keyLabel} 恢复显示`;
+      uiHiddenToast.classList.add('is-visible');
+      uiHiddenToastTimer = window.setTimeout(() => {
+        uiHiddenToastTimer = null;
+        uiHiddenToast.classList.remove('is-visible');
+      }, 1800);
+    } else {
+      uiHiddenToast.classList.remove('is-visible');
+    }
+  };
+
+  const isTextEditableTarget = (target: EventTarget | null): boolean => {
+    if (target instanceof HTMLTextAreaElement) return true;
+    if (target instanceof HTMLInputElement) {
+      const t = (target.type || 'text').toLowerCase();
+      return t !== 'range' && t !== 'checkbox' && t !== 'radio' && t !== 'button' && t !== 'submit' && t !== 'reset';
+    }
+    return target instanceof HTMLElement && target.isContentEditable;
+  };
+
   let pendingHistorySave: Promise<void> | null = null;
   let favoriteWriteQueue: Promise<void> = Promise.resolve();
 
@@ -221,6 +261,7 @@ async function bootstrap() {
   };
 
   const returnToLobby = (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => {
+    setUiHidden(false);
     clearMatchOverTimer();
     matchRecorded = false;
     historyRecorded = false;
@@ -901,9 +942,20 @@ async function bootstrap() {
   // Match & Replay keyboard/mouse shortcuts
   window.addEventListener('keydown', (e) => {
     if (settingsModal.isOpen() || historyModal.isOpen()) return;
-    if (e.code === 'Escape' && (mode === 'playing' || mode === 'replay')) {
-      returnToLobby();
+    if (!e.repeat && !isTextEditableTarget(e.target) && matchesActionKeyEvent(settings.get().keybindings, 'toggleHideUi', e)) {
+      e.preventDefault();
+      setUiHidden(!uiHidden, true);
       return;
+    }
+    if (e.code === 'Escape') {
+      if (mode === 'playing' || mode === 'replay') {
+        returnToLobby();
+        return;
+      }
+      if (mode === 'lobby' && uiHidden) {
+        setUiHidden(false);
+        return;
+      }
     }
     if (mode === 'replay') {
       if (e.code === 'Space' && !e.repeat) {
@@ -928,7 +980,7 @@ async function bootstrap() {
         !e.ctrlKey &&
         !e.metaKey &&
         !e.altKey &&
-        !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) &&
+        !isTextEditableTarget(e.target) &&
         isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
         canQuickRestart()
       ) {
@@ -942,7 +994,7 @@ async function bootstrap() {
       !e.ctrlKey &&
       !e.metaKey &&
       !e.altKey &&
-      !(e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) &&
+      !isTextEditableTarget(e.target) &&
       isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
       canQuickRestart()
     ) {
@@ -952,8 +1004,14 @@ async function bootstrap() {
   });
 
   window.addEventListener('mousedown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen() || mode !== 'playing') return;
+    if (settingsModal.isOpen() || historyModal.isOpen()) return;
     const code = `Mouse${e.button}`;
+    if (isBoundToAction(settings.get().keybindings, 'toggleHideUi', code)) {
+      e.preventDefault();
+      setUiHidden(!uiHidden, true);
+      return;
+    }
+    if (mode !== 'playing') return;
     if (isBoundToAction(settings.get().keybindings, 'quickRestart', code) && canQuickRestart()) {
       e.preventDefault();
       restartCurrentMatch();

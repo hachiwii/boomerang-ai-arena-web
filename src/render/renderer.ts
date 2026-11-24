@@ -14,7 +14,7 @@ import {
   SlotConfig,
   TickSnapshot,
 } from '../game/types';
-import { CharacterRig } from './charRig';
+import { CharacterRig, WINNER_CELEBRATE_DELAY_TICKS } from './charRig';
 import { FXSystem } from './fxSystem';
 import { HqArenaMap3D, IArenaMap } from './hqMapBuilder';
 import { getHqTheme } from './hqThemes';
@@ -128,6 +128,7 @@ export class GameRenderer {
   private overElapsedRealSec = 0;
   private nextWinnerRibbonSec = -1;
   private winnerRibbonWave = 0;
+  private pendingEndConfetti: { seat: number; triggerTick: number } | null = null;
 
   // Raycasting scratch (zero allocation per frame)
   private readonly _raycaster = new THREE.Raycaster();
@@ -474,6 +475,7 @@ export class GameRenderer {
     this.overElapsedRealSec = 0;
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
+    this.pendingEndConfetti = null;
     this.cinematicDirector = null;
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;
@@ -649,6 +651,7 @@ export class GameRenderer {
     this.overElapsedRealSec = 0;
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
+    this.pendingEndConfetti = null;
 
     if (mapDims) {
       const cs = (mapDims.cell ?? 500) / 1000;
@@ -800,6 +803,7 @@ export class GameRenderer {
     this.overElapsedRealSec = 0;
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
+    this.pendingEndConfetti = null;
     this.tickReceivedAtMs = performance.now();
     this.pausedAlpha = 1.0;
     this.invalidateShadowMap();
@@ -967,8 +971,10 @@ export class GameRenderer {
         case 'END': {
           const winner = ev.a;
           if (winner >= 0 && curr.players[winner]?.alive) {
-            const wp = curr.players[winner];
-            this.fx.spawnConfetti(wp.x / 1000, wp.y / 1000, this.slots[winner].color, nowSec);
+            this.pendingEndConfetti = {
+              seat: winner,
+              triggerTick: curr.t + WINNER_CELEBRATE_DELAY_TICKS,
+            };
           }
           this.sfx.playVictory();
           break;
@@ -1045,8 +1051,20 @@ export class GameRenderer {
     curr: TickSnapshot,
     cinePose: CinematicCameraPose | null,
     nowSec: number,
+    gt: number,
   ) {
-    if (!this.fx || !curr.over || curr.winner < 0 || !cinePose || cinePose.winnerBlend < 0.2) {
+    if (!this.fx || !curr.over || curr.winner < 0) {
+      return;
+    }
+    if (this.pendingEndConfetti && gt >= this.pendingEndConfetti.triggerTick) {
+      const seat = this.pendingEndConfetti.seat;
+      this.pendingEndConfetti = null;
+      const wp = curr.players[seat];
+      if (wp && wp.alive) {
+        this.fx.spawnConfetti(wp.x / 1000, wp.y / 1000, this.slots[seat].color, nowSec);
+      }
+    }
+    if (!cinePose || cinePose.winnerBlend < 0.2 || gt < curr.t + WINNER_CELEBRATE_DELAY_TICKS) {
       return;
     }
     const wp = curr.players[curr.winner];
@@ -1329,6 +1347,7 @@ export class GameRenderer {
           currD,
           alpha,
           gt,
+          this.currState.t,
           this.currState.winner === k,
           this.currState.over,
           hiddenFromHuman,
@@ -1367,7 +1386,7 @@ export class GameRenderer {
 
       // Periodic festive confetti ribbons around winner during winner close-up
       if (!this.playbackPaused) {
-        this.maybeEmitWinnerConfetti(this.currState, cinePose, this.elapsedSec);
+        this.maybeEmitWinnerConfetti(this.currState, cinePose, this.elapsedSec, gt);
       }
 
       // Update pooled FX + human aim reticle + grass stealth ring
@@ -1560,6 +1579,7 @@ export class GameRenderer {
         currD,
         alpha,
         gt,
+        curr.t,
         curr.winner === k,
         curr.over,
         false,
@@ -1591,7 +1611,7 @@ export class GameRenderer {
       }
     }
 
-    this.maybeEmitWinnerConfetti(curr, cinePose, elapsedSec);
+    this.maybeEmitWinnerConfetti(curr, cinePose, elapsedSec, gt);
 
     if (this.fx) {
       this.fx.update(elapsedSec, prev, curr, alpha, -1, 0, 0, false);
@@ -1647,6 +1667,7 @@ export class GameRenderer {
     this.overElapsedRealSec = 0;
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
+    this.pendingEndConfetti = null;
     this.cinematicDirector = null;
     this.wasOnWarnTile = false;
     this.nextCrumbleAtMs = 0;

@@ -11,6 +11,8 @@ import {
   VoxelModelData,
 } from './voxelBuilder';
 
+export const WINNER_CELEBRATE_DELAY_TICKS = 4.0; // Wait 4 logic frames after last enemy dies before celebrating
+
 function clamp(x: number, a = 0, b = 1): number {
   return x < a ? a : x > b ? b : x;
 }
@@ -382,6 +384,7 @@ export class CharacterRig {
     currD: DartSnapshot,
     alpha: number,
     gt: number,
+    currTick: number,
     isWinner: boolean,
     matchOver: boolean,
     hiddenFromHuman: boolean,
@@ -453,19 +456,25 @@ export class CharacterRig {
     const interpDeg = faceDeg0 + dDeg * alpha;
     let targetYaw = Math.PI * 0.5 - (interpDeg * Math.PI) / 180;
 
-    if (matchOver && isWinner) {
+    // Wait 4 logic frames after the last enemy dies before turning and celebrating;
+    // during those 4 frames, maintain current action animation or stand still cleanly.
+    const celebrateStartTick = currTick + WINNER_CELEBRATE_DELAY_TICKS;
+    const celebrateNow = matchOver && isWinner && gt >= celebrateStartTick;
+
+    if (celebrateNow) {
       targetYaw = winnerFaceYaw ?? 0; // Turn toward camera to celebrate!
     }
 
     let dYaw = ((targetYaw - this.smoothedYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
     this.smoothedYaw += dYaw * Math.min(1, frameDt * 24);
 
-    // Speed & running hop factor
+    // Speed & running hop factor (after matchOver, settle running stride smoothly to standstill)
     const speedMps = Math.hypot(currP.vx, currP.vy) / 1000 * 20; // m/s (full run = 5 m/s)
-    const rf =
+    const rawRf =
       currP.st === PState.FREE || currP.st === PState.THROW || currP.st === PState.THROWN
         ? clamp(speedMps / 5.0, 0, 1.15)
         : 0;
+    const rf = matchOver ? rawRf * clamp(1 - Math.max(0, gt - currTick) / 1.5) : rawRf;
     const ph = (this.walkDist / 0.72) * Math.PI;
     const sinP = Math.sin(ph);
     const cosP = Math.cos(ph);
@@ -523,7 +532,7 @@ export class CharacterRig {
       posY += 0.04 * bump(r * 2);
     }
 
-    if (currP.st === PState.SLASH && gt - this.lastSlashTick >= 5.0) {
+    if (currP.st === PState.SLASH && !matchOver && gt - this.lastSlashTick >= 5.0) {
       lean = -0.12;
       twist = 1.05;
       sy = 0.9;
@@ -531,7 +540,7 @@ export class CharacterRig {
       armAF = -0.2;
       armASide = 0.4;
       armAU = 0.54;
-    } else if (currP.st === PState.SLASHED || gt - this.lastSlashTick < 5.0) {
+    } else if ((!matchOver && currP.st === PState.SLASHED) || (this.lastSlashTick > -900 && gt >= this.lastSlashTick && gt - this.lastSlashTick < 5.0)) {
       const r = clamp((gt - this.lastSlashTick) / 5.0);
       const sw = eout(clamp((gt - this.lastSlashTick) / 1.8));
       const w = 1 - ease(Math.max(0, r - 0.35) / 0.65);
@@ -622,19 +631,35 @@ export class CharacterRig {
       lean += 0.1 * this.stealthBlend;
     }
 
-    // Victory celebration bounce!
-    if (matchOver && isWinner) {
-      const jp = ((gt * 0.14) % 1 + 1) % 1;
+    // Victory celebration bounce (starts cleanly 4 logic frames after final kill)!
+    if (celebrateNow) {
+      const celDt = Math.max(0, gt - celebrateStartTick);
+      const celBlend = ease(clamp(celDt / 1.6));
+      const jp = ((celDt * 0.14) % 1 + 1) % 1;
       const jz = Math.sin(Math.PI * jp);
       posY = 0.36 * jz;
-      sy = 1 + 0.1 * jz;
+      lean = lean * (1 - celBlend);
+      roll = roll * (1 - celBlend);
+      twist = twist * (1 - celBlend);
       sx = 1 - 0.05 * jz;
-      armAU = 0.88;
-      armBU = 0.88;
-      armAF = 0.04;
-      armBF = 0.04;
-      headPitch = -0.18;
-      headRoll = 0.09 * Math.sin(gt * 0.65);
+      sy = 1 + 0.1 * jz;
+      sz = 1;
+      armASide = armASide * (1 - celBlend) + 0.25 * celBlend;
+      armBSide = armBSide * (1 - celBlend) - 0.25 * celBlend;
+      armAU = armAU * (1 - celBlend) + 0.88 * celBlend;
+      armBU = armBU * (1 - celBlend) + 0.88 * celBlend;
+      armAF = armAF * (1 - celBlend) + 0.04 * celBlend;
+      armBF = armBF * (1 - celBlend) + 0.04 * celBlend;
+      footAPitch = footAPitch * (1 - celBlend);
+      footBPitch = footBPitch * (1 - celBlend);
+      footALift = footALift * (1 - celBlend);
+      footBLift = footBLift * (1 - celBlend);
+      headPitch = headPitch * (1 - celBlend) - 0.18 * celBlend;
+      headYaw = headYaw * (1 - celBlend);
+      headRoll = 0.09 * Math.sin(celDt * 0.65) * celBlend;
+      hairBack = 0.03 * breath;
+      hairSide = 0;
+      flash = 0;
       faceMode = 'happy';
     }
 

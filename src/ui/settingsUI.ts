@@ -1,6 +1,7 @@
 import {
   ACTION_META,
   ActionBindKey,
+  encodeKeyEventCombo,
   EXPORT_BITRATE_MAX,
   EXPORT_BITRATE_MIN,
   EXPORT_BITRATE_TICKS,
@@ -14,6 +15,7 @@ import {
   getSlashJudgmentDesc,
   GRAPHICS_QUALITY_OPTIONS,
   GraphicsQualityOption,
+  isModifierKeyCode,
   SettingsStore,
   SLASH_JUDGMENT_OPTIONS,
   SlashJudgmentOption,
@@ -37,6 +39,7 @@ export class SettingsModal {
   private readonly confirmOkBtn: HTMLButtonElement;
   private openState = false;
   private capturing: CaptureTarget | null = null;
+  private pendingModifierCode: string | null = null;
   private confirmKind: SettingsConfirmKind | null = null;
   private noticeText: string | null = null;
   private noticeTimer: number | null = null;
@@ -49,6 +52,7 @@ export class SettingsModal {
   private suppressClickUntil = 0;
 
   private readonly handleCaptureKeyDown: (e: KeyboardEvent) => void;
+  private readonly handleCaptureKeyUp: (e: KeyboardEvent) => void;
   private readonly handleCaptureMouseDown: (e: MouseEvent) => void;
   private readonly handleSuppressClick: (e: MouseEvent) => void;
 
@@ -144,6 +148,25 @@ export class SettingsModal {
           this.stopCapture();
           return;
         }
+        const meta = ACTION_META.find((m) => m.key === this.capturing?.action);
+        if (meta?.allowCombo) {
+          if (isModifierKeyCode(e.code)) {
+            this.pendingModifierCode = e.code;
+            const mods: string[] = [];
+            if (e.ctrlKey || e.code === 'ControlLeft' || e.code === 'ControlRight') mods.push('Ctrl');
+            if (e.altKey || e.code === 'AltLeft' || e.code === 'AltRight') mods.push('Alt');
+            if (e.shiftKey || e.code === 'ShiftLeft' || e.code === 'ShiftRight') mods.push('Shift');
+            if (e.metaKey || e.code === 'MetaLeft' || e.code === 'MetaRight') mods.push('Meta');
+            const capBtn = this.body.querySelector<HTMLButtonElement>('.kb-slot-btn.capturing');
+            if (capBtn && mods.length > 0) {
+              capBtn.textContent = `${mods.join(' + ')} + ...`;
+            }
+            return;
+          }
+          this.pendingModifierCode = null;
+          this.applyCapturedCode(encodeKeyEventCombo(e));
+          return;
+        }
         this.applyCapturedCode(e.code);
         return;
       }
@@ -151,6 +174,17 @@ export class SettingsModal {
         e.preventDefault();
         e.stopPropagation();
         this.close();
+      }
+    };
+
+    this.handleCaptureKeyUp = (e: KeyboardEvent) => {
+      if (!this.openState || !this.capturing || !this.pendingModifierCode) return;
+      if (e.code === this.pendingModifierCode) {
+        const modCode = this.pendingModifierCode;
+        this.pendingModifierCode = null;
+        e.preventDefault();
+        e.stopPropagation();
+        this.applyCapturedCode(modCode);
       }
     };
 
@@ -180,6 +214,7 @@ export class SettingsModal {
     };
 
     window.addEventListener('keydown', this.handleCaptureKeyDown, { capture: true });
+    window.addEventListener('keyup', this.handleCaptureKeyUp, { capture: true });
     window.addEventListener('mousedown', this.handleCaptureMouseDown, { capture: true });
     window.addEventListener('click', this.handleSuppressClick, { capture: true });
 
@@ -198,6 +233,7 @@ export class SettingsModal {
     if (this.openState) return;
     this.openState = true;
     this.capturing = null;
+    this.pendingModifierCode = null;
     this.noticeText = null;
     this.dangerNoticeText = null;
     this.closeConfirmDialog();
@@ -211,6 +247,7 @@ export class SettingsModal {
     if (!this.openState) return;
     this.openState = false;
     this.capturing = null;
+    this.pendingModifierCode = null;
     this.closeConfirmDialog();
     this.backdrop.classList.add('hidden');
     this.onOpenChange?.(false);
@@ -286,6 +323,7 @@ export class SettingsModal {
 
   private stopCapture() {
     this.capturing = null;
+    this.pendingModifierCode = null;
     if (this.openState) this.render();
   }
 
@@ -293,6 +331,7 @@ export class SettingsModal {
     if (!this.capturing) return;
     const { action, slotIndex } = this.capturing;
     this.capturing = null;
+    this.pendingModifierCode = null;
     const res = this.store.setBinding(action, slotIndex, code);
     if (res.clearedFrom) {
       const oldMeta = ACTION_META.find((m) => m.key === res.clearedFrom);
@@ -418,11 +457,12 @@ export class SettingsModal {
     const renderSlotCell = (action: ActionBindKey, slotIndex: 0 | 1) => {
       const code = s.keybindings[action][slotIndex];
       const isCap = this.capturing?.action === action && this.capturing?.slotIndex === slotIndex;
+      const meta = ACTION_META.find((m) => m.key === action);
       if (isCap) {
         return `
           <div class="kb-slot-wrap is-capturing">
             <button type="button" class="kb-slot-btn capturing" data-bind-action="${action}" data-bind-slot="${slotIndex}">
-              请按按键或鼠标...
+              ${meta?.allowCombo ? '请按按键或组合键...' : '请按按键或鼠标...'}
             </button>
             <button type="button" class="kb-cancel-btn" data-cancel-capture="1" title="取消录入 (ESC)">取消</button>
           </div>`;
@@ -993,6 +1033,7 @@ export class SettingsModal {
       btn.addEventListener('click', () => {
         const action = btn.dataset.bindAction as ActionBindKey;
         const slotIndex = Number(btn.dataset.bindSlot) as 0 | 1;
+        this.pendingModifierCode = null;
         this.capturing = { action, slotIndex };
         this.render();
       });

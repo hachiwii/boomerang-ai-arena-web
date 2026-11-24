@@ -23,6 +23,7 @@ const NON_FINAL_KILL_TIME_SCALE = 0.5;
 const MERGE_GAP_SIM_SEC = 0.45;
 const CAM_ENTER_REAL_SEC = 0.58; // Smooth ease from overview to eye-level kill shot
 const CAM_EXIT_REAL_SEC = 0.68; // Smooth ease back to overview for non-final kills
+const WINNER_CELEBRATE_DELAY_SIM = 4 * TICK_SEC; // 0.20s (4 logic frames after final kill before turning/celebrating)
 const WINNER_GLIDE_REAL_SEC = 0.78; // Smooth glide from kill shot to winner front close-up
 const WINNER_HOLD_REAL_SEC = 1.65; // Hold on smiling front-facing winner
 
@@ -220,7 +221,11 @@ export class CinematicDirector {
     const decisive = this.kills.find((k) => k.isDecisive);
     if (decisive && this.winnerShot) {
       const postSlowReal = Math.max(0, decisive.slowEndSim - this.matchEndSimSec) / decisive.timeScale;
-      return postSlowReal + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
+      const extraWaitReal = Math.max(
+        0,
+        this.winnerShot.glideStartSim - Math.max(decisive.slowEndSim, this.matchEndSimSec),
+      );
+      return postSlowReal + extraWaitReal + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
     }
     if (this.winnerShot) {
       const preDelay = Math.max(0, this.winnerShot.glideStartSim - this.matchEndSimSec);
@@ -794,9 +799,11 @@ export class CinematicDirector {
     const bestOz = Math.cos(bestAz) * horizDist;
     const stillOccluded = this.measureWallOcclusion(wx, wz, wx + bestOx, wz + bestOz, finalTick) > 0;
 
-    // Glide starts right when the decisive kill's slow-mo finishes (or after brief beat in live human matches)
+    // Glide starts only after BOTH decisive slow-mo AND the 4-frame post-kill beat finish!
     const decisive = this.kills.find((k) => k.isDecisive);
-    const glideStartSim = decisive ? decisive.slowEndSim : this.matchEndSimSec + glideDelaySim;
+    const minCelebrateSim = this.matchEndSimSec + WINNER_CELEBRATE_DELAY_SIM;
+    const baseGlideStartSim = decisive ? decisive.slowEndSim : this.matchEndSimSec + glideDelaySim;
+    const glideStartSim = Math.max(baseGlideStartSim, minCelebrateSim);
     const glideEndSim = glideStartSim + WINNER_GLIDE_REAL_SEC;
 
     return {

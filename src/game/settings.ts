@@ -13,7 +13,8 @@ export type ActionBindKey =
   | 'melee'
   | 'dash'
   | 'dashToMouse'
-  | 'quickRestart';
+  | 'quickRestart'
+  | 'toggleHideUi';
 
 export type KeySlotPair = [string | null, string | null];
 export type KeyBindings = Record<ActionBindKey, KeySlotPair>;
@@ -60,6 +61,7 @@ export interface ActionMeta {
   key: ActionBindKey;
   label: string;
   group: '移动' | '战斗' | '快捷';
+  allowCombo?: boolean;
 }
 
 export const ACTION_META: ActionMeta[] = [
@@ -72,6 +74,7 @@ export const ACTION_META: ActionMeta[] = [
   { key: 'dash', label: '冲刺', group: '战斗' },
   { key: 'dashToMouse', label: '向鼠标方向冲刺', group: '战斗' },
   { key: 'quickRestart', label: '重开 / 重新匹配', group: '快捷' },
+  { key: 'toggleHideUi', label: '隐藏 / 显示界面', group: '快捷', allowCombo: true },
 ];
 
 export const GRAPHICS_QUALITY_OPTIONS: { value: GraphicsQualityOption; label: string }[] = [
@@ -160,6 +163,7 @@ export function cloneDefaultKeybindings(): KeyBindings {
     dash: ['ShiftLeft', 'ShiftRight'],
     dashToMouse: [null, null],
     quickRestart: ['KeyR', null],
+    toggleHideUi: ['Shift+KeyF', null],
   };
 }
 
@@ -194,11 +198,51 @@ const VALID_SLASH_JUDGMENT = new Set<SlashJudgmentOption>(['normal', 'strict', '
 const VALID_EXPORT_RES = new Set<ExportResolutionOption>(['480p', '720p', '1080p', '2k', '4k']);
 const STORAGE_KEY = 'boomerang_arena_settings_v1';
 
+const MODIFIER_KEY_CODES = new Set<string>([
+  'ShiftLeft',
+  'ShiftRight',
+  'ControlLeft',
+  'ControlRight',
+  'AltLeft',
+  'AltRight',
+  'MetaLeft',
+  'MetaRight',
+]);
+
+export function isModifierKeyCode(code: string): boolean {
+  return MODIFIER_KEY_CODES.has(code);
+}
+
 /**
- * Format an input code (KeyboardEvent.code or "Mouse0".."Mouse4") into a crisp Chinese/keycap label.
+ * Encodes a KeyboardEvent into a canonical binding string, supporting modifier
+ * combinations such as "Shift+KeyF", "Ctrl+Shift+KeyH", or plain key codes.
+ */
+export function encodeKeyEventCombo(e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>): string {
+  if (isModifierKeyCode(e.code)) return e.code;
+  const parts: string[] = [];
+  if (e.ctrlKey) parts.push('Ctrl');
+  if (e.altKey) parts.push('Alt');
+  if (e.shiftKey) parts.push('Shift');
+  if (e.metaKey) parts.push('Meta');
+  parts.push(e.code);
+  return parts.join('+');
+}
+
+/**
+ * Format an input code (KeyboardEvent.code, modifier combo like "Shift+KeyF",
+ * or "Mouse0".."Mouse4") into a crisp Chinese/keycap label.
  */
 export function formatInputCode(code: string | null, compact = false): string {
   if (!code) return '未设置';
+  if (code.includes('+')) {
+    const parts = code.split('+').filter(Boolean);
+    if (parts.length >= 2) {
+      const base = parts[parts.length - 1];
+      const mods = parts.slice(0, -1).map((m) => (m === 'Meta' ? 'Meta' : m));
+      const sep = compact ? '+' : ' + ';
+      return [...mods, formatInputCode(base, true)].join(sep);
+    }
+  }
   if (code === 'Mouse0') return compact ? '左键' : '鼠标左键';
   if (code === 'Mouse1') return compact ? '中键' : '鼠标中键';
   if (code === 'Mouse2') return compact ? '右键' : '鼠标右键';
@@ -274,6 +318,36 @@ export function formatMoveSummary(kb: KeyBindings): string {
 export function isBoundToAction(kb: KeyBindings, action: ActionBindKey, code: string): boolean {
   const pair = kb[action];
   return pair[0] === code || pair[1] === code;
+}
+
+export function matchesKeyEventBinding(
+  binding: string | null,
+  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>,
+): boolean {
+  if (!binding || binding.startsWith('Mouse')) return false;
+  if (binding.includes('+')) {
+    const parts = binding.split('+').filter(Boolean);
+    const baseCode = parts[parts.length - 1];
+    if (e.code !== baseCode) return false;
+    const mods = new Set(parts.slice(0, -1));
+    return (
+      e.ctrlKey === mods.has('Ctrl') &&
+      e.altKey === mods.has('Alt') &&
+      e.shiftKey === mods.has('Shift') &&
+      e.metaKey === mods.has('Meta')
+    );
+  }
+  if (isModifierKeyCode(binding)) return e.code === binding;
+  return e.code === binding && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey;
+}
+
+export function matchesActionKeyEvent(
+  kb: KeyBindings,
+  action: ActionBindKey,
+  e: Pick<KeyboardEvent, 'code' | 'ctrlKey' | 'altKey' | 'shiftKey' | 'metaKey'>,
+): boolean {
+  const pair = kb[action];
+  return matchesKeyEventBinding(pair[0], e) || matchesKeyEventBinding(pair[1], e);
 }
 
 type SettingsListener = (settings: GameSettings) => void;
