@@ -142,6 +142,25 @@ function avatarForBotEntry(entry: RosterEntry): string {
   return makeHoodieAvatarDataUrl('#4AB87A', '#4D423A');
 }
 
+function renderBgmQuickIconSvg(enabled: boolean): string {
+  if (enabled) {
+    return `
+      <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M9 18V5l12-2v13"/>
+        <circle cx="6" cy="18" r="3"/>
+        <circle cx="18" cy="16" r="3"/>
+      </svg>`;
+  }
+  return `
+    <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+      <path d="M9 18V9.5"/>
+      <path d="M9 5l12-2v11.5"/>
+      <circle cx="6" cy="18" r="3"/>
+      <circle cx="18" cy="16" r="3"/>
+      <line x1="3" y1="3" x2="21" y2="21"/>
+    </svg>`;
+}
+
 export class LobbyUI {
   private readonly container: HTMLDivElement;
   private readonly dropdownMenu: HTMLDivElement;
@@ -210,6 +229,7 @@ export class LobbyUI {
     this.settings.onChange(() => {
       if (!this.container.classList.contains('hidden')) {
         this.syncKeyHintsInPlace();
+        this.syncBgmQuickBtnInPlace();
       }
     });
 
@@ -591,6 +611,18 @@ export class LobbyUI {
     if (rstEl) {
       rstEl.textContent = formatPrimaryBind(kb.quickRestart, 'R');
     }
+  }
+
+  private syncBgmQuickBtnInPlace() {
+    const btn = this.container.querySelector<HTMLButtonElement>('#btn-toggle-bgm');
+    if (!btn) return;
+    const bgmOn = this.settings.get().bgmEnabled;
+    btn.classList.toggle('is-on', bgmOn);
+    btn.classList.toggle('is-off', !bgmOn);
+    btn.setAttribute('aria-checked', String(bgmOn));
+    btn.title = bgmOn ? '背景音乐：已开启（点击关闭）' : '背景音乐：已关闭（点击开启）';
+    btn.setAttribute('aria-label', bgmOn ? '关闭背景音乐' : '开启背景音乐');
+    btn.innerHTML = renderBgmQuickIconSvg(bgmOn);
   }
 
   private startCustomMatch() {
@@ -1524,6 +1556,8 @@ export class LobbyUI {
           ? this.renderCricketBody()
           : this.renderCustomBody();
 
+    const bgmOn = this.settings.get().bgmEnabled;
+
     this.container.innerHTML = `
       <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''} ${this.activeTab === 'cricket' ? 'lobby-card-cricket' : ''}">
         <header class="lobby-header">
@@ -1536,21 +1570,34 @@ export class LobbyUI {
               <button class="lobby-tab ${this.activeTab === 'cricket' ? 'active' : ''}" id="tab-cricket">🦗 斗蛐蛐</button>
               <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">🎛️ 自定义对局</button>
             </div>
-            <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）">📜 对局历史</button>
-            <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、帧率上限与键位设置">⚙️ 设置</button>
-            <a
-              class="lobby-github-btn"
-              id="btn-github-link"
-              href="https://github.com/hachiwii/boomerang-ai-arena-web"
-              target="_blank"
-              rel="noopener noreferrer"
-              title="GitHub 开源仓库"
-              aria-label="GitHub 开源仓库"
-            >
-              <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
-                <path d="M12 0.3C5.37 0.3 0 5.67 0 12.3c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58 0-.29-.01-1.05-.02-2.06-3.34.73-4.04-1.61-4.04-1.61-.55-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22 0 1.6-.01 2.9-.01 3.29 0 .32.22.7.82.58C20.57 22.1 24 17.6 24 12.3 24 5.67 18.63.3 12 .3Z"/>
-              </svg>
-            </a>
+            <div class="lobby-nav-actions">
+              <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）">📜 对局历史</button>
+              <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置">⚙️ 设置</button>
+              <button
+                type="button"
+                class="lobby-bgm-btn ${bgmOn ? 'is-on' : 'is-off'}"
+                id="btn-toggle-bgm"
+                role="switch"
+                aria-checked="${bgmOn}"
+                title="${bgmOn ? '背景音乐：已开启（点击关闭）' : '背景音乐：已关闭（点击开启）'}"
+                aria-label="${bgmOn ? '关闭背景音乐' : '开启背景音乐'}"
+              >
+                ${renderBgmQuickIconSvg(bgmOn)}
+              </button>
+              <a
+                class="lobby-github-btn"
+                id="btn-github-link"
+                href="https://github.com/hachiwii/boomerang-ai-arena-web"
+                target="_blank"
+                rel="noopener noreferrer"
+                title="GitHub 开源仓库"
+                aria-label="GitHub 开源仓库"
+              >
+                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+                  <path d="M12 0.3C5.37 0.3 0 5.67 0 12.3c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58 0-.29-.01-1.05-.02-2.06-3.34.73-4.04-1.61-4.04-1.61-.55-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22 0 1.6-.01 2.9-.01 3.29 0 .32.22.7.82.58C20.57 22.1 24 17.6 24 12.3 24 5.67 18.63.3 12 .3Z"/>
+                </svg>
+              </a>
+            </div>
           </div>
         </header>
 
@@ -1572,6 +1619,9 @@ export class LobbyUI {
     this.container.querySelector('#btn-open-settings')?.addEventListener('click', () => {
       this.closeDropdown();
       this.callbacks.onOpenSettings();
+    });
+    this.container.querySelector('#btn-toggle-bgm')?.addEventListener('click', () => {
+      this.settings.setBgmEnabled(!this.settings.get().bgmEnabled);
     });
     this.container.querySelector('#tab-ranked')?.addEventListener('click', () => {
       if (this.activeTab === 'ranked' && !this.showLeaderboard) return;

@@ -20,6 +20,8 @@ export interface ReplayCallbacks {
   onStateChange: (state: ReplayPlaybackState) => void;
   onTimelineExtended?: (bundle: MatchReplayBundle, state: ReplayPlaybackState) => void;
   onCountdown?: (stage: CountdownStage) => void;
+  onSeek?: (bundle: MatchReplayBundle, tickIndex: number) => void;
+  onRestart?: (bundle: MatchReplayBundle) => void;
 }
 
 /**
@@ -297,7 +299,7 @@ export class ReplayController {
     this.callbacks.onStateChange(this.getState());
   }
 
-  public seekTo(index: number) {
+  public seekTo(index: number, fromRestart = false) {
     if (!this.active || !this.bundle) return;
     this.cancelCountdown();
     const ticks = this.bundle.replay.ticks;
@@ -325,6 +327,11 @@ export class ReplayController {
     }
 
     const st = this.getState();
+    if (fromRestart) {
+      this.callbacks.onRestart?.(this.bundle);
+    } else {
+      this.callbacks.onSeek?.(this.bundle, clamped);
+    }
     this.callbacks.onTick(ticks[clamped], st);
     this.callbacks.onStateChange(st);
   }
@@ -336,7 +343,7 @@ export class ReplayController {
     this.finished = this.simComplete && this.bundle.replay.ticks.length <= 1;
     this.waitingForSim = !this.simComplete && this.bundle.replay.ticks.length <= 1;
     this.renderer.setPlaybackPaused(false);
-    this.seekTo(0);
+    this.seekTo(0, true);
     if (!this.finished && !this.waitingForSim) {
       this.clearTimer();
       this.nextTickDeadline = performance.now() + 260;

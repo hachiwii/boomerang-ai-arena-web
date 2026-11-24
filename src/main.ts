@@ -1,4 +1,5 @@
 import './style.css';
+import { BgmManager } from './audio/bgm';
 import { SoundFX } from './audio/sfx';
 import { CricketStore } from './game/cricketStore';
 import { HumanInputController } from './game/humanInput';
@@ -75,6 +76,15 @@ async function bootstrap() {
   const settings = new SettingsStore();
   const sfx = new SoundFX();
   sfx.applySettings(settings.get().soundEnabled, settings.get().volume);
+  const bgm = new BgmManager();
+  bgm.applySettings(
+    settings.get().bgmEnabled,
+    settings.get().bgmVolume,
+    settings.get().bossMusicEnabled,
+  );
+  bgm.enterLobby();
+  (window as unknown as { __getBgmState?: () => ReturnType<BgmManager['getDebugState']> }).__getBgmState = () =>
+    bgm.getDebugState();
 
   const input = new HumanInputController(canvas, settings);
   const renderer = new GameRenderer(canvas, sfx, undefined, undefined, settings.get().graphicsQuality);
@@ -161,6 +171,7 @@ async function bootstrap() {
     activeMapData = null;
     replayMapData = null;
     lastFinishedBundle = null;
+    bgm.enterLobby();
     lobbyUI.show(opts?.openLeaderboard ? 'ranked' : undefined, opts);
     const m = lobbyUI.getSelectedMap();
     void renderer.loadPreviewMap(parseQuickPreviewMap(m), m.theme);
@@ -184,6 +195,7 @@ async function bootstrap() {
     activeMapData = null;
     replayMapData = null;
     replayIsLiveAi = true;
+    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, seed: cfg.seed, slots: cfg.slots });
 
     let liveBundle: MatchReplayBundle | null = null;
     let liveMapData: EngineMapData | null = null;
@@ -272,6 +284,11 @@ async function bootstrap() {
     activeMapData = null;
     replayMapData = bundle.replay.mapData;
     lastFinishedBundle = null;
+    bgm.prepareMatchLaunch({
+      matchMode: bundle.summary.matchMode,
+      seed: bundle.summary.seed,
+      slots: bundle.summary.slots,
+    });
     hudUI.cancelResultOverlay(false, false);
     historyModal.close();
     lobbyUI.hide();
@@ -401,6 +418,7 @@ async function bootstrap() {
     }
 
     activeConfig = cfg;
+    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, seed: cfg.seed, slots: cfg.slots });
     renderer.resetCameraToOverview();
     void controller
       .start(cfg, { cinematic: getCinematicOptions(settings.get()) })
@@ -475,6 +493,7 @@ async function bootstrap() {
 
   settings.onChange((s) => {
     sfx.applySettings(s.soundEnabled, s.volume);
+    bgm.applySettings(s.bgmEnabled, s.bgmVolume, s.bossMusicEnabled);
     controller.setCliffGuard(s.cliffGuard);
     controller.setDashGuard(s.dashGuard);
     controller.setHumanSlashTicks(getSlashJudgmentTicks(s.slashJudgment));
@@ -588,6 +607,14 @@ async function bootstrap() {
 
   replayController = new ReplayController(renderer, {
     onLoaded: (bundle, state) => {
+      bgm.beginMatch(
+        {
+          matchMode: bundle.summary.matchMode,
+          seed: bundle.summary.seed,
+          slots: bundle.summary.slots,
+        },
+        bundle.replay.ticks[0],
+      );
       hudUI.showReplay(bundle, state, { liveAiSpectator: replayIsLiveAi });
       hudUI.updateTick(
         bundle.replay.ticks[0],
@@ -596,8 +623,15 @@ async function bootstrap() {
       );
     },
     onTick: (snapshot, state) => {
+      bgm.updateMatchTick(snapshot);
       hudUI.updateTick(snapshot, replayMapData?.colStart, replayMapData?.colEvery);
       hudUI.updateReplayControls(state);
+    },
+    onSeek: (bundle, tickIndex) => {
+      bgm.syncReplaySeek(bundle.replay.ticks, tickIndex);
+    },
+    onRestart: (bundle) => {
+      bgm.restartReplay(bundle.replay.ticks);
     },
     onStateChange: (state) => {
       hudUI.updateReplayControls(state);
@@ -651,14 +685,17 @@ async function bootstrap() {
       renderer.setCinematicDirector(director ?? null);
       mode = 'playing';
       lobbyUI.hide();
+      bgm.beginMatch({ matchMode: cfg.matchMode, seed: cfg.seed, slots: cfg.slots }, initialState);
       hudUI.showMatch(cfg, hSeat);
       hudUI.updateTick(initialState, mapData.colStart, mapData.colEvery);
     },
     onTick: (prev, next, tickDurationMs) => {
       renderer.pushTick(prev, next, tickDurationMs);
+      bgm.updateMatchTick(next);
       hudUI.updateTick(next, activeMapData?.colStart, activeMapData?.colEvery);
     },
     onMatchOver: (finalState, director) => {
+      bgm.updateMatchTick(finalState);
       hudUI.updateTick(finalState, activeMapData?.colStart, activeMapData?.colEvery);
       let eloResult: EloUpdateResult | null = null;
       if (activeConfig && !matchRecorded) {
@@ -744,6 +781,7 @@ async function bootstrap() {
       renderer.resetCameraToOverview();
       historyModal.close();
       activeConfig = config;
+      bgm.prepareMatchLaunch({ matchMode: config.matchMode, seed: config.seed, slots: config.slots });
       lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
       void controller.start(config, { cinematic: getCinematicOptions(settings.get()) }).catch((err) => {
         console.error(err);

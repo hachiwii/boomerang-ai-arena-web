@@ -179,6 +179,12 @@ export class SettingsModal {
     window.addEventListener('keydown', this.handleCaptureKeyDown, { capture: true });
     window.addEventListener('mousedown', this.handleCaptureMouseDown, { capture: true });
     window.addEventListener('click', this.handleSuppressClick, { capture: true });
+
+    this.store.onChange(() => {
+      if (this.openState && !this.capturing) {
+        this.syncControlsInPlace();
+      }
+    });
   }
 
   public isOpen(): boolean {
@@ -311,8 +317,8 @@ export class SettingsModal {
       }
     };
 
-    setSwitch('#settings-sound-toggle', s.soundEnabled, s.soundEnabled ? '音效开启' : '已静音');
-    const volWrap = this.body.querySelector<HTMLElement>('.settings-vol-wrap');
+    setSwitch('#settings-sound-toggle', s.soundEnabled, '游戏音效');
+    const volWrap = this.body.querySelector<HTMLElement>('#settings-vol-wrap');
     volWrap?.classList.toggle('is-dim', !s.soundEnabled);
     const volSlider = this.body.querySelector<HTMLInputElement>('#settings-vol-slider');
     if (volSlider) {
@@ -322,6 +328,22 @@ export class SettingsModal {
     }
     const volVal = this.body.querySelector<HTMLElement>('#settings-vol-val');
     if (volVal) volVal.textContent = `${s.volume}%`;
+
+    setSwitch('#settings-bgm-toggle', s.bgmEnabled, '背景音乐');
+    const bgmVolWrap = this.body.querySelector<HTMLElement>('#settings-bgm-vol-wrap');
+    bgmVolWrap?.classList.toggle('is-dim', !s.bgmEnabled);
+    const bgmVolSlider = this.body.querySelector<HTMLInputElement>('#settings-bgm-vol-slider');
+    if (bgmVolSlider) {
+      bgmVolSlider.disabled = !s.bgmEnabled;
+      bgmVolSlider.value = String(s.bgmVolume);
+      bgmVolSlider.style.setProperty('--speed-pct', `${s.bgmVolume}%`);
+    }
+    const bgmVolVal = this.body.querySelector<HTMLElement>('#settings-bgm-vol-val');
+    if (bgmVolVal) bgmVolVal.textContent = `${s.bgmVolume}%`;
+
+    const bossRow = this.body.querySelector<HTMLElement>('#settings-boss-music-row');
+    bossRow?.classList.toggle('is-dim', !s.bgmEnabled);
+    setSwitch('#settings-boss-music-toggle', s.bossMusicEnabled, s.bossMusicEnabled ? '已开启' : '已关闭');
 
     this.body.querySelectorAll<HTMLButtonElement>('[data-graphics-quality]').forEach((btn) => {
       const active = btn.dataset.graphicsQuality === s.graphicsQuality;
@@ -401,32 +423,80 @@ export class SettingsModal {
           <!-- Audio Section -->
           <section class="settings-section">
             <div class="settings-sec-title">🔊 音效</div>
-            <div class="settings-audio-row">
-              <button
-                type="button"
-                class="rand-switch ${s.soundEnabled ? 'is-on' : ''}"
-                id="settings-sound-toggle"
-                role="switch"
-                aria-checked="${s.soundEnabled}"
-              >
-                <span class="rand-track"><span class="rand-thumb"></span></span>
-                <span class="rand-label">${s.soundEnabled ? '音效开启' : '已静音'}</span>
-              </button>
+            <div class="settings-toggle-stack">
+              <div class="settings-audio-row">
+                <button
+                  type="button"
+                  class="rand-switch settings-audio-switch ${s.soundEnabled ? 'is-on' : ''}"
+                  id="settings-sound-toggle"
+                  role="switch"
+                  aria-checked="${s.soundEnabled}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">游戏音效</span>
+                </button>
 
-              <div class="settings-vol-wrap ${s.soundEnabled ? '' : 'is-dim'}">
-                <span class="settings-vol-label">音量</span>
-                <input
-                  type="range"
-                  id="settings-vol-slider"
-                  class="speed-slider settings-vol-slider"
-                  min="0"
-                  max="100"
-                  step="5"
-                  value="${s.volume}"
-                  style="--speed-pct:${s.volume}%"
-                  ${s.soundEnabled ? '' : 'disabled'}
-                />
-                <span class="settings-vol-val" id="settings-vol-val">${s.volume}%</span>
+                <div class="settings-vol-wrap ${s.soundEnabled ? '' : 'is-dim'}" id="settings-vol-wrap">
+                  <span class="settings-vol-label">音量</span>
+                  <input
+                    type="range"
+                    id="settings-vol-slider"
+                    class="speed-slider settings-vol-slider"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value="${s.volume}"
+                    style="--speed-pct:${s.volume}%"
+                    ${s.soundEnabled ? '' : 'disabled'}
+                  />
+                  <span class="settings-vol-val" id="settings-vol-val">${s.volume}%</span>
+                </div>
+              </div>
+
+              <div class="settings-audio-row">
+                <button
+                  type="button"
+                  class="rand-switch settings-audio-switch ${s.bgmEnabled ? 'is-on' : ''}"
+                  id="settings-bgm-toggle"
+                  role="switch"
+                  aria-checked="${s.bgmEnabled}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">背景音乐</span>
+                </button>
+
+                <div class="settings-vol-wrap ${s.bgmEnabled ? '' : 'is-dim'}" id="settings-bgm-vol-wrap">
+                  <span class="settings-vol-label">音量</span>
+                  <input
+                    type="range"
+                    id="settings-bgm-vol-slider"
+                    class="speed-slider settings-vol-slider"
+                    min="0"
+                    max="100"
+                    step="5"
+                    value="${s.bgmVolume}"
+                    style="--speed-pct:${s.bgmVolume}%"
+                    ${s.bgmEnabled ? '' : 'disabled'}
+                  />
+                  <span class="settings-vol-val" id="settings-bgm-vol-val">${s.bgmVolume}%</span>
+                </div>
+              </div>
+
+              <div class="settings-toggle-row ${s.bgmEnabled ? '' : 'is-dim'}" id="settings-boss-music-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">BOSS 战特殊音乐</div>
+                  <div class="settings-toggle-desc">场上仅剩 2 人且恰有一人为 Fable 或 Astra 时切换特殊 BGM</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${s.bossMusicEnabled ? 'is-on' : ''}"
+                  id="settings-boss-music-toggle"
+                  role="switch"
+                  aria-checked="${s.bossMusicEnabled}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${s.bossMusicEnabled ? '已开启' : '已关闭'}</span>
+                </button>
               </div>
             </div>
           </section>
@@ -697,6 +767,26 @@ export class SettingsModal {
       if (this.store.get().soundEnabled && this.store.get().volume > 0) {
         this.onTestSound?.();
       }
+    });
+
+    // BGM toggle & volume slider
+    this.body.querySelector('#settings-bgm-toggle')?.addEventListener('click', () => {
+      this.store.setBgmEnabled(!this.store.get().bgmEnabled);
+      this.syncControlsInPlace();
+    });
+    const bgmVolSlider = this.body.querySelector<HTMLInputElement>('#settings-bgm-vol-slider');
+    const bgmVolVal = this.body.querySelector<HTMLElement>('#settings-bgm-vol-val');
+    bgmVolSlider?.addEventListener('input', () => {
+      const v = Number(bgmVolSlider.value);
+      this.store.setBgmVolume(v);
+      bgmVolSlider.style.setProperty('--speed-pct', `${v}%`);
+      if (bgmVolVal) bgmVolVal.textContent = `${v}%`;
+    });
+
+    // Boss special music toggle
+    this.body.querySelector('#settings-boss-music-toggle')?.addEventListener('click', () => {
+      this.store.setBossMusicEnabled(!this.store.get().bossMusicEnabled);
+      this.syncControlsInPlace();
     });
 
     // Graphics quality selection

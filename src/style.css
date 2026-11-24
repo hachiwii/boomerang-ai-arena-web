@@ -194,11 +194,15 @@ html, body, #app {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 16px;
+  gap: 14px 20px;
   flex-wrap: wrap;
   padding-bottom: 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
   margin-bottom: 18px;
+}
+
+.lobby-title-group {
+  flex-shrink: 0;
 }
 
 .lobby-badge {
@@ -3008,9 +3012,20 @@ kbd {
 
 /* ---------- Lobby Settings Button & Settings Modal ---------- */
 .lobby-nav-row {
+  flex: 1 1 auto;
   flex-direction: row;
   align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+}
+
+.lobby-nav-actions {
+  display: inline-flex;
+  align-items: center;
   gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
 }
 
 .lobby-settings-btn {
@@ -3030,6 +3045,40 @@ kbd {
   background: rgba(61, 126, 255, 0.22);
   border-color: rgba(114, 170, 255, 0.5);
   color: #fff;
+}
+
+.lobby-bgm-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.065);
+  color: #dce7ff;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+
+.lobby-bgm-btn.is-on {
+  background: rgba(61, 126, 255, 0.18);
+  border-color: rgba(114, 170, 255, 0.44);
+  color: #e2eeff;
+}
+
+.lobby-bgm-btn.is-off {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(255, 255, 255, 0.11);
+  color: rgba(196, 210, 236, 0.46);
+}
+
+.lobby-bgm-btn:hover {
+  background: rgba(61, 126, 255, 0.26);
+  border-color: rgba(114, 170, 255, 0.58);
+  color: #ffffff;
+  transform: translateY(-1px);
 }
 
 .lobby-github-btn {
@@ -3151,6 +3200,15 @@ kbd {
   background: rgba(255, 255, 255, 0.045);
   border: 1px solid rgba(255, 255, 255, 0.09);
   flex-wrap: wrap;
+}
+
+.settings-audio-switch {
+  min-width: 118px;
+}
+
+.settings-toggle-row.is-dim {
+  opacity: 0.56;
+  transition: opacity 0.16s ease;
 }
 
 .settings-toggle-stack {

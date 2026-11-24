@@ -27,6 +27,9 @@ export interface CinematicOptions {
 export interface GameSettings {
   soundEnabled: boolean;
   volume: number; // 0..100
+  bgmEnabled: boolean;
+  bgmVolume: number; // 0..100
+  bossMusicEnabled: boolean;
   graphicsQuality: GraphicsQualityOption; // 'low' = lightweight instanced, 'high' = faithful open-source art
   lockFps: boolean; // true = monitor refresh rate (VSync), false = uncapped
   dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
@@ -141,6 +144,9 @@ export function defaultSettings(): GameSettings {
   return {
     soundEnabled: true,
     volume: 100,
+    bgmEnabled: true,
+    bgmVolume: 70,
+    bossMusicEnabled: true,
     graphicsQuality: 'high',
     lockFps: true,
     dashInputBuffer: true,
@@ -267,6 +273,13 @@ export class SettingsStore {
         typeof parsed.volume === 'number' && Number.isFinite(parsed.volume)
           ? Math.max(0, Math.min(100, Math.round(parsed.volume)))
           : def.volume;
+      const bgmEnabled = typeof parsed.bgmEnabled === 'boolean' ? parsed.bgmEnabled : def.bgmEnabled;
+      const bgmVolume =
+        typeof parsed.bgmVolume === 'number' && Number.isFinite(parsed.bgmVolume)
+          ? Math.max(0, Math.min(100, Math.round(parsed.bgmVolume)))
+          : def.bgmVolume;
+      const bossMusicEnabled =
+        typeof parsed.bossMusicEnabled === 'boolean' ? parsed.bossMusicEnabled : def.bossMusicEnabled;
       const graphicsQuality: GraphicsQualityOption =
         parsed.graphicsQuality !== undefined && VALID_GRAPHICS_QUALITY.has(parsed.graphicsQuality)
           ? parsed.graphicsQuality
@@ -328,6 +341,9 @@ export class SettingsStore {
       return {
         soundEnabled,
         volume,
+        bgmEnabled,
+        bgmVolume,
+        bossMusicEnabled,
         graphicsQuality,
         lockFps,
         dashInputBuffer,
@@ -381,6 +397,25 @@ export class SettingsStore {
     const clamped = Math.max(0, Math.min(100, Math.round(volume)));
     if (this.settings.volume === clamped) return;
     this.settings.volume = clamped;
+    this.emit();
+  }
+
+  public setBgmEnabled(enabled: boolean) {
+    if (this.settings.bgmEnabled === enabled) return;
+    this.settings.bgmEnabled = enabled;
+    this.emit();
+  }
+
+  public setBgmVolume(volume: number) {
+    const clamped = Math.max(0, Math.min(100, Math.round(volume)));
+    if (this.settings.bgmVolume === clamped) return;
+    this.settings.bgmVolume = clamped;
+    this.emit();
+  }
+
+  public setBossMusicEnabled(enabled: boolean) {
+    if (this.settings.bossMusicEnabled === enabled) return;
+    this.settings.bossMusicEnabled = enabled;
     this.emit();
   }
 
