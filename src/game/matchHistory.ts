@@ -40,6 +40,7 @@ export interface MatchHistorySummary {
   mapTitle: string;
   mapTheme: string;
   seed: number;
+  bgmSeed?: number;
   speed: number;
   durationTicks: number;
   tickCount: number;
@@ -107,6 +108,7 @@ export function buildMatchHistoryBundle(
     mapTitle: config.mapMeta.title,
     mapTheme: config.mapMeta.theme,
     seed: config.seed,
+    bgmSeed: config.bgmSeed ?? config.seed,
     speed: config.speed,
     durationTicks: finalState ? finalState.t : Math.max(0, ticks.length - 1),
     tickCount: ticks.length,

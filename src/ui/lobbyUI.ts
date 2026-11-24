@@ -1,3 +1,4 @@
+import { generateBgmSeed } from '../audio/bgm';
 import { CricketFormat, CricketStore, CricketTier } from '../game/cricketStore';
 import { LeaderboardStore } from '../game/leaderboard';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore } from '../game/settings';
@@ -501,6 +502,7 @@ export class LobbyUI {
       mapMeta,
       slots,
       seed,
+      bgmSeed: generateBgmSeed(),
       speed: 1.0, // Fixed standard speed in Ranked
       cliffGuard: s.cliffGuard,
       dashGuard: s.dashGuard,
@@ -539,6 +541,7 @@ export class LobbyUI {
       mapMeta,
       slots,
       seed: seed || 1,
+      bgmSeed: generateBgmSeed(),
       speed: 1.0,
       cliffGuard: false,
       dashGuard: false,
@@ -644,6 +647,7 @@ export class LobbyUI {
       mapMeta,
       slots,
       seed,
+      bgmSeed: generateBgmSeed(),
       speed: this.gameSpeed,
       cliffGuard: s.cliffGuard,
       dashGuard: s.dashGuard,

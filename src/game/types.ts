@@ -100,6 +100,7 @@ export interface MatchConfig {
   mapMeta: MapMeta;
   slots: SlotConfig[];
   seed: number;
+  bgmSeed?: number; // Independent RNG seed for special BGM selection (re-rolled on Custom restart)
   speed: number; // 0.1 .. 2.0 (fixed 1.0 in ranked)
   cliffGuard: boolean; // Prevent human from walking off cliffs
   dashGuard?: boolean; // Dash-tail 25% cliff save in WASM engine

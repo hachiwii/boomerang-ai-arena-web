@@ -1,5 +1,5 @@
 import './style.css';
-import { BgmManager } from './audio/bgm';
+import { BgmManager, generateBgmSeed } from './audio/bgm';
 import { SoundFX } from './audio/sfx';
 import { CricketStore } from './game/cricketStore';
 import { HumanInputController } from './game/humanInput';
@@ -195,7 +195,7 @@ async function bootstrap() {
     activeMapData = null;
     replayMapData = null;
     replayIsLiveAi = true;
-    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, seed: cfg.seed, slots: cfg.slots });
+    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots });
 
     let liveBundle: MatchReplayBundle | null = null;
     let liveMapData: EngineMapData | null = null;
@@ -286,7 +286,7 @@ async function bootstrap() {
     lastFinishedBundle = null;
     bgm.prepareMatchLaunch({
       matchMode: bundle.summary.matchMode,
-      seed: bundle.summary.seed,
+      bgmSeed: bundle.summary.bgmSeed ?? bundle.summary.seed,
       slots: bundle.summary.slots,
     });
     hudUI.cancelResultOverlay(false, false);
@@ -357,6 +357,7 @@ async function bootstrap() {
       const freshCfg: MatchConfig = {
         ...activeConfig,
         seed: (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0,
+        bgmSeed: generateBgmSeed(),
         slots: activeConfig.slots.map((s) => ({ ...s })),
       };
       void startCustomAiSpectator(freshCfg)
@@ -406,10 +407,12 @@ async function bootstrap() {
         .map((s) => s.botId!);
       cfg = lobbyUI.createRankedMatchConfig(rankedMode, prevBotIds);
     } else {
-      // Custom R restart: exact same map, contestants, spawn order, seed, and speed
+      // Custom R restart: exact same map, contestants, spawn order, gameplay seed, and speed;
+      // re-roll independent bgmSeed so special BGM rolls freshly on each restart.
       const s = settings.get();
       cfg = {
         ...activeConfig,
+        bgmSeed: generateBgmSeed(),
         slots: activeConfig.slots.map((s) => ({ ...s })),
         cliffGuard: s.cliffGuard,
         dashGuard: s.dashGuard,
@@ -418,7 +421,7 @@ async function bootstrap() {
     }
 
     activeConfig = cfg;
-    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, seed: cfg.seed, slots: cfg.slots });
+    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots });
     renderer.resetCameraToOverview();
     void controller
       .start(cfg, { cinematic: getCinematicOptions(settings.get()) })
@@ -610,7 +613,7 @@ async function bootstrap() {
       bgm.beginMatch(
         {
           matchMode: bundle.summary.matchMode,
-          seed: bundle.summary.seed,
+          bgmSeed: bundle.summary.bgmSeed ?? bundle.summary.seed,
           slots: bundle.summary.slots,
         },
         bundle.replay.ticks[0],
@@ -685,7 +688,7 @@ async function bootstrap() {
       renderer.setCinematicDirector(director ?? null);
       mode = 'playing';
       lobbyUI.hide();
-      bgm.beginMatch({ matchMode: cfg.matchMode, seed: cfg.seed, slots: cfg.slots }, initialState);
+      bgm.beginMatch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots }, initialState);
       hudUI.showMatch(cfg, hSeat);
       hudUI.updateTick(initialState, mapData.colStart, mapData.colEvery);
     },
@@ -781,7 +784,11 @@ async function bootstrap() {
       renderer.resetCameraToOverview();
       historyModal.close();
       activeConfig = config;
-      bgm.prepareMatchLaunch({ matchMode: config.matchMode, seed: config.seed, slots: config.slots });
+      bgm.prepareMatchLaunch({
+        matchMode: config.matchMode,
+        bgmSeed: config.bgmSeed ?? config.seed,
+        slots: config.slots,
+      });
       lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
       void controller.start(config, { cinematic: getCinematicOptions(settings.get()) }).catch((err) => {
         console.error(err);

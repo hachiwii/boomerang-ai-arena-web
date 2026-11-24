@@ -25,10 +25,26 @@ export const BGM_TRACK_URLS: Record<BgmTrackId, string> = {
   astra_win: '/assets/audio/bgm_astra_win.mp3',
 };
 
+/** Probability (in percent) of triggering Astra's special SOLO BGM. */
+export const ASTRA_SOLO_SPECIAL_BGM_PCT = 33;
+
 export interface BgmMatchContext {
   matchMode: MatchMode;
-  seed: number;
+  bgmSeed: number;
   slots: SlotConfig[];
+}
+
+/**
+ * Generates an independent 32-bit random seed exclusively for BGM selection,
+ * decoupled from the game simulation seed (and freshly re-rolled on Custom restart).
+ */
+export function generateBgmSeed(): number {
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+    return buf[0] || 1;
+  }
+  return ((Math.imul(Date.now() >>> 0, 2654435761) ^ Math.floor(Math.random() * 0x100000000)) >>> 0) || 1;
 }
 
 export function isBossSlot(slot: SlotConfig | undefined): boolean {
@@ -40,7 +56,7 @@ export function isAstraSlot(slot: SlotConfig | undefined): boolean {
 }
 
 /**
- * Deterministic 32-bit MurmurHash3 finalizer over the match seed so live matches
+ * Deterministic 32-bit MurmurHash3 finalizer over the BGM seed so live matches
  * and all subsequent replays of the same match always select identical BGM.
  */
 export function hashMatchSeed(seed: number): number {
@@ -51,16 +67,16 @@ export function hashMatchSeed(seed: number): number {
   return h;
 }
 
-/** Exact 25% deterministic roll for any Human vs Astra 1v1 SOLO special BGM. */
-export function shouldUseAstraSoloSpecialBgm(seed: number): boolean {
-  return (hashMatchSeed(seed) & 3) === 0;
+/** Exact 33% deterministic roll for any Human vs Astra 1v1 SOLO special BGM. */
+export function shouldUseAstraSoloSpecialBgm(bgmSeed: number): boolean {
+  return (hashMatchSeed(bgmSeed) % 100) < ASTRA_SOLO_SPECIAL_BGM_PCT;
 }
 
 export function isAstraSoloSpecialContext(ctx: BgmMatchContext): boolean {
   if (ctx.slots.length !== 2) return false;
   const humanSeat = ctx.slots.findIndex((s) => s.kind === 'human');
   const astraSeat = ctx.slots.findIndex((s) => isAstraSlot(s));
-  return humanSeat >= 0 && astraSeat >= 0 && shouldUseAstraSoloSpecialBgm(ctx.seed);
+  return humanSeat >= 0 && astraSeat >= 0 && shouldUseAstraSoloSpecialBgm(ctx.bgmSeed);
 }
 
 /**
