@@ -245,7 +245,10 @@ void randomize_spawns_symmetric(const dart::Config& cf, const dart::Map& m, dart
     };
 
     // 4. Rejection-sample one uniform (dx, dy) in disk dx^2 + dy^2 <= R^2 per symmetry orbit
-    dart::SplitMix64 rng(spawn_seed * 0x9E3779B97F4A7C15ULL + 0x51ED270B27C6F3A1ULL);
+    // Hash the seed through one SplitMix64 step before using it: seeding with `seed * GOLDEN + C` would make each
+    // seed's stream the neighbouring seed's stream shifted by one draw (SplitMix64 itself advances by GOLDEN), so after
+    // rejection sampling nearby seeds (e.g. 6, 8, 10) could land on the exact same spawns.
+    dart::SplitMix64 rng(dart::SplitMix64(spawn_seed ^ 0x51ED270B27C6F3A1ULL).next());
     const dart::i64 R2 = R * R;
     bool placed[dart::MAXP] = {};
 
