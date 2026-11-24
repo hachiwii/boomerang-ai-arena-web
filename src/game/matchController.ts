@@ -384,7 +384,6 @@ export class MatchController {
           type: 'step',
           actionsText: actionLines.join('\n'),
           botSeats: this.botSeats,
-          dashTarget: null,
         });
         if (this.stopped) return;
 
@@ -636,13 +635,9 @@ export class MatchController {
       this.lastBotMaxMs = maxMs;
 
       // Sample human input right at the tick boundary for minimum latency!
-      let dashTarget: [number, number] | null = null;
       if (this.humanSeat >= 0) {
         const ha = this.input.sampleAction(prevState, this.humanSeat);
         actionLines[this.humanSeat] = `${ha.mx} ${ha.my} ${ha.act} ${ha.ax} ${ha.ay} ${ha.msg}`;
-        if (ha.act === 3 && typeof ha.dashTargetX === 'number' && typeof ha.dashTargetY === 'number') {
-          dashTarget = [ha.dashTargetX, ha.dashTargetY];
-        }
       }
       this.trainingBrain?.decide(prevState, actionLines);
 
@@ -650,7 +645,6 @@ export class MatchController {
         type: 'step',
         actionsText: actionLines.join('\n'),
         botSeats: this.botSeats,
-        dashTarget,
       });
       if (!this.running || this.stopped) return;
 
@@ -818,7 +812,6 @@ export class MatchController {
         type: 'step',
         actionsText: actionLines.join('\n'),
         botSeats: this.botSeats,
-        dashTarget: null,
       });
       if (this.stopped || this.simSessionSeq !== mySeq) return false;
 

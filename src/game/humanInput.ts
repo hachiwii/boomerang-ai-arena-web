@@ -500,18 +500,6 @@ export class HumanInputController {
     if (press.kind === 'dashToMouse') {
       if (!canStartNew || me.cd > 0) return null;
       const [dx, dy] = this.getAimVectorForPress(press, me.x, me.y, me.face);
-      if (press.hasTarget) {
-        return {
-          mx,
-          my,
-          act: ActType.DASH,
-          ax: dx,
-          ay: dy,
-          msg: 0,
-          dashTargetX: press.targetX,
-          dashTargetY: press.targetY,
-        };
-      }
       return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
     }
 

@@ -475,6 +475,8 @@ EMSCRIPTEN_KEEPALIVE
 void engine_set_human_slash_ticks(int ticks) {
     if (g_game) {
         g_game->human_slash_ticks = (ticks > 0) ? ticks : 0;
+        // 常规(3帧砍镖) -> 砍人/踢人 2 帧；严格(2帧砍镖) 与 AI(0) -> 砍人/踢人 0（1 帧前摇 + 1 帧，与 AI 相同）
+        g_game->human_melee_ticks = (ticks >= 3) ? 2 : 0;
     }
 }
 
@@ -494,11 +496,10 @@ void engine_set_human_melee_assist(int enabled) {
 
 EMSCRIPTEN_KEEPALIVE
 void engine_set_human_dash_target(int active, int tx, int ty) {
-    if (g_game) {
-        g_game->human_dash_target_active = (active != 0);
-        g_game->human_dash_target_x = tx;
-        g_game->human_dash_target_y = ty;
-    }
+    // 已移除“冲刺停在鼠标位置”特性（鼠标仅决定方向），保留空实现以兼容导出 ABI
+    (void)active;
+    (void)tx;
+    (void)ty;
 }
 
 EMSCRIPTEN_KEEPALIVE

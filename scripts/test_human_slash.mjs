@@ -70,15 +70,14 @@ function setupDuelAtDistance(targetDistMm, humanSeat, emptyHandSeat0 = false, hu
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: Human NORMAL SLASH hits on EACH of ticks 0, 1, 2 (150ms = 3 ticks)
-//         and does NOT hit on tick 3 or tick 4 (expired)!
+// Test 1: Human NORMAL SLASH (ticks=3 -> melee 2f / block 3f):
+//         player cut hits ONLY on ticks 0, 1 and expires on ticks 2, 3!
 // ---------------------------------------------------------------------------
 for (const tc of [
   { label: 'Tick 0 (0ms, S_SLASH windup 1)', D: 1650, expectHitTick: 0 },
   { label: 'Tick 1 (50ms, S_SLASH windup 2)', D: 1900, expectHitTick: 1 },
-  { label: 'Tick 2 (100ms, S_SLASHED post 1)', D: 2150, expectHitTick: 2 },
-  { label: 'Tick 3 (150ms, S_SLASHED post 2 — EXPIRED)', D: 2400, expectHitTick: -1 },
-  { label: 'Tick 4 (200ms, S_SLASHED post 3 — EXPIRED)', D: 2650, expectHitTick: -1 },
+  { label: 'Tick 2 (100ms, S_SLASHED post 1 — MELEE EXPIRED)', D: 2150, expectHitTick: -1 },
+  { label: 'Tick 3 (150ms, S_SLASHED post 2 — MELEE EXPIRED)', D: 2400, expectHitTick: -1 },
 ]) {
   let st = setupDuelAtDistance(tc.D, 0, false, 3);
   const startDist = st.players[1].x - st.players[0].x;
@@ -108,19 +107,17 @@ for (const tc of [
     assert(st.players[1].alive === 1, `${tc.label}: enemy should still be alive`);
     assert(st.players[0].st === 0, `After 8 ticks human should return to S_FREE (0), got st=${st.players[0].st}`);
   }
-  console.log(`  [PASS] Human NORMAL SLASH ${tc.label} -> hitTick=${hitTick}, EV_SWING=${swingCount}@tick${swingTick}`);
+  console.log(`  [PASS] Human NORMAL SLASH(melee 2f) ${tc.label} -> hitTick=${hitTick}, EV_SWING=${swingCount}@tick${swingTick}`);
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: Human NORMAL KICK hits on EACH of ticks 0, 1, 2 (150ms = 3 ticks)
-//         and does NOT hit on tick 3 (expired), emits 1 EV_SWING(b=0) on tick 0,
-//         and NEVER double-kicks an already-stunned victim!
+// Test 2: Human NORMAL KICK (ticks=3 -> melee 2f):
+//         hits ONLY on ticks 0, 1 and expires on tick 2, never double-kicks!
 // ---------------------------------------------------------------------------
 for (const tc of [
   { label: 'Tick 0 (0ms, S_KICK windup 1)', D: 1650, expectHitTick: 0 },
   { label: 'Tick 1 (50ms, S_KICK windup 2)', D: 1900, expectHitTick: 1 },
-  { label: 'Tick 2 (100ms, S_KICKED post 1)', D: 2150, expectHitTick: 2 },
-  { label: 'Tick 3 (150ms, S_KICKED post 2 — EXPIRED)', D: 2400, expectHitTick: -1 },
+  { label: 'Tick 2 (100ms, S_KICKED post 1 — EXPIRED)', D: 2150, expectHitTick: -1 },
 ]) {
   let st = setupDuelAtDistance(tc.D, 0, true, 3);
   const startDist = st.players[1].x - st.players[0].x;
@@ -164,16 +161,17 @@ for (const tc of [
     assert(st.players[1].st === 0, `${tc.label}: enemy should remain S_FREE (0), got st=${st.players[1].st}`);
     assert(st.players[0].st === 0, `After 7 ticks human kick should return to S_FREE (0), got st=${st.players[0].st}`);
   }
-  console.log(`  [PASS] Human NORMAL KICK  ${tc.label} -> hitTick=${hitTick}, hits=${kickHitCount}, EV_SWING=${swingCount}@tick${swingTick}`);
+  console.log(`  [PASS] Human NORMAL KICK(2f)  ${tc.label} -> hitTick=${hitTick}, hits=${kickHitCount}, EV_SWING=${swingCount}@tick${swingTick}`);
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Human NORMAL (3f) blocks flying dart entering slash sector on late active tick (tick 2)
+// Test 3: Human NORMAL (block 3f) STILL blocks flying dart on 3rd tick (tick 2)
+//         even though player melee already expired after tick 1;
+//         Human STRICT (block 2f) blocks on ticks 0, 1 and expires on tick 2!
 // ---------------------------------------------------------------------------
 {
+  // Normal (3f block): dart enters reach on tick 2 -> BLOCKED!
   let st = setupDuelAtDistance(2250, 0, false, 3);
-  // Seat 1 throws left on tick 0 -> releases tick 1 at dist=2250;
-  // tick 2 moves 2250 -> 1350 (swept block on 3rd active tick = tick 2!)
   let blockedTick = -1;
   for (let tick = 0; tick < 8 && !st.over; tick++) {
     const act0 = tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0';
@@ -184,10 +182,37 @@ for (const tc of [
       if (ev.name === 'BLOCK' && ev.a === 0) blockedTick = tick;
     }
   }
-  assert(st.players[0].alive === 1, 'Human should survive by blocking dart on 3rd active tick (Tick 2)!');
-  assert(blockedTick === 2, `Expected dart block on tick 2 via swept segment, got ${blockedTick}`);
+  assert(st.players[0].alive === 1, 'Normal(block 3f) should survive by blocking dart on 3rd tick (Tick 2)!');
+  assert(blockedTick === 2, `Expected Normal dart block on tick 2, got ${blockedTick}`);
   assert(st.darts[1].st === 3, `Blocked dart should drop to D_GROUND (3), got ${st.darts[1].st}`);
-  console.log(`  [PASS] Human NORMAL blocked enemy flying dart on 3rd active tick (tick ${blockedTick})!`);
+
+  // Strict (2f block): same tick-2 dart -> EXPIRED (must NOT block on tick 2)!
+  st = setupDuelAtDistance(2250, 0, false, 2);
+  let strictTick2Blocked = false;
+  for (let tick = 0; tick < 8 && !st.over; tick++) {
+    const act0 = tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0';
+    const act1 = tick === 0 ? '0 0 1 -1000 0 0' : '0 0 0 0 0 0';
+    engineStep(`${act0}\n${act1}`);
+    st = JSON.parse(engineGetState());
+    if (st.events.some((ev) => ev.name === 'BLOCK' && ev.a === 0)) strictTick2Blocked = true;
+  }
+  assert(!strictTick2Blocked, 'Strict(block 2f) must NOT block dart on tick 2 (expired)!');
+
+  // Strict (2f block): dart entering on tick 1 -> BLOCKED on tick 1!
+  st = setupDuelAtDistance(2250, 0, false, 2);
+  let strictTick1Blocked = -1;
+  for (let tick = 0; tick < 8 && !st.over; tick++) {
+    const act0 = tick === 1 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'; // pressed tick 1 -> active ticks 1, 2
+    const act1 = tick === 0 ? '0 0 1 -1000 0 0' : '0 0 0 0 0 0';
+    engineStep(`${act0}\n${act1}`);
+    st = JSON.parse(engineGetState());
+    for (const ev of st.events) {
+      if (ev.name === 'BLOCK' && ev.a === 0) strictTick1Blocked = tick;
+    }
+  }
+  assert(strictTick1Blocked === 2, `Strict(block 2f) pressed on tick 1 should block on its 2nd tick (tick 2), got ${strictTick1Blocked}`);
+
+  console.log('  [PASS] Dart block windows verified: Normal = 3f (ticks 0..2), Strict = 2f (ticks 0..1, expires tick 2)!');
 }
 
 // ---------------------------------------------------------------------------
@@ -242,19 +267,41 @@ for (const tc of [
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: Human STRICT mode (humanSlashTicks = 1) hits ONLY on tick 0
-//         and MUST NOT double-fire on tick 1 (windup end) or tick 2+!
+// Test 5: Human STRICT mode (ticks = 2 -> melee AI 1f windup + 1f / block 2f):
+//         player SLASH & KICK have 1-tick windup (NO hit on tick 0!), fire ONLY on tick 1, expire tick 2!
 // ---------------------------------------------------------------------------
-for (const tc of [
-  { label: 'Strict Tick 0', D: 1650, expectHitTick: 0 },
-  { label: 'Strict Tick 1 (EXPIRED — must NOT double-fire!)', D: 1900, expectHitTick: -1 },
-  { label: 'Strict Tick 2 (EXPIRED)', D: 2150, expectHitTick: -1 },
-]) {
-  let st = setupDuelAtDistance(tc.D, 0, false, 1);
+{
+  // Enemy already in range on tick 0 -> STRICT SLASH must NOT hit on tick 0 (windup), MUST hit on tick 1!
+  let st = setupDuelAtDistance(1650, 0, false, 2);
   let hitTick = -1;
   let swingCount = 0;
-  let swingTick = -1;
   for (let tick = 0; tick < 8 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    for (const ev of st.events) {
+      if (ev.name === 'SWING' && ev.a === 0) swingCount++;
+      if (ev.name === 'CUT' && ev.a === 0 && ev.b === 1) hitTick = tick;
+    }
+  }
+  assert(swingCount === 1, `Strict SLASH must emit exactly 1 EV_SWING, got ${swingCount}`);
+  assert(hitTick === 1, `Strict SLASH must have 1f windup and hit ONLY on tick 1 (like AI), got hitTick=${hitTick}`);
+
+  // Enemy enters on tick 2 -> STRICT SLASH must NOT hit!
+  st = setupDuelAtDistance(2150, 0, false, 2);
+  let lateHit = false;
+  for (let tick = 0; tick < 8 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    if (st.events.some((ev) => ev.name === 'CUT' && ev.a === 0)) lateHit = true;
+  }
+  assert(!lateHit, 'Strict SLASH must NOT hit on tick 2!');
+
+  // Empty-handed STRICT KICK -> 1f windup tick 0, fires ONLY on tick 1 with EV_SWING on tick 1!
+  st = setupDuelAtDistance(1650, 0, true, 2);
+  hitTick = -1;
+  let swingTick = -1;
+  swingCount = 0;
+  for (let tick = 0; tick < 7 && !st.over; tick++) {
     engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
     st = JSON.parse(engineGetState());
     for (const ev of st.events) {
@@ -262,40 +309,27 @@ for (const tc of [
         swingCount++;
         swingTick = tick;
       }
-      if (ev.name === 'CUT' && ev.a === 0 && ev.b === 1) hitTick = tick;
-    }
-  }
-  assert(swingCount === 1 && swingTick === 0, `${tc.label}: expected exactly 1 EV_SWING@tick0, got ${swingCount}@${swingTick}`);
-  assert(hitTick === tc.expectHitTick, `${tc.label}: expected hitTick=${tc.expectHitTick}, got ${hitTick}`);
-  if (tc.expectHitTick === -1) {
-    assert(st.players[0].st === 0, `${tc.label}: human should cleanly finish recovery to S_FREE (0), got st=${st.players[0].st}`);
-  }
-  console.log(`  [PASS] Human STRICT SLASH ${tc.label} -> hitTick=${hitTick}, EV_SWING=${swingCount}@tick${swingTick}`);
-}
-
-for (const tc of [
-  { label: 'Strict Kick Tick 0', D: 1650, expectHitTick: 0 },
-  { label: 'Strict Kick Tick 1 (EXPIRED — must NOT double-fire!)', D: 1900, expectHitTick: -1 },
-]) {
-  let st = setupDuelAtDistance(tc.D, 0, true, 1);
-  let hitTick = -1;
-  let swingCount = 0;
-  for (let tick = 0; tick < 7 && !st.over; tick++) {
-    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
-    st = JSON.parse(engineGetState());
-    for (const ev of st.events) {
-      if (ev.name === 'SWING' && ev.a === 0) swingCount++;
       if (ev.name === 'KICKHIT' && ev.a === 0 && ev.b === 1 && hitTick < 0) hitTick = tick;
     }
   }
-  assert(swingCount === 1, `${tc.label}: expected 1 EV_SWING, got ${swingCount}`);
-  assert(hitTick === tc.expectHitTick, `${tc.label}: expected hitTick=${tc.expectHitTick}, got ${hitTick}`);
-  console.log(`  [PASS] Human STRICT KICK ${tc.label} -> hitTick=${hitTick}`);
+  assert(swingCount === 1 && swingTick === 1, `Strict KICK must emit 1 EV_SWING@tick1, got ${swingCount}@${swingTick}`);
+  assert(hitTick === 1, `Strict KICK must hit ONLY on tick 1, got ${hitTick}`);
+
+  // Enemy enters on tick 2 -> STRICT KICK must NOT hit!
+  st = setupDuelAtDistance(2150, 0, true, 2);
+  let lateKick = false;
+  for (let tick = 0; tick < 7 && !st.over; tick++) {
+    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
+    st = JSON.parse(engineGetState());
+    if (st.events.some((ev) => ev.name === 'KICKHIT' && ev.a === 0)) lateKick = true;
+  }
+  assert(!lateKick, 'Strict KICK must NOT hit on tick 2!');
+
+  console.log('  [PASS] Human STRICT mode: player SLASH & KICK match AI (1f windup + tick 1 only), while dart-block stays 2f!');
 }
 
 // ---------------------------------------------------------------------------
-// Test 6: Human AI mode (humanSlashTicks = 0) matches AI 100%:
-//         has windup on tick 0 (NO swing/hit), fires ONLY 1 frame on tick 1, misses on tick 2+!
+// Test 6: Human AI mode (humanSlashTicks = 0) matches AI 100% for both player & dart!
 // ---------------------------------------------------------------------------
 {
   let st = setupDuelAtDistance(1650, 0, false, 0);
@@ -343,15 +377,6 @@ for (const tc of [
     `Human AI-mode KICK must fire ONLY on tick 1, got swing=${swingTick}, hit=${hitTick}`,
   );
 
-  st = setupDuelAtDistance(2150, 0, true, 0);
-  let lateKick = false;
-  for (let tick = 0; tick < 7 && !st.over; tick++) {
-    engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
-    st = JSON.parse(engineGetState());
-    if (st.events.some((ev) => ev.name === 'KICKHIT' && ev.a === 0)) lateKick = true;
-  }
-  assert(!lateKick, 'Human AI-mode KICK must NOT hit on tick 2!');
-
   console.log('  [PASS] Human AI mode (ticks=0) matches AI 100%: windup tick 0 + 1-frame judgment on tick 1 only!');
 }
 
@@ -361,10 +386,10 @@ for (const tc of [
 {
   const tunnelMap = makeCustomMap(openRows, '5.0 5.0 7.45 5.0');
   for (const tc of [
-    { label: 'Normal(3f) assist=OFF', ticks: 3, assist: 0, pressTick: 3, expectBlock: true },
-    { label: 'Normal(3f) assist=ON', ticks: 3, assist: 1, pressTick: 3, expectBlock: true },
-    { label: 'Strict(1f) assist=OFF', ticks: 1, assist: 0, pressTick: 3, expectBlock: true },
-    { label: 'Strict(1f) assist=ON', ticks: 1, assist: 1, pressTick: 3, expectBlock: true },
+    { label: 'Normal(block 3f) assist=OFF', ticks: 3, assist: 0, pressTick: 3, expectBlock: true },
+    { label: 'Normal(block 3f) assist=ON', ticks: 3, assist: 1, pressTick: 3, expectBlock: true },
+    { label: 'Strict(block 2f) assist=OFF (on tick 0 of swing)', ticks: 2, assist: 0, pressTick: 3, expectBlock: true },
+    { label: 'Strict(block 2f) assist=ON (on tick 1 of swing)', ticks: 2, assist: 1, pressTick: 2, expectBlock: true },
     { label: 'AI(0f) assist=ON (fires tick 3)', ticks: 0, assist: 1, pressTick: 2, expectBlock: false },
     { label: 'Bot(seat=-1) (fires tick 3)', ticks: 3, assist: 1, humanSeat: -1, pressTick: 2, expectBlock: false },
   ]) {
@@ -411,14 +436,14 @@ for (const tc of [
     return `${Math.round(Math.cos(rad) * 1000)} ${Math.round(Math.sin(rad) * 1000)}`;
   };
   for (const tc of [
-    { label: 'Normal(3f) assist=OFF @50° (inside ±60°)', ticks: 3, assist: 0, deg: 50, pressTick: 3, expectBlock: true },
-    { label: 'Normal(3f) assist=ON  @50° (inside ±60°)', ticks: 3, assist: 1, deg: 50, pressTick: 3, expectBlock: true },
-    { label: 'Strict(1f) assist=OFF @50° (inside ±60°)', ticks: 1, assist: 0, deg: 50, pressTick: 3, expectBlock: true },
-    { label: 'Normal(3f) assist=ON  @70° (outside ±60°)', ticks: 3, assist: 1, deg: 70, pressTick: 3, expectBlock: false },
-    { label: 'Strict(1f) assist=ON  @70° (outside ±60°)', ticks: 1, assist: 1, deg: 70, pressTick: 3, expectBlock: false },
-    { label: 'AI(0f)     assist=ON  @50° (outside ±20°)', ticks: 0, assist: 1, deg: 50, pressTick: 2, expectBlock: false },
-    { label: 'AI(0f)     assist=ON  @25° (outside ±20°, no assist boost!)', ticks: 0, assist: 1, deg: 25, pressTick: 2, expectBlock: false },
-    { label: 'AI(0f)     assist=OFF @15° (inside ±20°)', ticks: 0, assist: 0, deg: 15, pressTick: 2, expectBlock: true },
+    { label: 'Normal(block 3f) assist=OFF @50° (inside ±60°)', ticks: 3, assist: 0, deg: 50, pressTick: 3, expectBlock: true },
+    { label: 'Normal(block 3f) assist=ON  @50° (inside ±60°)', ticks: 3, assist: 1, deg: 50, pressTick: 3, expectBlock: true },
+    { label: 'Strict(block 2f) assist=OFF @50° (inside ±60°)', ticks: 2, assist: 0, deg: 50, pressTick: 3, expectBlock: true },
+    { label: 'Normal(block 3f) assist=ON  @70° (outside ±60°)', ticks: 3, assist: 1, deg: 70, pressTick: 3, expectBlock: false },
+    { label: 'Strict(block 2f) assist=ON  @70° (outside ±60°)', ticks: 2, assist: 1, deg: 70, pressTick: 3, expectBlock: false },
+    { label: 'AI(0f)           assist=ON  @50° (outside ±20°)', ticks: 0, assist: 1, deg: 50, pressTick: 2, expectBlock: false },
+    { label: 'AI(0f)           assist=ON  @25° (outside ±20°, no assist boost!)', ticks: 0, assist: 1, deg: 25, pressTick: 2, expectBlock: false },
+    { label: 'AI(0f)           assist=OFF @15° (inside ±20°)', ticks: 0, assist: 0, deg: 15, pressTick: 2, expectBlock: true },
   ]) {
     assert(engineInit(coneMap, 2, 0), 'coneMap init failed');
     engineSetHumanSeat(0);
@@ -511,4 +536,4 @@ for (const tc of [
   console.log(`  [PASS] Wall occlusion: blocked through wall=false; corner emergence blocked at y=${cornerBlockEv.d}`);
 }
 
-console.log('ALL HUMAN SLASH JUDGMENT (NORMAL 3f+SWEPT±60° / STRICT 1f+SWEPT±60° / AI EXACT) WASM TESTS PASSED!');
+console.log('ALL HUMAN SLASH JUDGMENT (NORMAL melee 2f/block 3f | STRICT melee AI/block 2f | AI EXACT) WASM TESTS PASSED!');

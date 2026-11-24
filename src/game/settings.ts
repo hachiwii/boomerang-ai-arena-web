@@ -135,7 +135,7 @@ export interface GameSettings {
   meleeAssist: boolean; // Auto-rotate slash/kick aim minimally to include reachable target when mouse cone misses
   cliffGuard: boolean; // Prevent walking off cliffs
   dashGuard: boolean; // Dash-tail 25% cliff save
-  slashJudgment: SlashJudgmentOption; // 'normal' (3f + swept ±60°) | 'strict' (1f + swept ±60°) | 'ai' (windup + 1f, AI exact)
+  slashJudgment: SlashJudgmentOption; // 'normal' (melee 2f / block 3f swept ±60°) | 'strict' (melee AI 1f+1f / block 2f swept ±60°) | 'ai' (AI exact)
   killCam: boolean; // Non-final kill slow-mo & eye-level camera (0.5x)
   killFx: boolean; // Upstream hit-stop + impact punch/VFX in replay/spectator (only available when graphicsQuality==='high' && !killCam)
   finisherCam: boolean; // Final kill slow-mo & eye-level camera (0.25x)
@@ -196,9 +196,9 @@ export const SLASH_JUDGMENT_OPTIONS: {
   ticks: number;
   desc: string;
 }[] = [
-  { value: 'normal', label: '普通', ticks: 3, desc: '按下即生效，持续前 3 帧判定；砍镖支持本步线段扫掠，砍人与砍镖均为 ±60°' },
-  { value: 'strict', label: '严格', ticks: 1, desc: '按下即生效，仅前 1 帧判定；砍镖支持本步线段扫掠，砍人与砍镖均为 ±60°' },
-  { value: 'ai', label: 'AI', ticks: 0, desc: '与 AI 完全相同：有前摇、仅 1 帧判定，砍镖为原版 ±20° 单点判定' },
+  { value: 'normal', label: '普通', ticks: 3, desc: '砍人按下即生效、持续前 2 帧；砍镖持续前 3 帧且支持本步线段扫掠，均为 ±60°' },
+  { value: 'strict', label: '严格', ticks: 2, desc: '砍人与 AI 相同（1 帧前摇 + 1 帧）；砍镖按下即生效、持续前 2 帧且支持本步线段扫掠，均为 ±60°' },
+  { value: 'ai', label: 'AI', ticks: 0, desc: '与 AI 完全相同：1 帧前摇 + 1 帧判定，砍镖为原版 ±20° 单点判定' },
 ];
 
 export function getSlashJudgmentTicks(mode: SlashJudgmentOption): number {

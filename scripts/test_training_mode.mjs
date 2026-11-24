@@ -63,9 +63,9 @@ function walkTo(seat, x, y, tol = 120, maxTicks = 260, extra = {}) {
   return evs;
 }
 
-/** Drop seat 0's dart into the divider tree at (36..37, 15..16) = (18000..19000, 7500..8500) so seat 0 is empty-handed. */
+/** Drop seat 0's dart into the divider tree at (24..25, 15..16) = (12000..13000, 7500..8500) so seat 0 is empty-handed. */
 function dropPlayerDartOnTree() {
-  walkTo(0, 18250, 6500);
+  walkTo(0, 12250, 6500);
   step({ 0: [0, 0, 1, 0, 1000] });
   for (let i = 0; i < 20 && st.darts[0].st !== 3; i++) step();
   assert.equal(st.darts[0].st, 3, 'player dart dropped at the tree');
@@ -89,11 +89,15 @@ assert.deepEqual(map.spawns[6], [30750, 3000]);
 assert.deepEqual(map.spawns[7], [30750, 6500]);
 // Verify bottom-left under strike zone is completely open floor
 for (let gy = 15; gy <= 29; gy++) {
-  for (let gx = 2; gx <= 31; gx++) {
+  for (let gx = 2; gx <= 20; gx++) {
     assert.equal(map.cells[gy * map.nx + gx], 0, `bottom-left (${gx},${gy}) should be empty open floor`);
   }
 }
-console.log('  [PASS] init: 64x32 wide arena, 8 seats alive, 4m strike spacing, open bottom-left, no collapse');
+// Verify movement zone spans horizontally ~150% (cols 21..60, width 40 cells; lake row 23 cols 36..47 = 12 cells)
+const lakeRow23 = [];
+for (let gx = 1; gx <= 62; gx++) if (map.cells[23 * map.nx + gx] === 2) lakeRow23.push(gx);
+assert.equal(lakeRow23.length, 12, `lake row 23 should be 12 cells wide (150% of 8), got ${lakeRow23.length}`);
+console.log('  [PASS] init: 64x32 wide arena, 8 seats alive, 4m strike spacing, 150% movement zone, open bottom-left, no collapse');
 
 // ---------------------------------------------------------------- 2. open lane: dart flies out and returns by itself
 {
@@ -209,9 +213,9 @@ console.log('  [PASS] init: 64x32 wide arena, 8 seats alive, 4m strike spacing, 
 // ---------------------------------------------------------------- 8. player falls into the lake (below dart zone) → nearest safe ground
 {
   reset();
-  walkTo(0, 22800, 6500);
-  walkTo(0, 22800, 9600);
-  const evs = walkTo(0, 24000, 11800, 120, 60);
+  walkTo(0, 21000, 6500);
+  walkTo(0, 21000, 9600);
+  const evs = walkTo(0, 21000, 11800, 120, 60);
   const fall = evs.find((e) => e.name === 'FALL' && e.a === 0);
   assert.ok(fall, 'player fell into the lake below dart zone');
   assert.ok(!has(evs, 'DEATH', (e) => e.a === 0));

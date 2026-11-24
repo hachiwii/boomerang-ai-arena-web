@@ -124,11 +124,6 @@ function setup({ preInput = true, rows = openRows, spawn = '4 6 14 6', bindDashT
   const stepTick = (p1Line = '0 0 0 0 0 0') => {
     fakeNow += 50;
     const act = input.sampleAction(state, 0);
-    if (act.dashTargetX !== undefined && act.dashTargetY !== undefined) {
-      mod.ccall('engine_set_human_dash_target', 'void', ['number', 'number', 'number'], [1, Math.round(act.dashTargetX), Math.round(act.dashTargetY)]);
-    } else {
-      mod.ccall('engine_set_human_dash_target', 'void', ['number', 'number', 'number'], [0, 0, 0]);
-    }
     const line0 = `${act.mx} ${act.my} ${act.act} ${act.ax} ${act.ay} ${act.msg}`;
     mod.ccall('engine_step', 'number', ['string'], [`${line0}\n${p1Line}`]);
     state = JSON.parse(mod.ccall('engine_get_state_json', 'string', [], []));

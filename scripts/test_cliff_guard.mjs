@@ -470,46 +470,34 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
     return st;
   };
 
-  // 11a: Short horizontal dash (423mm) -> lands at EXACT (4423, 4000)!
-  let st = dashTo(4000, 4000, 4423, 4000, true);
-  assert(st.players[0].alive === 1 && st.players[0].x === 4423 && st.players[0].y === 4000,
-    `11a short dash: expected (4423, 4000), got (${st.players[0].x}, ${st.players[0].y})`);
+  // 11a: Mouse cursor at short horizontal distance (423mm) -> mouse ONLY sets direction, dash runs FULL 3000mm (wall at col 14 => stops at x=6600)!
+  // Wait: start at (3000, 4000), click 423mm right at (3423, 4000) -> full 3000mm dash lands at (6000, 4000) (NOT stopped at 3423)!
+  let st = dashTo(3000, 4000, 3423, 4000, true);
+  assert(st.players[0].alive === 1 && st.players[0].x >= 6000 && st.players[0].y === 4000,
+    `11a full dash in mouse dir (no mouse stop): expected x>=6000, got (${st.players[0].x}, ${st.players[0].y})`);
 
-  // 11b: Mid-range diagonal dash (dx=1234, dy=-987 -> dist=1580mm) -> lands at EXACT (5234, 3013)!
-  st = dashTo(4000, 4000, 5234, 3013, true);
-  assert(st.players[0].alive === 1 && st.players[0].x === 5234 && st.players[0].y === 3013,
-    `11b diag dash: expected (5234, 3013), got (${st.players[0].x}, ${st.players[0].y})`);
+  // 11b: Mid-range diagonal click (dx=1234, dy=-987 -> dist=1580mm) -> runs FULL 3000mm along diagonal (NOT stopped at 5234, 3013)!
+  st = dashTo(3000, 5000, 4234, 4013, true);
+  const diagDist = Math.hypot(st.players[0].x - 3000, st.players[0].y - 5000);
+  assert(st.players[0].alive === 1 && diagDist >= 2950,
+    `11b diag dash must travel full ~3000mm (no mouse stop), got dist=${Math.round(diagDist)} (${st.players[0].x}, ${st.players[0].y})`);
 
-  // 11c: Near-max diagonal dash (dx=2100, dy=2100 -> dist=2969.8 <= 3000) -> lands at EXACT (6100, 6100)!
-  st = dashTo(4000, 4000, 6100, 6100, true);
-  assert(st.players[0].alive === 1 && st.players[0].x === 6100 && st.players[0].y === 6100,
-    `11c near-max diag dash: expected (6100, 6100), got (${st.players[0].x}, ${st.players[0].y})`);
-
-  // 11d: Wall blocking (wall at col 14 => x=7000..7500, body_r=400 => max safe x before wall is 6600)
-  // Start at (5500, 4000), click behind wall at (7800, 4000) (dist=2300 <= 3000) -> must stop against wall at x=6600!
+  // 11c: Wall blocking (wall at col 14 => x=7000..7500, body_r=400 => max safe x before wall is 6600)
   st = dashTo(5500, 4000, 7800, 4000, true);
   assert(st.players[0].alive === 1 && st.players[0].x === 6600 && st.players[0].y === 4000,
-    `11d wall block: expected stopped at wall x=6600, got (${st.players[0].x}, ${st.players[0].y})`);
+    `11c wall block: expected stopped at wall x=6600, got (${st.players[0].x}, ${st.players[0].y})`);
 
-  // 11e: Target BEYOND max dash range (click 5000mm left from x=3000 -> tx=-2000, dist=5000 > 3000)
-  // Full 3000mm dash overshoots x=500 rim by 500mm (within final 25% = 750mm) -> 25% cliff guard saves at x=500!
-  st = dashTo(3000, 4000, -2000, 4000, true);
+  // 11d: Mouse left toward abyss from x=3000 -> full 3000mm dash overshoots x=500 rim by 500mm (within final 25% = 750mm) -> 25% cliff guard saves at x=500!
+  st = dashTo(3000, 4000, 2200, 4000, true);
   assert(st.players[0].alive === 1 && st.players[0].x === 500,
-    `11e beyond-range + 25% cliff guard: expected saved at x=500, got alive=${st.players[0].alive} x=${st.players[0].x}`);
+    `11d full dash + 25% cliff guard: expected saved at x=500, got alive=${st.players[0].alive} x=${st.players[0].x}`);
 
-  // 11f: Target INSIDE range (dist=2400mm from x=2700 -> tx=300, overshooting x=500 rim by 200mm;
-  // final 25% of 2400mm is 600mm [x=900..300], spanning back across the final short step [450..300] into step 3 [900..450]!)
-  // Multi-segment 25% backtrack must save at exact x=500!
-  st = dashTo(2700, 4000, 300, 4000, true);
-  assert(st.players[0].alive === 1 && st.players[0].x === 500,
-    `11f short targeted dash 25% cliff guard: expected saved at x=500, got alive=${st.players[0].alive} x=${st.players[0].x}`);
-
-  // Same 11f with cliffGuard OFF -> lands at x=300 (pit) and falls!
-  st = dashTo(2700, 4000, 300, 4000, false);
+  // Same 11d with cliffGuard OFF -> full 3000mm dash lands in pit and falls!
+  st = dashTo(3000, 4000, 2200, 4000, false);
   assert(st.players[0].alive === 0 && st.players[0].cause === 3,
-    `11f with cliffGuard OFF must fall at x=300, got alive=${st.players[0].alive}`);
+    `11d with cliffGuard OFF must fall into pit, got alive=${st.players[0].alive}`);
 
-  console.log('  [TEST 11 PASS] Exact mouse-target dash: 0mm error (423mm, diag 1580mm, diag 2970mm), wall block (x=6600), beyond-range 25% guard, and short targeted 25% guard all passed!');
+  console.log('  [TEST 11 PASS] Mouse-direction dash: mouse sets direction ONLY (full 3000mm dash, never stops at cursor), wall block & 25% cliff guard intact!');
 }
 
-console.log('ALL 11 CLIFF-GUARD & MOUSE-DASH WASM PHYSICS TESTS PASSED!');
+console.log('ALL 11 CLIFF-GUARD & MOUSE-DIRECTION DASH WASM PHYSICS TESTS PASSED!');
