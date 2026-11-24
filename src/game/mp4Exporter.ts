@@ -1,4 +1,13 @@
 import { ArrayBufferTarget, Muxer } from 'mp4-muxer';
+import {
+  BGM_FADE_SEC,
+  BGM_TRACK_URLS,
+  BgmRuleEngine,
+  BgmTrackId,
+  bgmVolumePctToGain,
+  MAIN_LOOP_PAD_SEC,
+  MAIN_LOOP_PERIOD_SEC,
+} from '../audio/bgm';
 import { SoundFX } from '../audio/sfx';
 import { GameRenderer, ProjectedNameplate } from '../render/renderer';
 import { VoxelModelData } from '../render/voxelBuilder';
@@ -20,6 +29,10 @@ export interface Mp4ExportOptions {
   speed: ExportSpeedOption;
   soundEnabled: boolean;
   volumePct: number;
+  bgmEnabled?: boolean;
+  bgmVolumePct?: number;
+  bossMusicEnabled?: boolean;
+  loadBgmBuffer?: (trackId: BgmTrackId, targetCtx: BaseAudioContext) => Promise<AudioBuffer | null>;
   graphicsQuality?: GraphicsQualityOption;
   cinematic?: boolean | Partial<CinematicOptions>;
   sharedCharModelCache?: Map<string, VoxelModelData>;
@@ -34,7 +47,187 @@ export interface Mp4ExportResult {
   height: number;
   durationSec: number;
   hasAudio: boolean;
+  hasSfx: boolean;
+  hasBgm: boolean;
   sizeBytes: number;
+}
+
+export interface OfflineBgmSegment {
+  trackId: BgmTrackId;
+  startSec: number;
+  switchOutSec: number;
+  stopSec: number;
+  fadeInSec: number;
+  fadeOutSec: number;
+  isFinal: boolean;
+}
+
+/**
+ * Computes exact video-time BGM segments (with 0.5s crossfades at track switches
+ * and smooth fade-in/fade-out at video edges) using the exact same BgmRuleEngine
+ * and match bgmSeed used during live play and interactive replays.
+ */
+export function buildOfflineBgmSegments(
+  bundle: MatchReplayBundle,
+  tickToVideoSec: (tickIndex: number) => number,
+  totalDurationSec: number,
+  bossMusicEnabled: boolean,
+): OfflineBgmSegment[] {
+  const ticks = bundle.replay.ticks;
+  if (!ticks || ticks.length === 0 || totalDurationSec <= 0.01) return [];
+
+  const rules = new BgmRuleEngine();
+  rules.beginMatch(
+    {
+      matchMode: bundle.summary.matchMode,
+      bgmSeed: bundle.summary.bgmSeed ?? bundle.summary.seed,
+      slots: bundle.summary.slots,
+    },
+    ticks[0],
+  );
+
+  let curTrack = rules.getDesiredTrack(bossMusicEnabled);
+  const transitions: { timeSec: number; trackId: BgmTrackId }[] = [{ timeSec: 0, trackId: curTrack }];
+
+  for (let i = 1; i < ticks.length; i++) {
+    rules.updateTick(ticks[i]);
+    const nextTrack = rules.getDesiredTrack(bossMusicEnabled);
+    if (nextTrack !== curTrack) {
+      const tSec = Math.max(0, Math.min(totalDurationSec, tickToVideoSec(i)));
+      const last = transitions[transitions.length - 1];
+      if (Math.abs(tSec - last.timeSec) < 0.005) {
+        last.trackId = nextTrack;
+      } else {
+        transitions.push({ timeSec: tSec, trackId: nextTrack });
+      }
+      curTrack = nextTrack;
+    }
+  }
+
+  const segments: OfflineBgmSegment[] = [];
+  for (let k = 0; k < transitions.length; k++) {
+    const startSec = transitions[k].timeSec;
+    const isFirst = k === 0;
+    const isFinal = k === transitions.length - 1;
+    const switchOutSec = isFinal ? totalDurationSec : transitions[k + 1].timeSec;
+    const fadeInSec = isFirst ? Math.min(0.25, Math.max(0.04, totalDurationSec * 0.2)) : BGM_FADE_SEC;
+    const fadeOutSec = isFinal
+      ? Math.min(0.55, Math.max(0.12, (totalDurationSec - startSec) * 0.35))
+      : BGM_FADE_SEC;
+    const stopSec = isFinal ? totalDurationSec : Math.min(totalDurationSec, switchOutSec + fadeOutSec);
+    if (stopSec <= startSec + 0.005) continue;
+    segments.push({
+      trackId: transitions[k].trackId,
+      startSec,
+      switchOutSec,
+      stopSec,
+      fadeInSec,
+      fadeOutSec,
+      isFinal,
+    });
+  }
+  return segments;
+}
+
+async function defaultLoadBgmBuffer(
+  trackId: BgmTrackId,
+  targetCtx: BaseAudioContext,
+): Promise<AudioBuffer | null> {
+  try {
+    const url = `${BGM_TRACK_URLS[trackId]}?v=${typeof __BUILD_ID__ !== 'undefined' ? __BUILD_ID__ : 'dev'}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return null;
+    const raw = await resp.arrayBuffer();
+    return await targetCtx.decodeAudioData(raw);
+  } catch (err) {
+    console.warn(`[MP4 Export] Failed to load BGM ${trackId}:`, err);
+    return null;
+  }
+}
+
+function scheduleOfflineBgmTracks(
+  ctx: OfflineAudioContext,
+  segments: OfflineBgmSegment[],
+  buffers: Map<BgmTrackId, AudioBuffer>,
+  bgmVolumePct: number,
+): boolean {
+  const masterLevel = bgmVolumePctToGain(bgmVolumePct);
+  if (masterLevel <= 0.0001 || segments.length === 0) return false;
+
+  const masterGain = ctx.createGain();
+  masterGain.gain.setValueAtTime(masterLevel, 0);
+  masterGain.connect(ctx.destination);
+
+  let scheduledAny = false;
+  for (const seg of segments) {
+    const buf = buffers.get(seg.trackId);
+    if (!buf) continue;
+
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const voiceGain = ctx.createGain();
+
+    const tStart = seg.startSec;
+    const tStop = seg.stopSec;
+
+    if (seg.isFinal) {
+      const fadeOutStart = Math.max(tStart, tStop - seg.fadeOutSec);
+      const fadeInEnd = Math.min(fadeOutStart, tStart + seg.fadeInSec);
+      const peakGain =
+        seg.fadeInSec > 0.001 ? Math.max(0, Math.min(1, (fadeInEnd - tStart) / seg.fadeInSec)) : 1;
+
+      voiceGain.gain.setValueAtTime(0, tStart);
+      if (fadeInEnd > tStart + 0.001) {
+        voiceGain.gain.linearRampToValueAtTime(peakGain, fadeInEnd);
+      } else {
+        voiceGain.gain.setValueAtTime(peakGain, tStart);
+      }
+      if (fadeOutStart > fadeInEnd + 0.001) {
+        voiceGain.gain.setValueAtTime(peakGain, fadeOutStart);
+      }
+      if (tStop > fadeOutStart + 0.001) {
+        voiceGain.gain.linearRampToValueAtTime(0, tStop);
+      }
+    } else {
+      // Crossfade segment: ramps 0 -> 1 over fadeInSec, holds until switchOutSec, then ramps -> 0 over fadeOutSec
+      const tSwitch = Math.max(tStart, seg.switchOutSec);
+      const fadeInEnd = Math.min(tSwitch, tStart + seg.fadeInSec);
+      const gainAtSwitch =
+        seg.fadeInSec > 0.001 ? Math.max(0, Math.min(1, (fadeInEnd - tStart) / seg.fadeInSec)) : 1;
+
+      voiceGain.gain.setValueAtTime(0, tStart);
+      if (fadeInEnd > tStart + 0.001) {
+        voiceGain.gain.linearRampToValueAtTime(gainAtSwitch, fadeInEnd);
+      } else {
+        voiceGain.gain.setValueAtTime(gainAtSwitch, tStart);
+      }
+      if (tSwitch > fadeInEnd + 0.001) {
+        voiceGain.gain.setValueAtTime(gainAtSwitch, tSwitch);
+      }
+      if (tStop > tSwitch + 0.001) {
+        voiceGain.gain.linearRampToValueAtTime(0, tStop);
+      }
+    }
+
+    src.connect(voiceGain);
+    voiceGain.connect(masterGain);
+
+    if (seg.trackId === 'main') {
+      src.loop = true;
+      src.loopStart = MAIN_LOOP_PAD_SEC;
+      src.loopEnd = Math.min(buf.duration - 0.05, MAIN_LOOP_PAD_SEC + MAIN_LOOP_PERIOD_SEC);
+      src.start(tStart, MAIN_LOOP_PAD_SEC);
+      src.stop(tStop + 0.02);
+    } else {
+      src.loop = false;
+      src.start(tStart, 0);
+      src.stop(Math.min(tStart + buf.duration, tStop + 0.02));
+    }
+
+    scheduledAny = true;
+  }
+
+  return scheduledAny;
 }
 
 const EXPORT_FPS = 60;
@@ -482,9 +675,15 @@ export async function exportReplayToMp4(
     throw new Error('当前浏览器不支持 WebCodecs H.264 (MP4) 导出，请使用最新版 Chrome / Edge / Safari / Firefox。');
   }
 
-  const wantAudio = options.soundEnabled && options.volumePct > 0;
+  const wantSfx = options.soundEnabled && options.volumePct > 0;
+  const bgmEnabled = options.bgmEnabled ?? true;
+  const bgmVolumePct = options.bgmVolumePct ?? 70;
+  const bossMusicEnabled = options.bossMusicEnabled ?? true;
+  const wantBgm = bgmEnabled && bgmVolumePct > 0;
+  const wantAudio = wantSfx || wantBgm;
   const audioConfig = wantAudio ? await pickSupportedAudioConfig() : null;
   const hasAudio = audioConfig !== null;
+  const hasSfx = hasAudio && wantSfx;
 
   const director = new CinematicDirector(ticks, bundle.replay.mapData, options.cinematic ?? false);
   const tickSec = LOGIC_DT_MS / 1000;
@@ -566,7 +765,18 @@ export async function exportReplayToMp4(
   }
 
   const offlineSfx = new SoundFX();
-  offlineSfx.applySettings(hasAudio, options.volumePct);
+  offlineSfx.applySettings(hasSfx, options.volumePct);
+
+  const bgmSegments =
+    hasAudio && wantBgm && offlineAudioCtx
+      ? buildOfflineBgmSegments(
+          bundle,
+          (tickIdx) => LEAD_IN_SEC + director.simToReal(Math.max(0, tickIdx - 1) * tickSec) / speed,
+          totalDurationSec,
+          bossMusicEnabled,
+        )
+      : [];
+  const neededBgmTracks = Array.from(new Set(bgmSegments.map((seg) => seg.trackId)));
 
   const offRenderer = new GameRenderer(
     webglCanvas,
@@ -577,8 +787,9 @@ export async function exportReplayToMp4(
   );
 
   try {
-    options.onProgress?.(0.04, '加载 3D 场景与角色模型...');
-    const [avatars] = await Promise.all([
+    options.onProgress?.(0.04, neededBgmTracks.length > 0 ? '加载 3D 场景与 BGM 音轨...' : '加载 3D 场景与角色模型...');
+    const bgmLoader = options.loadBgmBuffer ?? defaultLoadBgmBuffer;
+    const [avatars, , loadedBgmEntries] = await Promise.all([
       Promise.all(bundle.summary.slots.map((s) => loadImage(s.avatar))),
       offRenderer.setupMatch(
         bundle.replay.mapData,
@@ -588,10 +799,29 @@ export async function exportReplayToMp4(
         -1,
         speed,
       ),
+      offlineAudioCtx && neededBgmTracks.length > 0
+        ? Promise.all(
+            neededBgmTracks.map(
+              async (trackId): Promise<[BgmTrackId, AudioBuffer | null]> => [
+                trackId,
+                await bgmLoader(trackId, offlineAudioCtx),
+              ],
+            ),
+          )
+        : Promise.resolve([] as [BgmTrackId, AudioBuffer | null][]),
     ]);
 
     if (options.signal?.aborted) {
       throw new DOMException('已取消导出', 'AbortError');
+    }
+
+    let hasBgm = false;
+    if (offlineAudioCtx && bgmSegments.length > 0) {
+      const bgmBuffers = new Map<BgmTrackId, AudioBuffer>();
+      for (const [trackId, buf] of loadedBgmEntries) {
+        if (buf) bgmBuffers.set(trackId, buf);
+      }
+      hasBgm = scheduleOfflineBgmTracks(offlineAudioCtx, bgmSegments, bgmBuffers, bgmVolumePct);
     }
 
     offRenderer.setCinematicDirector(director);
@@ -742,7 +972,7 @@ export async function exportReplayToMp4(
       if (options.signal?.aborted) {
         throw new DOMException('已取消导出', 'AbortError');
       }
-      options.onProgress?.(0.94, '合成并编码游戏音效...');
+      options.onProgress?.(0.94, hasBgm ? '合成并编码音效与 BGM...' : '合成并编码游戏音效...');
       const renderedAudio = await offlineAudioCtx.startRendering();
       const ch0 = renderedAudio.getChannelData(0);
       const ch1 = renderedAudio.numberOfChannels > 1 ? renderedAudio.getChannelData(1) : ch0;
@@ -786,7 +1016,9 @@ export async function exportReplayToMp4(
       width,
       height,
       durationSec: totalDurationSec,
-      hasAudio,
+      hasAudio: hasSfx || hasBgm,
+      hasSfx,
+      hasBgm,
       sizeBytes: blob.size,
     };
   } catch (err) {

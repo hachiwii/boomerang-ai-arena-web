@@ -447,11 +447,19 @@ export class HistoryModal {
       })
       .then((res) => {
         this.activeExport = null;
-        const audioTag = res.hasAudio ? '含音效' : '无音轨';
+        const audioTag =
+          res.hasSfx && res.hasBgm
+            ? '含音效与 BGM'
+            : res.hasBgm
+              ? '含 BGM'
+              : res.hasSfx
+                ? '含音效'
+                : '无音轨';
         this.showNotice(
           `✅ 已下载 ${res.filename}（${formatBytes(res.sizeBytes)} · ${res.width}×${res.height} · ${audioTag}）`,
           'ok',
         );
+        if (this.openState) this.render();
       })
       .catch((err) => {
         this.activeExport = null;
@@ -461,6 +469,7 @@ export class HistoryModal {
           const msg = err instanceof Error ? err.message : String(err);
           this.showNotice(`导出失败：${msg}`, 'err');
         }
+        if (this.openState) this.render();
       });
   }
 

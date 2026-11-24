@@ -284,7 +284,7 @@ interface ActiveVoice {
 
 const BGM_MAX_GAIN = 0.56;
 
-function volumePctToGain(volumePct: number): number {
+export function bgmVolumePctToGain(volumePct: number): number {
   const norm = Math.max(0, Math.min(1, volumePct / 100));
   if (norm <= 0.0001) return 0;
   return Math.pow(norm, 1.35) * BGM_MAX_GAIN;
@@ -353,7 +353,7 @@ export class BgmManager {
     this.ctx = new AC();
     this.masterGain = this.ctx.createGain();
     this.masterGain.gain.setValueAtTime(
-      this.bgmEnabled ? volumePctToGain(this.volumePct) : 0,
+      this.bgmEnabled ? bgmVolumePctToGain(this.volumePct) : 0,
       this.ctx.currentTime,
     );
     this.masterGain.connect(this.ctx.destination);
@@ -396,7 +396,7 @@ export class BgmManager {
 
     if (this.ctx && this.masterGain) {
       const now = this.ctx.currentTime;
-      const target = this.bgmEnabled ? volumePctToGain(this.volumePct) : 0;
+      const target = this.bgmEnabled ? bgmVolumePctToGain(this.volumePct) : 0;
       this.masterGain.gain.cancelScheduledValues(now);
       this.masterGain.gain.setTargetAtTime(target, now, 0.035);
     }
@@ -488,6 +488,24 @@ export class BgmManager {
       astraSoloStatus: this.rules.astraSoloStatus,
       bossDuelStatus: this.rules.bossDuelStatus,
     };
+  }
+
+  /**
+   * Fetches (reusing in-memory cache when available) and decodes a BGM track
+   * directly into an arbitrary BaseAudioContext (e.g. OfflineAudioContext for MP4 export).
+   */
+  public async decodeTrackForContext(
+    trackId: BgmTrackId,
+    targetCtx: BaseAudioContext,
+  ): Promise<AudioBuffer | null> {
+    const raw = await this.fetchRaw(trackId);
+    if (!raw) return null;
+    try {
+      return await targetCtx.decodeAudioData(raw.slice(0));
+    } catch (err) {
+      console.warn(`[BGM] Failed to decode ${trackId} for offline context:`, err);
+      return null;
+    }
   }
 
   private prefetchTracks(tracks: BgmTrackId[]) {

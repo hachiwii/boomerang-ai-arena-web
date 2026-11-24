@@ -615,7 +615,15 @@ export class HudUI {
         this.replayExportAbort = null;
         this.setReplayExportButtonsBusy(null);
         const mb = res.sizeBytes < 1024 * 1024 ? `${(res.sizeBytes / 1024).toFixed(0)} KB` : `${(res.sizeBytes / (1024 * 1024)).toFixed(2)} MB`;
-        this.showReplayExportResultBanner(`✅ 已下载 ${res.filename}（${mb} · ${res.width}×${res.height} · ${res.hasAudio ? '含音效' : '无音轨'}）`, true);
+        const audioTag =
+          res.hasSfx && res.hasBgm
+            ? '含音效与 BGM'
+            : res.hasBgm
+              ? '含 BGM'
+              : res.hasSfx
+                ? '含音效'
+                : '无音轨';
+        this.showReplayExportResultBanner(`✅ 已下载 ${res.filename}（${mb} · ${res.width}×${res.height} · ${audioTag}）`, true);
       })
       .catch((err) => {
         if (this.replayExportAbort !== abortCtrl) return;
