@@ -15,6 +15,8 @@ import { CinematicDirector } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
 import {
   CinematicOptions,
+  clampExportBitrateMbps,
+  clampExportSpeed,
   ExportBitrateOption,
   ExportResolutionOption,
   ExportSpeedOption,
@@ -332,13 +334,15 @@ async function pickSupportedVideoConfig(
   }
 
   const codecsByHeight =
-    height >= 1440
-      ? ['avc1.640033', 'avc1.640032', 'avc1.4d0033', 'avc1.4d0032', 'avc1.420033']
-      : height >= 1080
-        ? ['avc1.64002a', 'avc1.640032', 'avc1.4d002a', 'avc1.42002a']
-        : height >= 720
-          ? ['avc1.640020', 'avc1.64002a', 'avc1.4d0020', 'avc1.4d002a', 'avc1.420020']
-          : ['avc1.64001f', 'avc1.640020', 'avc1.4d001f', 'avc1.42001f'];
+    height >= 2160
+      ? ['avc1.640034', 'avc1.64003c', 'avc1.640033', 'avc1.4d0034', 'avc1.4d0033', 'avc1.420034']
+      : height >= 1440
+        ? ['avc1.640033', 'avc1.640034', 'avc1.640032', 'avc1.4d0033', 'avc1.4d0032', 'avc1.420033']
+        : height >= 1080 || bitrateBps > 20_000_000
+          ? ['avc1.64002a', 'avc1.640033', 'avc1.640034', 'avc1.4d002a', 'avc1.4d0033', 'avc1.42002a']
+          : height >= 720 || bitrateBps > 14_000_000
+            ? ['avc1.640020', 'avc1.64002a', 'avc1.640033', 'avc1.4d0020', 'avc1.4d002a', 'avc1.420020']
+            : ['avc1.64001f', 'avc1.640020', 'avc1.64002a', 'avc1.4d001f', 'avc1.42001f'];
 
   const hwModes: HardwareAcceleration[] = ['prefer-hardware', 'no-preference', 'prefer-software'];
   for (const hardwareAcceleration of hwModes) {
@@ -405,7 +409,7 @@ function buildExportFilename(
         : summary.matchMode === 'cricket'
           ? 'cricket'
           : 'custom';
-  const spdTag = speed === 1 ? '1x' : `${speed}x`;
+  const spdTag = Math.abs(speed - 1) < 0.01 ? '1x' : `${speed.toFixed(1)}x`;
   return `boomerang_${modeTag}_${summary.mapId}_${stamp}_${resolution}_${spdTag}.mp4`;
 }
 
@@ -619,7 +623,7 @@ export function drawBroadcastOverlay(
   ctx.fillText(colStr, width * 0.5, centerY + 54 * s);
 
   // 4. Top-Right Watermark Badge
-  const spdLabel = Math.abs(speed - 1) > 0.01 ? ` · ${speed}x` : '';
+  const spdLabel = Math.abs(speed - 1) > 0.01 ? ` · ${speed.toFixed(1)}x` : '';
   const wmText = `回旋镖大作战 · 观战回放${spdLabel}`;
   ctx.font = `800 ${Math.round(11.5 * s)}px ${fontStack}`;
   const wmW = ctx.measureText(wmText).width + 24 * s;
@@ -704,8 +708,8 @@ export async function exportReplayToMp4(
   const resSpec = getExportResolutionSpec(options.resolution);
   const width = resSpec.width;
   const height = resSpec.height;
-  const bitrateBps = options.bitrateMbps * 1_000_000;
-  const speed = Math.max(0.25, Math.min(2.0, options.speed || 1.0));
+  const bitrateBps = clampExportBitrateMbps(options.bitrateMbps) * 1_000_000;
+  const speed = clampExportSpeed(options.speed ?? 1.0);
 
   options.onProgress?.(0.01, '检测浏览器 MP4 编码能力...');
 

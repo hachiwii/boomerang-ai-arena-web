@@ -4,7 +4,13 @@ import { CountdownStage } from '../game/matchController';
 import { MatchReplayBundle } from '../game/matchHistory';
 import { Mp4ExportResult } from '../game/mp4Exporter';
 import { ReplayPlaybackState } from '../game/replayController';
-import { formatDashSummary, formatMoveSummary, formatPrimaryBind, SettingsStore } from '../game/settings';
+import {
+  formatDashSummary,
+  formatExportPresetLabel,
+  formatMoveSummary,
+  formatPrimaryBind,
+  SettingsStore,
+} from '../game/settings';
 import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
 
 export interface HudCallbacks {
@@ -313,9 +319,7 @@ export class HudUI {
   }
 
   private getExportPresetLabel(): string {
-    const s = this.settings.get();
-    const spd = s.exportSpeed === 1 ? '1x' : `${s.exportSpeed}x`;
-    return `${s.exportResolution} · ${s.exportBitrateMbps} Mbps · ${spd}`;
+    return formatExportPresetLabel(this.settings.get());
   }
 
   public showReplay(

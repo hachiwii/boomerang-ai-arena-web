@@ -1,8 +1,8 @@
 export type GraphicsQualityOption = 'low' | 'high';
 export type SlashJudgmentOption = 'normal' | 'strict' | 'ai';
-export type ExportResolutionOption = '480p' | '720p' | '1080p' | '1440p';
-export type ExportBitrateOption = 2 | 4 | 8 | 12;
-export type ExportSpeedOption = 0.5 | 1.0 | 1.5 | 2.0;
+export type ExportResolutionOption = '480p' | '720p' | '1080p' | '2k' | '4k';
+export type ExportBitrateOption = number;
+export type ExportSpeedOption = number;
 
 export type ActionBindKey =
   | 'moveUp'
@@ -43,6 +43,8 @@ export interface GameSettings {
   exportResolution: ExportResolutionOption;
   exportBitrateMbps: ExportBitrateOption;
   exportSpeed: ExportSpeedOption;
+  exportSoundEnabled: boolean;
+  exportBgmEnabled: boolean;
   keybindings: KeyBindings;
 }
 
@@ -106,25 +108,45 @@ export const EXPORT_RESOLUTION_OPTIONS: {
   { value: '480p', label: '480p', width: 854, height: 480, desc: '854×480 · 极小体积' },
   { value: '720p', label: '720p', width: 1280, height: 720, desc: '1280×720 · 高清轻量' },
   { value: '1080p', label: '1080p', width: 1920, height: 1080, desc: '1920×1080 · 全高清推荐' },
-  { value: '1440p', label: '1440p', width: 2560, height: 1440, desc: '2560×1440 · 2K 超清' },
+  { value: '2k', label: '2K', width: 2560, height: 1440, desc: '2560×1440 · 2K 超清' },
+  { value: '4k', label: '4K', width: 3840, height: 2160, desc: '3840×2160 · 4K 极致' },
 ];
 
-export const EXPORT_BITRATE_OPTIONS: { value: ExportBitrateOption; label: string; desc: string }[] = [
-  { value: 2, label: '2 Mbps', desc: '超轻量' },
-  { value: 4, label: '4 Mbps', desc: '推荐 · 均衡清晰' },
-  { value: 8, label: '8 Mbps', desc: '高清晰度' },
-  { value: 12, label: '12 Mbps', desc: '极致画质' },
-];
+export const EXPORT_BITRATE_MIN = 4;
+export const EXPORT_BITRATE_MAX = 50;
+export const EXPORT_BITRATE_TICKS: readonly number[] = [4, 10, 20, 35, 50];
 
-export const EXPORT_SPEED_OPTIONS: { value: ExportSpeedOption; label: string }[] = [
-  { value: 0.5, label: '0.5x' },
-  { value: 1.0, label: '1x' },
-  { value: 1.5, label: '1.5x' },
-  { value: 2.0, label: '2x' },
-];
+export const EXPORT_SPEED_MIN = 0.1;
+export const EXPORT_SPEED_MAX = 2.0;
+export const EXPORT_SPEED_STEP = 0.1;
+export const EXPORT_SPEED_TICKS: readonly number[] = [0.1, 0.5, 1.0, 1.5, 2.0];
+
+export function clampExportBitrateMbps(mbps: number): number {
+  if (!Number.isFinite(mbps)) return 4;
+  return Math.max(EXPORT_BITRATE_MIN, Math.min(EXPORT_BITRATE_MAX, Math.round(mbps)));
+}
+
+export function clampExportSpeed(speed: number): number {
+  if (!Number.isFinite(speed)) return 1.0;
+  return Math.round(Math.max(EXPORT_SPEED_MIN, Math.min(EXPORT_SPEED_MAX, speed)) * 10) / 10;
+}
 
 export function getExportResolutionSpec(res: ExportResolutionOption) {
   return EXPORT_RESOLUTION_OPTIONS.find((o) => o.value === res) || EXPORT_RESOLUTION_OPTIONS[2];
+}
+
+export function formatExportPresetLabel(s: GameSettings): string {
+  const resLabel = getExportResolutionSpec(s.exportResolution).label;
+  const spd = `${clampExportSpeed(s.exportSpeed).toFixed(1)}x`;
+  const audioTag =
+    s.exportSoundEnabled && s.exportBgmEnabled
+      ? ''
+      : s.exportSoundEnabled
+        ? ' · 仅音效'
+        : s.exportBgmEnabled
+          ? ' · 仅 BGM'
+          : ' · 静音';
+  return `${resLabel} · ${s.exportBitrateMbps} Mbps · ${spd}${audioTag}`;
 }
 
 export function cloneDefaultKeybindings(): KeyBindings {
@@ -161,15 +183,15 @@ export function defaultSettings(): GameSettings {
     exportResolution: '1080p',
     exportBitrateMbps: 4,
     exportSpeed: 1.0,
+    exportSoundEnabled: true,
+    exportBgmEnabled: true,
     keybindings: cloneDefaultKeybindings(),
   };
 }
 
 const VALID_GRAPHICS_QUALITY = new Set<GraphicsQualityOption>(['low', 'high']);
 const VALID_SLASH_JUDGMENT = new Set<SlashJudgmentOption>(['normal', 'strict', 'ai']);
-const VALID_EXPORT_RES = new Set<ExportResolutionOption>(['480p', '720p', '1080p', '1440p']);
-const VALID_EXPORT_BITRATES = new Set<ExportBitrateOption>([2, 4, 8, 12]);
-const VALID_EXPORT_SPEEDS = new Set<ExportSpeedOption>([0.5, 1.0, 1.5, 2.0]);
+const VALID_EXPORT_RES = new Set<ExportResolutionOption>(['480p', '720p', '1080p', '2k', '4k']);
 const STORAGE_KEY = 'boomerang_arena_settings_v1';
 
 /**
@@ -318,18 +340,24 @@ export class SettingsStore {
           : typeof parsed.killCam === 'boolean'
             ? parsed.killCam
             : def.winnerCam;
+      const rawExportRes = parsed.exportResolution as string | undefined;
+      const migratedRes = rawExportRes === '1440p' ? '2k' : rawExportRes;
       const exportResolution: ExportResolutionOption =
-        parsed.exportResolution !== undefined && VALID_EXPORT_RES.has(parsed.exportResolution)
-          ? parsed.exportResolution
+        migratedRes !== undefined && VALID_EXPORT_RES.has(migratedRes as ExportResolutionOption)
+          ? (migratedRes as ExportResolutionOption)
           : def.exportResolution;
       const exportBitrateMbps: ExportBitrateOption =
-        parsed.exportBitrateMbps !== undefined && VALID_EXPORT_BITRATES.has(parsed.exportBitrateMbps)
-          ? parsed.exportBitrateMbps
+        typeof parsed.exportBitrateMbps === 'number' && Number.isFinite(parsed.exportBitrateMbps)
+          ? clampExportBitrateMbps(parsed.exportBitrateMbps)
           : def.exportBitrateMbps;
       const exportSpeed: ExportSpeedOption =
-        parsed.exportSpeed !== undefined && VALID_EXPORT_SPEEDS.has(parsed.exportSpeed)
-          ? parsed.exportSpeed
+        typeof parsed.exportSpeed === 'number' && Number.isFinite(parsed.exportSpeed)
+          ? clampExportSpeed(parsed.exportSpeed)
           : def.exportSpeed;
+      const exportSoundEnabled =
+        typeof parsed.exportSoundEnabled === 'boolean' ? parsed.exportSoundEnabled : def.exportSoundEnabled;
+      const exportBgmEnabled =
+        typeof parsed.exportBgmEnabled === 'boolean' ? parsed.exportBgmEnabled : def.exportBgmEnabled;
 
       const kb = cloneDefaultKeybindings();
       if (parsed.keybindings && typeof parsed.keybindings === 'object') {
@@ -361,6 +389,8 @@ export class SettingsStore {
         exportResolution,
         exportBitrateMbps,
         exportSpeed,
+        exportSoundEnabled,
+        exportBgmEnabled,
         keybindings: kb,
       };
     } catch {
@@ -491,14 +521,28 @@ export class SettingsStore {
   }
 
   public setExportBitrateMbps(mbps: ExportBitrateOption) {
-    if (!VALID_EXPORT_BITRATES.has(mbps) || this.settings.exportBitrateMbps === mbps) return;
-    this.settings.exportBitrateMbps = mbps;
+    const clamped = clampExportBitrateMbps(mbps);
+    if (this.settings.exportBitrateMbps === clamped) return;
+    this.settings.exportBitrateMbps = clamped;
     this.emit();
   }
 
   public setExportSpeed(speed: ExportSpeedOption) {
-    if (!VALID_EXPORT_SPEEDS.has(speed) || this.settings.exportSpeed === speed) return;
-    this.settings.exportSpeed = speed;
+    const clamped = clampExportSpeed(speed);
+    if (this.settings.exportSpeed === clamped) return;
+    this.settings.exportSpeed = clamped;
+    this.emit();
+  }
+
+  public setExportSoundEnabled(enabled: boolean) {
+    if (this.settings.exportSoundEnabled === enabled) return;
+    this.settings.exportSoundEnabled = enabled;
+    this.emit();
+  }
+
+  public setExportBgmEnabled(enabled: boolean) {
+    if (this.settings.exportBgmEnabled === enabled) return;
+    this.settings.exportBgmEnabled = enabled;
     this.emit();
   }
 

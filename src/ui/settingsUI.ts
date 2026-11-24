@@ -1,12 +1,15 @@
 import {
   ACTION_META,
   ActionBindKey,
-  EXPORT_BITRATE_OPTIONS,
+  EXPORT_BITRATE_MAX,
+  EXPORT_BITRATE_MIN,
+  EXPORT_BITRATE_TICKS,
   EXPORT_RESOLUTION_OPTIONS,
-  EXPORT_SPEED_OPTIONS,
-  ExportBitrateOption,
+  EXPORT_SPEED_MAX,
+  EXPORT_SPEED_MIN,
+  EXPORT_SPEED_STEP,
+  EXPORT_SPEED_TICKS,
   ExportResolutionOption,
-  ExportSpeedOption,
   formatInputCode,
   getSlashJudgmentDesc,
   GRAPHICS_QUALITY_OPTIONS,
@@ -373,16 +376,40 @@ export class SettingsModal {
       btn.classList.toggle('active', active);
       btn.setAttribute('aria-pressed', String(active));
     });
-    this.body.querySelectorAll<HTMLButtonElement>('[data-export-bitrate]').forEach((btn) => {
-      const active = Number(btn.dataset.exportBitrate) === s.exportBitrateMbps;
+
+    const bitratePct =
+      ((s.exportBitrateMbps - EXPORT_BITRATE_MIN) / (EXPORT_BITRATE_MAX - EXPORT_BITRATE_MIN)) * 100;
+    const bitrateSlider = this.body.querySelector<HTMLInputElement>('#settings-export-bitrate-slider');
+    if (bitrateSlider) {
+      const nextVal = String(s.exportBitrateMbps);
+      if (bitrateSlider.value !== nextVal) bitrateSlider.value = nextVal;
+      bitrateSlider.style.setProperty('--speed-pct', `${bitratePct.toFixed(1)}%`);
+    }
+    const bitrateVal = this.body.querySelector<HTMLElement>('#settings-export-bitrate-val');
+    if (bitrateVal) bitrateVal.textContent = `${s.exportBitrateMbps} Mbps`;
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-bitrate-tick]').forEach((btn) => {
+      const active = Number(btn.dataset.exportBitrateTick) === s.exportBitrateMbps;
       btn.classList.toggle('active', active);
       btn.setAttribute('aria-pressed', String(active));
     });
-    this.body.querySelectorAll<HTMLButtonElement>('[data-export-speed]').forEach((btn) => {
-      const active = Number(btn.dataset.exportSpeed) === s.exportSpeed;
+
+    const speedPct = ((s.exportSpeed - EXPORT_SPEED_MIN) / (EXPORT_SPEED_MAX - EXPORT_SPEED_MIN)) * 100;
+    const speedSlider = this.body.querySelector<HTMLInputElement>('#settings-export-speed-slider');
+    if (speedSlider) {
+      const nextVal = s.exportSpeed.toFixed(1);
+      if (speedSlider.value !== nextVal) speedSlider.value = nextVal;
+      speedSlider.style.setProperty('--speed-pct', `${speedPct.toFixed(1)}%`);
+    }
+    const speedVal = this.body.querySelector<HTMLElement>('#settings-export-speed-val');
+    if (speedVal) speedVal.textContent = `${s.exportSpeed.toFixed(1)}x`;
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-speed-tick]').forEach((btn) => {
+      const active = Math.abs(Number(btn.dataset.exportSpeedTick) - s.exportSpeed) < 0.01;
       btn.classList.toggle('active', active);
       btn.setAttribute('aria-pressed', String(active));
     });
+
+    setSwitch('#settings-export-sound-toggle', s.exportSoundEnabled, '导出游戏音效');
+    setSwitch('#settings-export-bgm-toggle', s.exportBgmEnabled, '导出背景音乐');
   }
 
   private render() {
@@ -685,26 +712,85 @@ export class SettingsModal {
                 <div class="settings-seg settings-seg-full" role="group" aria-label="导出分辨率">
                   ${EXPORT_RESOLUTION_OPTIONS.map((opt) => {
                     const active = s.exportResolution === opt.value;
-                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-export-res="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-export-res="${opt.value}" aria-pressed="${active}" title="${opt.desc}">${opt.label}</button>`;
                   }).join('')}
                 </div>
               </div>
-              <div class="export-opt-row">
-                <span class="export-opt-label">码率</span>
-                <div class="settings-seg settings-seg-full" role="group" aria-label="导出码率">
-                  ${EXPORT_BITRATE_OPTIONS.map((opt) => {
-                    const active = s.exportBitrateMbps === opt.value;
-                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-export-bitrate="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+
+              <div class="export-slider-block">
+                <div class="export-slider-head">
+                  <span class="export-opt-label">码率</span>
+                  <span class="export-slider-readout"><strong id="settings-export-bitrate-val">${s.exportBitrateMbps} Mbps</strong></span>
+                </div>
+                <input
+                  type="range"
+                  id="settings-export-bitrate-slider"
+                  class="speed-slider"
+                  min="${EXPORT_BITRATE_MIN}"
+                  max="${EXPORT_BITRATE_MAX}"
+                  step="1"
+                  value="${s.exportBitrateMbps}"
+                  style="--speed-pct:${(((s.exportBitrateMbps - EXPORT_BITRATE_MIN) / (EXPORT_BITRATE_MAX - EXPORT_BITRATE_MIN)) * 100).toFixed(1)}%"
+                  aria-label="导出码率"
+                />
+                <div class="speed-ticks">
+                  ${EXPORT_BITRATE_TICKS.map((v) => {
+                    const active = s.exportBitrateMbps === v;
+                    return `<button type="button" class="speed-tick ${active ? 'active' : ''}" data-export-bitrate-tick="${v}" aria-pressed="${active}">${v} Mbps</button>`;
                   }).join('')}
                 </div>
               </div>
-              <div class="export-opt-row">
-                <span class="export-opt-label">播放速度</span>
-                <div class="settings-seg settings-seg-full" role="group" aria-label="导出播放速度">
-                  ${EXPORT_SPEED_OPTIONS.map((opt) => {
-                    const active = s.exportSpeed === opt.value;
-                    return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-export-speed="${opt.value}" aria-pressed="${active}">${opt.label}</button>`;
+
+              <div class="export-slider-block">
+                <div class="export-slider-head">
+                  <span class="export-opt-label">播放速度</span>
+                  <span class="export-slider-readout"><strong id="settings-export-speed-val">${s.exportSpeed.toFixed(1)}x</strong></span>
+                </div>
+                <input
+                  type="range"
+                  id="settings-export-speed-slider"
+                  class="speed-slider"
+                  min="${EXPORT_SPEED_MIN}"
+                  max="${EXPORT_SPEED_MAX}"
+                  step="${EXPORT_SPEED_STEP}"
+                  value="${s.exportSpeed.toFixed(1)}"
+                  style="--speed-pct:${(((s.exportSpeed - EXPORT_SPEED_MIN) / (EXPORT_SPEED_MAX - EXPORT_SPEED_MIN)) * 100).toFixed(1)}%"
+                  aria-label="导出播放速度"
+                />
+                <div class="speed-ticks">
+                  ${EXPORT_SPEED_TICKS.map((v) => {
+                    const active = Math.abs(s.exportSpeed - v) < 0.01;
+                    return `<button type="button" class="speed-tick ${active ? 'active' : ''}" data-export-speed-tick="${v}" aria-pressed="${active}">${v.toFixed(1)}x</button>`;
                   }).join('')}
+                </div>
+              </div>
+
+              <div class="export-audio-section">
+                <div class="export-audio-head">
+                  <span class="export-opt-label">导出音频</span>
+                  <span class="export-audio-hint">与上方音效设置独立</span>
+                </div>
+                <div class="export-audio-switches">
+                  <button
+                    type="button"
+                    class="rand-switch export-audio-switch ${s.exportSoundEnabled ? 'is-on' : ''}"
+                    id="settings-export-sound-toggle"
+                    role="switch"
+                    aria-checked="${s.exportSoundEnabled}"
+                  >
+                    <span class="rand-track"><span class="rand-thumb"></span></span>
+                    <span class="rand-label">导出游戏音效</span>
+                  </button>
+                  <button
+                    type="button"
+                    class="rand-switch export-audio-switch ${s.exportBgmEnabled ? 'is-on' : ''}"
+                    id="settings-export-bgm-toggle"
+                    role="switch"
+                    aria-checked="${s.exportBgmEnabled}"
+                  >
+                    <span class="rand-track"><span class="rand-thumb"></span></span>
+                    <span class="rand-label">导出背景音乐</span>
+                  </button>
                 </div>
               </div>
             </div>
@@ -861,24 +947,45 @@ export class SettingsModal {
       this.syncControlsInPlace();
     });
 
-    // Export MP4 option selectors
+    // Export MP4 option selectors & sliders
     this.body.querySelectorAll<HTMLButtonElement>('[data-export-res]').forEach((btn) => {
       btn.addEventListener('click', () => {
         this.store.setExportResolution(btn.dataset.exportRes as ExportResolutionOption);
         this.syncControlsInPlace();
       });
     });
-    this.body.querySelectorAll<HTMLButtonElement>('[data-export-bitrate]').forEach((btn) => {
+
+    const exportBitrateSlider = this.body.querySelector<HTMLInputElement>('#settings-export-bitrate-slider');
+    exportBitrateSlider?.addEventListener('input', () => {
+      this.store.setExportBitrateMbps(Number(exportBitrateSlider.value));
+      this.syncControlsInPlace();
+    });
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-bitrate-tick]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        this.store.setExportBitrateMbps(Number(btn.dataset.exportBitrate) as ExportBitrateOption);
+        this.store.setExportBitrateMbps(Number(btn.dataset.exportBitrateTick));
         this.syncControlsInPlace();
       });
     });
-    this.body.querySelectorAll<HTMLButtonElement>('[data-export-speed]').forEach((btn) => {
+
+    const exportSpeedSlider = this.body.querySelector<HTMLInputElement>('#settings-export-speed-slider');
+    exportSpeedSlider?.addEventListener('input', () => {
+      this.store.setExportSpeed(Number(exportSpeedSlider.value));
+      this.syncControlsInPlace();
+    });
+    this.body.querySelectorAll<HTMLButtonElement>('[data-export-speed-tick]').forEach((btn) => {
       btn.addEventListener('click', () => {
-        this.store.setExportSpeed(Number(btn.dataset.exportSpeed) as ExportSpeedOption);
+        this.store.setExportSpeed(Number(btn.dataset.exportSpeedTick));
         this.syncControlsInPlace();
       });
+    });
+
+    this.body.querySelector('#settings-export-sound-toggle')?.addEventListener('click', () => {
+      this.store.setExportSoundEnabled(!this.store.get().exportSoundEnabled);
+      this.syncControlsInPlace();
+    });
+    this.body.querySelector('#settings-export-bgm-toggle')?.addEventListener('click', () => {
+      this.store.setExportBgmEnabled(!this.store.get().exportBgmEnabled);
+      this.syncControlsInPlace();
     });
 
     // Keybinding slot capture

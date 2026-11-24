@@ -5,7 +5,7 @@ import {
   MAX_HISTORY_PER_MODE,
 } from '../game/matchHistory';
 import { Mp4ExportResult } from '../game/mp4Exporter';
-import { SettingsStore } from '../game/settings';
+import { formatExportPresetLabel, SettingsStore } from '../game/settings';
 
 type HistoryFilter = 'all' | 'ranked' | 'cricket' | 'custom';
 
@@ -306,9 +306,7 @@ export class HistoryModal {
   }
 
   private getExportPresetLabel(): string {
-    const s = this.settings.get();
-    const spd = s.exportSpeed === 1 ? '1x' : `${s.exportSpeed}x`;
-    return `${s.exportResolution} · ${s.exportBitrateMbps} Mbps · ${spd}`;
+    return formatExportPresetLabel(this.settings.get());
   }
 
   private syncExportPresetInPlace() {
