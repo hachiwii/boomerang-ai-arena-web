@@ -612,10 +612,11 @@ export class ArenaMap3D implements IArenaMap {
         if (freezeT === undefined && fallStep >= 0 && gt >= fallStep - colWarn) {
           // Collapse warning: shake + urgent orange-red pulse!
           ti.modified = true;
-          const prog = (gt - (fallStep - colWarn)) / Math.max(1, colWarn);
+          const warnSec = Math.max(0, (gt - (fallStep - colWarn)) * 0.05);
+          const prog = Math.min(1, warnSec / (Math.max(1, colWarn) * 0.05));
           const amp = (0.014 + 0.032 * prog) * prog;
-          const jx = Math.sin(elapsedSec * 46 + ti.rndA * 20) * amp;
-          const jz = Math.cos(elapsedSec * 52 + ti.rndB * 20) * amp;
+          const jx = Math.sin(warnSec * 46 + ti.rndA * 20) * amp;
+          const jz = Math.cos(warnSec * 52 + ti.rndB * 20) * amp;
           this._dummy.position.set(ti.cx + jx, ti.baseY - 0.03 * prog, ti.cz + jz);
           this._dummy.rotation.set(0, ti.rotY, 0);
           this._dummy.scale.set(ti.scaleX, ti.scaleY, ti.scaleZ);
@@ -624,7 +625,8 @@ export class ArenaMap3D implements IArenaMap {
           dirtyMat = true;
 
           if (warnTint) {
-            const pulse = 0.35 + 0.5 * (0.5 + 0.5 * Math.sin(elapsedSec * (10 + prog * 14)));
+            // Exact phase integral of ω(t) = 10 + 14 * prog(t) rad/s (1.59 → 3.82 Hz)
+            const pulse = 0.35 + 0.5 * (0.5 + 0.5 * Math.sin(warnSec * (10 + 7 * prog)));
             this._tmpCol.copy(ti.baseColor).lerp(this._warnCol, pulse * (0.35 + 0.55 * prog));
             mesh.setColorAt(ti.idx, this._tmpCol);
             dirtyCol = true;

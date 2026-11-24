@@ -1975,6 +1975,7 @@ export class HqArenaMap3D implements IArenaMap {
       bundle.intactDetails.visible = false;
 
       const maxD = this.waveMaxDist.get(wave) ?? 1;
+      const warnDurSec = Math.max(1, colWarn) * 0.05;
       let anyVisible = false;
 
       for (const ch of bundle.chunks) {
@@ -1984,7 +1985,8 @@ export class HqArenaMap3D implements IArenaMap {
           if (u < delay) {
             anyVisible = true;
             const amp = 0.032;
-            const ph = elapsedSec * 44 + ch.rnd[1] * 20;
+            // Continue continuously from the exact end-of-warning phase & frequency (54 rad/s)
+            const ph = 43 * warnDurSec + u * 0.05 * 54 + ch.rnd[1] * 20;
             const px = ch.cx + Math.sin(ph) * amp;
             const pz = ch.cz + Math.cos(ph * 1.3) * amp;
             const rx = Math.sin(ph * 0.9) * 0.04;
@@ -2067,9 +2069,11 @@ export class HqArenaMap3D implements IArenaMap {
             opts?.onCollapseDust?.(ch.cx, 0.04, ch.cz, 1, 0.14, 0.34, 0.52, 0.12);
           }
           anyVisible = true;
-          const prog = Math.min(1, Math.max(0, (gt - (fallStep - colWarn)) / Math.max(1, colWarn)));
+          const warnSec = Math.max(0, (gt - (fallStep - colWarn)) * 0.05);
+          const prog = Math.min(1, warnSec / warnDurSec);
           const amp = (0.01 + 0.032 * prog) * prog;
-          const ph = elapsedSec * (32 + 22 * prog) + ch.rnd[1] * 20;
+          // Exact phase integral of ω(t) = 32 + 22 * prog(t) rad/s (5.09 → 8.59 Hz)
+          const ph = warnSec * (32 + 11 * prog) + ch.rnd[1] * 20;
           const px = ch.cx + Math.sin(ph) * amp;
           const py = -0.02 - 0.04 * prog * prog;
           const pz = ch.cz + Math.cos(ph * 1.25) * amp;
@@ -2091,7 +2095,8 @@ export class HqArenaMap3D implements IArenaMap {
             if (ch.topMesh) ch.topMesh.material = this.warnTopMat;
             if (ch.cliffMesh) ch.cliffMesh.material = this.warnCliffMat;
           }
-          const pulse = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(elapsedSec * (9 + prog * 14)));
+          // Exact phase integral of ω(t) = 9 + 14 * prog(t) rad/s (1.43 → 3.66 Hz)
+          const pulse = 0.3 + 0.7 * (0.5 + 0.5 * Math.sin(warnSec * (9 + 7 * prog)));
           maxWarnEmissive = Math.max(maxWarnEmissive, pulse * (0.18 + 0.42 * prog));
           if (ch.hasShadowCaster && ch.shadowState !== 0) {
             ch.shadowState = 0;
