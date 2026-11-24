@@ -307,7 +307,7 @@ export class MatchController {
       humanSeat: this.humanSeat,
       cliffGuard: config.dashGuard ?? config.cliffGuard,
       meleeAssist: config.meleeAssist ?? true,
-      humanSlashTicks: config.humanSlashTicks ?? 4,
+      humanSlashTicks: config.humanSlashTicks ?? 3,
       training: isTraining,
     });
     if (this.stopped) return;

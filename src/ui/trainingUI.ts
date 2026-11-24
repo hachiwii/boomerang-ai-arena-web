@@ -16,7 +16,7 @@ export class TrainingPanel {
     this.el = document.createElement('div');
     this.el.className = 'training-panel hidden';
     this.el.innerHTML = `
-      <div class="tp-head"><span class="tp-title">🎯 训练场</span><span class="tp-sub">不限时 · 你无敌（受击只闪白）· 坠崖回到最近的地面</span></div>
+      <div class="tp-head"><span class="tp-title">🎯 训练场</span></div>
       <div class="tp-stats">
         <span class="tp-stat"><b data-tp="kills">0</b>击倒</span>
         <span class="tp-stat"><b data-tp="blocks">0</b>挡镖</span>

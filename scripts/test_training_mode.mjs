@@ -1,6 +1,6 @@
 // Training-mode engine checks (engine_init_training on public/assets/training/training.txt):
-// invincible player with hit events, fall → back on nearest safe ground, dummies that die and revive after 2 s,
-// anchored dart dummies (no death, no knockback, no push), stone lane drop + recall, open lane auto return, no game over.
+// 64x32 wide arena, strike dummies 4m apart, open bottom-left, dart dummies near east edge with stone near max range,
+// movement zone directly below dart zone, invincible player + fall fallback, reviving dummies, anchored dart dummies.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -30,7 +30,6 @@ function reset() {
   map = JSON.parse(getMap());
 }
 
-/** acts: { [seat]: [mx, my, act, ax, ay] } → returns this step's events */
 function step(acts = {}) {
   const lines = [];
   for (let k = 0; k < N; k++) {
@@ -50,8 +49,7 @@ function cellAt(x, y) {
   return map.cells[gy * map.nx + gx];
 }
 
-/** Steer `seat` toward (x, y) until within tol mm (walls slide). Returns all events seen. */
-function walkTo(seat, x, y, tol = 120, maxTicks = 200, extra = {}) {
+function walkTo(seat, x, y, tol = 120, maxTicks = 260, extra = {}) {
   const evs = [];
   for (let i = 0; i < maxTicks; i++) {
     const p = st.players[seat];
@@ -65,15 +63,37 @@ function walkTo(seat, x, y, tol = 120, maxTicks = 200, extra = {}) {
   return evs;
 }
 
+/** Drop seat 0's dart into the divider tree at (36..37, 15..16) = (18000..19000, 7500..8500) so seat 0 is empty-handed. */
+function dropPlayerDartOnTree() {
+  walkTo(0, 18250, 6500);
+  step({ 0: [0, 0, 1, 0, 1000] });
+  for (let i = 0; i < 20 && st.darts[0].st !== 3; i++) step();
+  assert.equal(st.darts[0].st, 3, 'player dart dropped at the tree');
+}
+
 const has = (evs, name, pred = () => true) => evs.some((e) => e.name === name && pred(e));
 
-// ---------------------------------------------------------------- 1. init
+// ---------------------------------------------------------------- 1. init & layout geometry
 reset();
 assert.equal(st.n, 8);
+assert.equal(map.nx, 64, 'training map width doubled to 64 cells (32m)');
+assert.equal(map.ny, 32, 'training map height stays 32 cells (16m)');
 assert.equal(map.nwave, 0, 'training ground never collapses');
 assert.ok(st.players.every((p) => p.alive === 1));
-assert.deepEqual(map.spawns[6], [14750, 3000]);
-console.log('  [PASS] init: 8 seats alive, no collapse waves');
+assert.deepEqual(map.spawns[1], [3250, 3000]);
+assert.deepEqual(map.spawns[2], [7250, 3000]);
+assert.deepEqual(map.spawns[3], [11250, 3000]);
+assert.equal(map.spawns[2][0] - map.spawns[1][0], 4000, 'strike dummies spaced 4m apart (2x original)');
+assert.equal(map.spawns[3][0] - map.spawns[2][0], 4000, 'strike dummies spaced 4m apart (2x original)');
+assert.deepEqual(map.spawns[6], [30750, 3000]);
+assert.deepEqual(map.spawns[7], [30750, 6500]);
+// Verify bottom-left under strike zone is completely open floor
+for (let gy = 15; gy <= 29; gy++) {
+  for (let gx = 2; gx <= 31; gx++) {
+    assert.equal(map.cells[gy * map.nx + gx], 0, `bottom-left (${gx},${gy}) should be empty open floor`);
+  }
+}
+console.log('  [PASS] init: 64x32 wide arena, 8 seats alive, 4m strike spacing, open bottom-left, no collapse');
 
 // ---------------------------------------------------------------- 2. open lane: dart flies out and returns by itself
 {
@@ -82,40 +102,39 @@ console.log('  [PASS] init: 8 seats alive, no collapse waves');
   let all = [...evs];
   for (let i = 0; i < 80 && !has(all, 'CATCH', (e) => e.a === 7); i++) all.push(...step());
   assert.ok(has(all, 'RELEASE', (e) => e.a === 7), 'dummy 7 released');
-  assert.ok(has(all, 'TURN', (e) => e.a === 7 && Math.abs(e.b - (14750 - 7200)) <= 2), 'dart turned at full range');
+  assert.ok(has(all, 'TURN', (e) => e.a === 7 && Math.abs(e.b - (30750 - 7200)) <= 2), 'dart turned at full range');
   assert.ok(has(all, 'CATCH', (e) => e.a === 7), 'dart caught back');
   assert.ok(!has(all, 'DROP', (e) => e.a === 7), 'open lane: nothing in the way');
-  assert.deepEqual([st.players[7].x, st.players[7].y], [14750, 6500]);
-  console.log('  [PASS] open lane: full-range throw, auto return, caught');
+  assert.deepEqual([st.players[7].x, st.players[7].y], [30750, 6500]);
+  console.log('  [PASS] open lane: full-range throw (7.2m), auto return, caught');
 }
 
-// ---------------------------------------------------------------- 3. stone lane: dart lands at the stone, recall brings it back
+// ---------------------------------------------------------------- 3. stone lane: stone near max range (6.75m / 7.2m), drops & recalls
 {
   reset();
   let all = [...step({ 6: [0, 0, 1, -1000, 0] })];
   for (let i = 0; i < 30 && !has(all, 'DROP', (e) => e.a === 6); i++) all.push(...step());
   const drop = all.find((e) => e.name === 'DROP' && e.a === 6);
-  assert.ok(drop, 'dart hit the stone');
-  assert.ok(drop.b >= 11500 && drop.b <= 11520 && drop.c === 3000, `dropped at the stone face (${drop.b},${drop.c})`);
+  assert.ok(drop, 'dart hit the stone near end of range');
+  assert.ok(drop.b >= 24000 && drop.b <= 24020 && drop.c === 3000, `dropped at the stone face (${drop.b},${drop.c})`);
   assert.equal(st.darts[6].st, 3);
   for (let i = 0; i < 60 && !has(all, 'CATCH', (e) => e.a === 6); i++) all.push(...step({ 6: [0, 0, 4, 0, 0] }));
   assert.ok(has(all, 'CALL', (e) => e.a === 6), 'recall flight started');
   assert.equal(st.darts[6].st, 0, 'recalled dart caught');
-  console.log('  [PASS] stone lane: dart lands at the stone, recall returns it through the stone');
+  console.log('  [PASS] stone lane: dart hits stone at 6.75m (93.8% of 7.2m range) and recalls cleanly');
 }
 
 // ---------------------------------------------------------------- 4. player is invincible to darts and slashes
 {
   reset();
-  // seat 2 (4.25, 3.0) throws straight south through the player at (4.25, 5.5)
+  // seat 2 (7.25, 3.0) throws straight south through the player at (7.25, 6.0)
   let all = [...step({ 2: [0, 0, 1, 0, 1000] })];
-  for (let i = 0; i < 12; i++) all.push(...step());
+  for (let i = 0; i < 14; i++) all.push(...step());
   assert.ok(has(all, 'HIT', (e) => e.a === 2 && e.b === 0), 'dart hit the player');
   assert.ok(!has(all, 'DEATH', (e) => e.a === 0));
   assert.equal(st.players[0].alive, 1);
   for (let i = 0, got = false; i < 80 && !got; i++) got = has(step(), 'CATCH', (e) => e.a === 2);
-  // walk the player next to seat 2 and let seat 2 slash it
-  walkTo(0, 4250, 4100);
+  walkTo(0, 7250, 4100);
   all = [...step({ 2: [0, 0, 2, 0, 1000] })];
   for (let i = 0; i < 4; i++) all.push(...step());
   assert.ok(has(all, 'CUT', (e) => e.a === 2 && e.b === 0), 'slash connected');
@@ -127,7 +146,7 @@ console.log('  [PASS] init: 8 seats alive, no collapse waves');
 // ---------------------------------------------------------------- 5. strike dummy dies and revives 2 s later at its spawn
 {
   reset();
-  walkTo(0, 4250, 4100);
+  walkTo(0, 7250, 4100);
   let all = [...step({ 0: [0, 0, 2, 0, -1000] })];
   for (let i = 0; i < 3; i++) all.push(...step());
   const death = all.find((e) => e.name === 'DEATH' && e.a === 2);
@@ -144,7 +163,7 @@ console.log('  [PASS] init: 8 seats alive, no collapse waves');
   step();
   assert.equal(st.t, deadT + 41);
   assert.equal(st.players[2].alive, 1, 'revived exactly 40 ticks (2 s) after the death tick');
-  assert.deepEqual([st.players[2].x, st.players[2].y], [4250, 3000]);
+  assert.deepEqual([st.players[2].x, st.players[2].y], [7250, 3000]);
   assert.equal(st.players[2].st, 0);
   assert.equal(st.darts[2].st, 0);
   console.log('  [PASS] strike dummy: slashed → revives after 40 ticks (2 s) at its spawn');
@@ -153,43 +172,33 @@ console.log('  [PASS] init: 8 seats alive, no collapse waves');
 // ---------------------------------------------------------------- 6. strike dummy kicked into the water dies, then revives
 {
   reset();
-  // empty the player's hand: throw into the rock pile (x 7.0..8.0 m, y 4.0..5.5 m)
-  step({ 0: [0, 0, 1, 1000, -280] });
-  for (let i = 0; i < 20 && st.darts[0].st !== 3; i++) step();
-  assert.equal(st.darts[0].st, 3, 'player dart lies at the rock pile');
-  assert.equal(st.darts[0].st, 3, 'player dart lies at the rock pile');
-  // stand south of dummy 1 (2.25, 3.0) and kick it north into the water
-  walkTo(0, 2250, 4050);
+  dropPlayerDartOnTree();
+  // stand south of dummy 1 (3.25, 3.0) and kick it north into the water
+  walkTo(0, 3250, 4050);
   let all = [...step({ 0: [0, 0, 2, 0, -1000] })];
   for (let i = 0; i < 20; i++) all.push(...step());
   assert.ok(has(all, 'KICKHIT', (e) => e.a === 0 && e.b === 1));
   assert.ok(has(all, 'DEATH', (e) => e.a === 1 && e.b === 3 && e.c === 0), 'kicked into the water');
   for (let i = 0; i < 45 && !st.players[1].alive; i++) step();
   assert.equal(st.players[1].alive, 1);
-  assert.deepEqual([st.players[1].x, st.players[1].y], [2250, 3000]);
+  assert.deepEqual([st.players[1].x, st.players[1].y], [3250, 3000]);
   console.log('  [PASS] strike dummy: kicked into the water → falls → revives at spawn');
 }
 
 // ---------------------------------------------------------------- 7. dart dummies: no knockback, no push, no death
 {
   reset();
-  step({ 0: [0, 0, 1, 1000, -280] });
-  for (let i = 0; i < 20 && st.darts[0].st !== 3; i++) step();
-  assert.equal(st.darts[0].st, 3, 'player dart lies at the rock pile');
-  walkTo(0, 4250, 6500);
-  walkTo(0, 13900, 6500);
-  // keep pushing into dummy 7 for a while
+  dropPlayerDartOnTree();
+  walkTo(0, 29900, 6500);
   for (let i = 0; i < 10; i++) step({ 0: [1000, 0, 0, 0, 0] });
-  assert.deepEqual([st.players[7].x, st.players[7].y], [14750, 6500], 'not pushed');
-  assert.ok(Math.hypot(st.players[0].x - 14750, st.players[0].y - 6500) >= 799, 'player was pushed out instead');
+  assert.deepEqual([st.players[7].x, st.players[7].y], [30750, 6500], 'not pushed');
+  assert.ok(Math.hypot(st.players[0].x - 30750, st.players[0].y - 6500) >= 799, 'player was pushed out instead');
   let all = [...step({ 0: [0, 0, 2, 1000, 0] })];
   for (let i = 0; i < 15; i++) all.push(...step());
   assert.ok(has(all, 'KICKHIT', (e) => e.a === 0 && e.b === 7), 'kick connected');
-  assert.deepEqual([st.players[7].x, st.players[7].y], [14750, 6500], 'not knocked back');
+  assert.deepEqual([st.players[7].x, st.players[7].y], [30750, 6500], 'not knocked back');
   assert.notEqual(st.players[7].st, 8, 'never stunned');
   assert.equal(st.players[7].alive, 1);
-  // seat 5 throws straight at dummy 6? use dummy 7 shooting dummy 6 is out of line; instead dummy 6 eats dummy 7-style hits:
-  // dummy 6 at (14.75, 3.0): seat 7 throws north at it
   all = [...step({ 7: [0, 0, 1, 0, -1000] })];
   for (let i = 0; i < 10; i++) all.push(...step());
   assert.ok(has(all, 'HIT', (e) => e.a === 7 && e.b === 6), 'dart hit dummy 6');
@@ -197,14 +206,14 @@ console.log('  [PASS] init: 8 seats alive, no collapse waves');
   console.log('  [PASS] dart dummies: anchored (no push / knockback / stun) and invincible');
 }
 
-// ---------------------------------------------------------------- 8. player falls into the lake → put back on nearest safe ground
+// ---------------------------------------------------------------- 8. player falls into the lake (below dart zone) → nearest safe ground
 {
   reset();
-  walkTo(0, 4250, 7300);
-  walkTo(0, 7000, 9600);
-  const evs = walkTo(0, 8000, 11800, 120, 60);
+  walkTo(0, 22800, 6500);
+  walkTo(0, 22800, 9600);
+  const evs = walkTo(0, 24000, 11800, 120, 60);
   const fall = evs.find((e) => e.name === 'FALL' && e.a === 0);
-  assert.ok(fall, 'player fell into the lake');
+  assert.ok(fall, 'player fell into the lake below dart zone');
   assert.ok(!has(evs, 'DEATH', (e) => e.a === 0));
   const p = st.players[0];
   assert.equal(p.alive, 1);
@@ -216,7 +225,7 @@ console.log('  [PASS] init: 8 seats alive, no collapse waves');
 // ---------------------------------------------------------------- 9. player walks off the island edge
 {
   reset();
-  const evs = walkTo(0, -800, 5500, 120, 40);
+  const evs = walkTo(0, -800, 6000, 120, 60);
   const fall = evs.find((e) => e.name === 'FALL' && e.a === 0);
   assert.ok(fall, 'player fell off the edge');
   const p = st.players[0];

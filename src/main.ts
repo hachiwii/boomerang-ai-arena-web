@@ -11,7 +11,7 @@ import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from '.
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
 import { PlatformManager } from './game/platform';
 import { ReplayController } from './game/replayController';
-import { createTrainingConfig, TRAINING_ZONE_LABELS } from './game/training';
+import { createTrainingConfig } from './game/training';
 import {
   formatPrimaryBind,
   getCinematicOptions,
@@ -979,7 +979,7 @@ async function bootstrap() {
       renderer.setCinematicDirector(director ?? null);
       const isTraining = cfg.matchMode === 'training';
       renderer.setTrainingMode(isTraining);
-      if (isTraining) renderer.setWorldLabels(TRAINING_ZONE_LABELS);
+      renderer.setWorldLabels([]);
       mode = 'playing';
       lobbyUI.hide();
       bgm.beginMatch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots }, initialState);

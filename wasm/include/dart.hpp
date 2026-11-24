@@ -598,7 +598,12 @@ inline std::string parse_map(const std::string& text, Map& M) {
         } else if (key == "GRID") {
             if (wd.size() != 2 && wd.size() != 3) return where + "：GRID 后面写宽和高（或者一个边长）";
             const int nx = std::atoi(wd[1].c_str()), ny = wd.size() == 3 ? std::atoi(wd[2].c_str()) : nx;
-            if (nx < 6 || nx > 60 || ny < 6 || ny > 60) return where + "：宽、高要在 6..60";
+#ifdef DART_TRAINING
+            constexpr int max_grid = 120;
+#else
+            constexpr int max_grid = 60;
+#endif
+            if (nx < 6 || nx > max_grid || ny < 6 || ny > max_grid) return where + "：宽、高要在 6.." + std::to_string(max_grid);
             M.nx = nx;
             M.ny = ny;
             M.c.assign(size_t(nx) * ny, C_FLOOR);
@@ -1131,6 +1136,7 @@ struct Player {
     i64 unknown = 0;         // 只在选手的模拟里：位置未知（看不见），不参与模拟
     i64 slash_win = 0;       // 人类挥砍多帧判定剩余步数（0 = 未激活；Bot 始终为 0）
     i64 slash_win_hits = 0;  // 人类本次挥砍窗口内累计命中/格挡次数
+    i64 slash_win_used = 0;  // 人类本次挥砍已走多帧/即时判定（防止 human_slash_ticks < slash_pre 时在风尾重复触发原版 1 帧判定）
     i64 dash_has_target = 0; // 人类向鼠标位置精确冲刺（1 = 在冲刺范围内精确停在目标点）
     i64 dash_rem_x = 0, dash_rem_y = 0;
     i64 dash_total_len = 0;
@@ -1207,8 +1213,8 @@ struct Game {
     i64 t = 0;
     bool over = false;
     i64 winner = -2;         // 结束后：1v1 = 胜者座位，4v4 = 胜队，四人局 = 最后存活者；-1 = 平局 / 没人活；-2 = 未结束
-    int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的近战（挥砍/踢人）从按下起持续 human_slash_ticks 步判定（默认 4 步 = 原速 200ms；0 = 与 AI 完全相同）
-    i64 human_slash_ticks = 4;  // 原速 20Hz 下默认 200ms = 4 逻辑 tick（普通 4 帧 / 严格 2 帧 / AI 0 帧）
+    int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的近战（挥砍/踢人）从按下起持续 human_slash_ticks 步判定（默认 3 步 = 原速 150ms；0 = 与 AI 完全相同）
+    i64 human_slash_ticks = 3;  // 原速 20Hz 下默认 150ms = 3 逻辑 tick（普通 3 帧 / 严格 1 帧 / AI 0 帧）
     bool human_cliff_guard = false;  // 开启跌落防护时：人类冲刺若原本会坠崖，但末尾 25% 存在安全落点，则停在最远安全点
     bool human_melee_assist = true;  // 保留字段以兼容 WASM 导出接口（砍镖判定范围不再受近战吸附影响，仅由挥砍判定模式决定）
     bool human_dash_target_active = false;
@@ -1441,6 +1447,7 @@ struct Game {
         }
         P.slash_win = 0;
         P.slash_win_hits = 0;
+        P.slash_win_used = 0;
         P.dash_has_target = 0;
         P.dash_rem_x = P.dash_rem_y = 0;
         P.dash_pt_n = 0;
@@ -1513,6 +1520,7 @@ struct Game {
             P.timer = slash ? cf.slash_pre : cf.kick_pre;
             P.slash_win = (k == human_slash_seat) ? human_slash_ticks : 0;
             P.slash_win_hits = 0;
+            P.slash_win_used = (P.slash_win > 0) ? 1 : 0;
             if (slash) ++P.n_slash; else ++P.n_kick;
             ev(slash ? EV_SLASH : EV_KICK, k, ux, uy);
         } else if (a.act == A_DASH) {
@@ -1855,7 +1863,7 @@ struct Game {
                     }
                 }
                 if (slash && cf.block) {
-                    // 人类普通(4帧)/严格(2帧)模式：砍镖与砍人统一为 ±60°（cf.slash_cos）+ 贴身免角（cf.body_r），
+                    // 人类普通(3帧)/严格(1帧)模式：砍镖与砍人统一为 ±60°（cf.slash_cos）+ 贴身免角（cf.body_r），
                     // 并在第 5 段继续执行本步线段扫掠格挡判定，不再受近战吸附影响
                     human_swept_block[k] = true;
                     for (int j = 0; j < n; ++j) {
@@ -1878,6 +1886,7 @@ struct Game {
                     ev(EV_SWING, k, slash ? 1 : 0, nh);
                 }
                 if (fire[k] && (P.st == S_SLASH || P.st == S_KICK)) {
+                    P.slash_win_used = 0;
                     i64 post = slash ? cf.slash_post : cf.kick_post;
                     if (slash && P.slash_win_hits == 0 && cf.slash_miss >= 0) post = cf.slash_miss;
                     set_state(P, slash ? S_SLASHED : S_KICKED, post);
@@ -1920,6 +1929,13 @@ struct Game {
                 case S_SLASH:
                 case S_KICK: {
                     const bool slash = P.st == S_SLASH;
+                    if (P.slash_win_used) {
+                        P.slash_win_used = 0;
+                        i64 post = slash ? cf.slash_post : cf.kick_post;
+                        if (slash && P.slash_win_hits == 0 && cf.slash_miss >= 0) post = cf.slash_miss;
+                        set_state(P, slash ? S_SLASHED : S_KICKED, post);
+                        break;
+                    }
                     const i64 reach = slash ? cf.slash_reach : cf.kick_reach, cs = slash ? cf.slash_cos : cf.kick_cos;
                     int nh = 0;
                     for (int q = 0; q < n; ++q) {
@@ -2209,6 +2225,7 @@ struct Game {
             Q.dash_pt_n = 0;
             Q.slash_win = 0;
             Q.slash_win_hits = 0;
+            Q.slash_win_used = 0;
             Q.timer = cf.kick_stun;
             Q.vx = kick_vx[q];
             Q.vy = kick_vy[q];
@@ -2267,6 +2284,7 @@ struct Game {
             P.dash_pt_n = 0;
             P.slash_win = 0;
             P.slash_win_hits = 0;
+            P.slash_win_used = 0;
             P.vx = P.vy = 0;
             P.ax = P.ay = 0;
             P.cd = 0;
@@ -2351,6 +2369,7 @@ struct Game {
         P.dash_pt_n = 0;
         P.slash_win = 0;
         P.slash_win_hits = 0;
+        P.slash_win_used = 0;
     }
     // 坠崖后放回离落点最近的安全地面：格子中心，圆心在地面 / 草丛，身体既不碰墙也不压到坑（四周一圈都能站）
     void train_put_back(int k, const Map& m) {

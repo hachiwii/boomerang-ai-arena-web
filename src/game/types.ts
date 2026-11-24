@@ -106,7 +106,7 @@ export interface MatchConfig {
   cliffGuard: boolean; // Prevent human from walking off cliffs
   dashGuard?: boolean; // Dash-tail 25% cliff save in WASM engine
   meleeAssist?: boolean; // Client-side aim assist (no longer alters WASM dart-block cone)
-  humanSlashTicks?: number; // 4 (normal, swept ±60°) | 2 (strict, swept ±60°) | 0 (AI 1-frame with windup, ±20° static)
+  humanSlashTicks?: number; // 3 (normal, swept ±60°) | 1 (strict, swept ±60°) | 0 (AI 1-frame with windup, ±20° static)
 }
 
 /**

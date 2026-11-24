@@ -13,19 +13,12 @@ export const TRAINING_SEATS = 8;
 export const DART_DUMMY_SEATS = [6, 7] as const;
 export const SCARECROW_CHAR_KEY = 'scarecrow';
 
-/** Zone captions drawn on the ground (world millimetres). */
-export const TRAINING_ZONE_LABELS: { text: string; sub: string; x: number; y: number }[] = [
-  { text: '击打区', sub: '砍 / 踢稻草人，2 秒后原地复活', x: 4250, y: 1000 },
-  { text: '镖区', sub: '上：镖撞石头落地再召回 · 下：镖飞满程自动飞回', x: 11250, y: 1050 },
-  { text: '走位区', sub: '假山、树、草丛和湖：练冲刺、把人踢下水', x: 5250, y: 9300 },
-];
-
 const MAP_META: MapMeta = {
   id: 'training',
   title: '训练场',
   theme: 'meadow',
   category: 'standard',
-  nx: 32,
+  nx: 64,
   ny: 32,
   desc: '训练场：击打区、走位区、镖区',
   previewGrid: [],

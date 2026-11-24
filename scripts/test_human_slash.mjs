@@ -29,11 +29,7 @@ function makeCustomMap(rows, spawn) {
 
 const openRows = Array.from({ length: 20 }, () => '.'.repeat(24));
 
-/**
- * Walk seat 0 and seat 1 toward each other on stonecircle (y = 6000) until their
- * x-distance reaches `targetDistMm`, then stop both cleanly (vx=vy=0).
- */
-function setupDuelAtDistance(targetDistMm, humanSeat, emptyHandSeat0 = false, humanSlashTicks = 4) {
+function setupDuelAtDistance(targetDistMm, humanSeat, emptyHandSeat0 = false, humanSlashTicks = 3) {
   assert(engineInit(mapText, 2, 0), 'engine_init failed');
   engineSetHumanSeat(humanSeat);
   engineSetHumanSlashTicks(humanSlashTicks);
@@ -74,18 +70,17 @@ function setupDuelAtDistance(targetDistMm, humanSeat, emptyHandSeat0 = false, hu
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: Human NORMAL SLASH hits on EACH of ticks 0, 1, 2, 3 (200ms = 4 ticks)
-//         and does NOT hit on tick 4 or tick 5 (expired)!
+// Test 1: Human NORMAL SLASH hits on EACH of ticks 0, 1, 2 (150ms = 3 ticks)
+//         and does NOT hit on tick 3 or tick 4 (expired)!
 // ---------------------------------------------------------------------------
 for (const tc of [
   { label: 'Tick 0 (0ms, S_SLASH windup 1)', D: 1650, expectHitTick: 0 },
   { label: 'Tick 1 (50ms, S_SLASH windup 2)', D: 1900, expectHitTick: 1 },
   { label: 'Tick 2 (100ms, S_SLASHED post 1)', D: 2150, expectHitTick: 2 },
-  { label: 'Tick 3 (150ms, S_SLASHED post 2)', D: 2400, expectHitTick: 3 },
+  { label: 'Tick 3 (150ms, S_SLASHED post 2 — EXPIRED)', D: 2400, expectHitTick: -1 },
   { label: 'Tick 4 (200ms, S_SLASHED post 3 — EXPIRED)', D: 2650, expectHitTick: -1 },
-  { label: 'Tick 5 (250ms, S_SLASHED post 4 — EXPIRED)', D: 2900, expectHitTick: -1 },
 ]) {
-  let st = setupDuelAtDistance(tc.D, 0, false, 4);
+  let st = setupDuelAtDistance(tc.D, 0, false, 3);
   const startDist = st.players[1].x - st.players[0].x;
   let hitTick = -1;
   let swingCount = 0;
@@ -117,18 +112,17 @@ for (const tc of [
 }
 
 // ---------------------------------------------------------------------------
-// Test 2: Human NORMAL KICK hits on EACH of ticks 0, 1, 2, 3 (200ms = 4 ticks)
-//         and does NOT hit on tick 4 (expired), emits 1 EV_SWING(b=0) on tick 0,
+// Test 2: Human NORMAL KICK hits on EACH of ticks 0, 1, 2 (150ms = 3 ticks)
+//         and does NOT hit on tick 3 (expired), emits 1 EV_SWING(b=0) on tick 0,
 //         and NEVER double-kicks an already-stunned victim!
 // ---------------------------------------------------------------------------
 for (const tc of [
   { label: 'Tick 0 (0ms, S_KICK windup 1)', D: 1650, expectHitTick: 0 },
   { label: 'Tick 1 (50ms, S_KICK windup 2)', D: 1900, expectHitTick: 1 },
   { label: 'Tick 2 (100ms, S_KICKED post 1)', D: 2150, expectHitTick: 2 },
-  { label: 'Tick 3 (150ms, S_KICKED post 2)', D: 2400, expectHitTick: 3 },
-  { label: 'Tick 4 (200ms, S_KICKED post 3 — EXPIRED)', D: 2650, expectHitTick: -1 },
+  { label: 'Tick 3 (150ms, S_KICKED post 2 — EXPIRED)', D: 2400, expectHitTick: -1 },
 ]) {
-  let st = setupDuelAtDistance(tc.D, 0, true, 4);
+  let st = setupDuelAtDistance(tc.D, 0, true, 3);
   const startDist = st.players[1].x - st.players[0].x;
   let hitTick = -1;
   let kickHitCount = 0;
@@ -174,12 +168,12 @@ for (const tc of [
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Human NORMAL (4f) blocks flying dart entering slash sector on late active tick (tick 3)
+// Test 3: Human NORMAL (3f) blocks flying dart entering slash sector on late active tick (tick 2)
 // ---------------------------------------------------------------------------
 {
-  let st = setupDuelAtDistance(3100, 0, false, 4);
-  // Seat 1 throws left on tick 0 -> releases tick 1 at dist=3100;
-  // tick 2 moves 3100 -> 2200; tick 3 moves 2200 -> 1350 (swept block on 4th active tick = tick 3!)
+  let st = setupDuelAtDistance(2250, 0, false, 3);
+  // Seat 1 throws left on tick 0 -> releases tick 1 at dist=2250;
+  // tick 2 moves 2250 -> 1350 (swept block on 3rd active tick = tick 2!)
   let blockedTick = -1;
   for (let tick = 0; tick < 8 && !st.over; tick++) {
     const act0 = tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0';
@@ -190,10 +184,10 @@ for (const tc of [
       if (ev.name === 'BLOCK' && ev.a === 0) blockedTick = tick;
     }
   }
-  assert(st.players[0].alive === 1, 'Human should survive by blocking dart on 4th active tick (Tick 3)!');
-  assert(blockedTick === 3, `Expected dart block on tick 3 via swept segment, got ${blockedTick}`);
+  assert(st.players[0].alive === 1, 'Human should survive by blocking dart on 3rd active tick (Tick 2)!');
+  assert(blockedTick === 2, `Expected dart block on tick 2 via swept segment, got ${blockedTick}`);
   assert(st.darts[1].st === 3, `Blocked dart should drop to D_GROUND (3), got ${st.darts[1].st}`);
-  console.log(`  [PASS] Human NORMAL blocked enemy flying dart on 4th active tick (tick ${blockedTick})!`);
+  console.log(`  [PASS] Human NORMAL blocked enemy flying dart on 3rd active tick (tick ${blockedTick})!`);
 }
 
 // ---------------------------------------------------------------------------
@@ -248,16 +242,15 @@ for (const tc of [
 }
 
 // ---------------------------------------------------------------------------
-// Test 5: Human STRICT mode (humanSlashTicks = 2) hits ONLY on ticks 0, 1
-//         and misses on ticks 2, 3, 4 (for both SLASH and KICK)!
+// Test 5: Human STRICT mode (humanSlashTicks = 1) hits ONLY on tick 0
+//         and MUST NOT double-fire on tick 1 (windup end) or tick 2+!
 // ---------------------------------------------------------------------------
 for (const tc of [
   { label: 'Strict Tick 0', D: 1650, expectHitTick: 0 },
-  { label: 'Strict Tick 1', D: 1900, expectHitTick: 1 },
+  { label: 'Strict Tick 1 (EXPIRED — must NOT double-fire!)', D: 1900, expectHitTick: -1 },
   { label: 'Strict Tick 2 (EXPIRED)', D: 2150, expectHitTick: -1 },
-  { label: 'Strict Tick 3 (EXPIRED)', D: 2400, expectHitTick: -1 },
 ]) {
-  let st = setupDuelAtDistance(tc.D, 0, false, 2);
+  let st = setupDuelAtDistance(tc.D, 0, false, 1);
   let hitTick = -1;
   let swingCount = 0;
   let swingTick = -1;
@@ -272,24 +265,30 @@ for (const tc of [
       if (ev.name === 'CUT' && ev.a === 0 && ev.b === 1) hitTick = tick;
     }
   }
-  assert(swingCount === 1 && swingTick === 0, `${tc.label}: expected 1 EV_SWING@tick0, got ${swingCount}@${swingTick}`);
+  assert(swingCount === 1 && swingTick === 0, `${tc.label}: expected exactly 1 EV_SWING@tick0, got ${swingCount}@${swingTick}`);
   assert(hitTick === tc.expectHitTick, `${tc.label}: expected hitTick=${tc.expectHitTick}, got ${hitTick}`);
-  console.log(`  [PASS] Human STRICT SLASH ${tc.label} -> hitTick=${hitTick}`);
+  if (tc.expectHitTick === -1) {
+    assert(st.players[0].st === 0, `${tc.label}: human should cleanly finish recovery to S_FREE (0), got st=${st.players[0].st}`);
+  }
+  console.log(`  [PASS] Human STRICT SLASH ${tc.label} -> hitTick=${hitTick}, EV_SWING=${swingCount}@tick${swingTick}`);
 }
 
 for (const tc of [
-  { label: 'Strict Kick Tick 1', D: 1900, expectHitTick: 1 },
-  { label: 'Strict Kick Tick 2 (EXPIRED)', D: 2150, expectHitTick: -1 },
+  { label: 'Strict Kick Tick 0', D: 1650, expectHitTick: 0 },
+  { label: 'Strict Kick Tick 1 (EXPIRED — must NOT double-fire!)', D: 1900, expectHitTick: -1 },
 ]) {
-  let st = setupDuelAtDistance(tc.D, 0, true, 2);
+  let st = setupDuelAtDistance(tc.D, 0, true, 1);
   let hitTick = -1;
+  let swingCount = 0;
   for (let tick = 0; tick < 7 && !st.over; tick++) {
     engineStep(`${tick === 0 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0'}\n-1000 0 0 0 0 0`);
     st = JSON.parse(engineGetState());
     for (const ev of st.events) {
+      if (ev.name === 'SWING' && ev.a === 0) swingCount++;
       if (ev.name === 'KICKHIT' && ev.a === 0 && ev.b === 1 && hitTick < 0) hitTick = tick;
     }
   }
+  assert(swingCount === 1, `${tc.label}: expected 1 EV_SWING, got ${swingCount}`);
   assert(hitTick === tc.expectHitTick, `${tc.label}: expected hitTick=${tc.expectHitTick}, got ${hitTick}`);
   console.log(`  [PASS] Human STRICT KICK ${tc.label} -> hitTick=${hitTick}`);
 }
@@ -358,23 +357,16 @@ for (const tc of [
 
 // ---------------------------------------------------------------------------
 // Test 7: Swept-segment frontal tunneling block (1550mm -> 700mm in 1 tick!)
-//         - Normal (4f) & Strict (2f) BOTH block whether meleeAssist is ON or OFF
-//         - Dart drops right at the intercept edge (~1500mm)
-//         - AI mode (0f) does NOT swept-block even with meleeAssist ON!
 // ---------------------------------------------------------------------------
 {
-  const tunnelMap = makeCustomMap(openRows, '5.0 5.0 7.45 5.0'); // dist = 2450mm
-  // Tick 0: seat 1 throws left (-1000, 0)
-  // Tick 1: dart releases at x=7450 (dist=2450, fresh)
-  // Tick 2: dart moves 900mm -> x=6550 (dist=1550 > 1500!)
-  // Tick 3: dart moves 850mm -> x=5700 (dist=700 <= 720 -> TUNNELS through [1500, 720] in 1 step!)
+  const tunnelMap = makeCustomMap(openRows, '5.0 5.0 7.45 5.0');
   for (const tc of [
-    { label: 'Normal(4f) assist=OFF', ticks: 4, assist: 0, pressTick: 3, expectBlock: true },
-    { label: 'Normal(4f) assist=ON', ticks: 4, assist: 1, pressTick: 3, expectBlock: true },
-    { label: 'Strict(2f) assist=OFF', ticks: 2, assist: 0, pressTick: 3, expectBlock: true },
-    { label: 'Strict(2f) assist=ON', ticks: 2, assist: 1, pressTick: 3, expectBlock: true },
+    { label: 'Normal(3f) assist=OFF', ticks: 3, assist: 0, pressTick: 3, expectBlock: true },
+    { label: 'Normal(3f) assist=ON', ticks: 3, assist: 1, pressTick: 3, expectBlock: true },
+    { label: 'Strict(1f) assist=OFF', ticks: 1, assist: 0, pressTick: 3, expectBlock: true },
+    { label: 'Strict(1f) assist=ON', ticks: 1, assist: 1, pressTick: 3, expectBlock: true },
     { label: 'AI(0f) assist=ON (fires tick 3)', ticks: 0, assist: 1, pressTick: 2, expectBlock: false },
-    { label: 'Bot(seat=-1) (fires tick 3)', ticks: 4, assist: 1, humanSeat: -1, pressTick: 2, expectBlock: false },
+    { label: 'Bot(seat=-1) (fires tick 3)', ticks: 3, assist: 1, humanSeat: -1, pressTick: 2, expectBlock: false },
   ]) {
     assert(engineInit(tunnelMap, 2, 0), 'tunnelMap init failed');
     engineSetHumanSeat(tc.humanSeat ?? 0);
@@ -413,21 +405,17 @@ for (const tc of [
 //         strictly ±20° in AI mode even when meleeAssist=ON!)
 // ---------------------------------------------------------------------------
 {
-  const coneMap = makeCustomMap(openRows, '5.0 5.0 7.1 5.0'); // dist = 2100mm
-  // Tick 0: seat 1 throws left (-1000, 0)
-  // Tick 1: dart releases at x=7100 (dist=2100)
-  // Tick 2: dart moves 900 -> x=6200 (dist=1200, pure +x = 0° from seat 0!)
-  // Tick 3: static Stage 4 check sees dart at (6200, 5000) -> dist=1200, angle=0°!
+  const coneMap = makeCustomMap(openRows, '5.0 5.0 7.1 5.0');
   const aimAtDeg = (deg) => {
     const rad = (deg * Math.PI) / 180;
     return `${Math.round(Math.cos(rad) * 1000)} ${Math.round(Math.sin(rad) * 1000)}`;
   };
   for (const tc of [
-    { label: 'Normal(4f) assist=OFF @50° (inside ±60°)', ticks: 4, assist: 0, deg: 50, pressTick: 3, expectBlock: true },
-    { label: 'Normal(4f) assist=ON  @50° (inside ±60°)', ticks: 4, assist: 1, deg: 50, pressTick: 3, expectBlock: true },
-    { label: 'Strict(2f) assist=OFF @50° (inside ±60°)', ticks: 2, assist: 0, deg: 50, pressTick: 3, expectBlock: true },
-    { label: 'Normal(4f) assist=ON  @70° (outside ±60°)', ticks: 4, assist: 1, deg: 70, pressTick: 3, expectBlock: false },
-    { label: 'Strict(2f) assist=ON  @70° (outside ±60°)', ticks: 2, assist: 1, deg: 70, pressTick: 3, expectBlock: false },
+    { label: 'Normal(3f) assist=OFF @50° (inside ±60°)', ticks: 3, assist: 0, deg: 50, pressTick: 3, expectBlock: true },
+    { label: 'Normal(3f) assist=ON  @50° (inside ±60°)', ticks: 3, assist: 1, deg: 50, pressTick: 3, expectBlock: true },
+    { label: 'Strict(1f) assist=OFF @50° (inside ±60°)', ticks: 1, assist: 0, deg: 50, pressTick: 3, expectBlock: true },
+    { label: 'Normal(3f) assist=ON  @70° (outside ±60°)', ticks: 3, assist: 1, deg: 70, pressTick: 3, expectBlock: false },
+    { label: 'Strict(1f) assist=ON  @70° (outside ±60°)', ticks: 1, assist: 1, deg: 70, pressTick: 3, expectBlock: false },
     { label: 'AI(0f)     assist=ON  @50° (outside ±20°)', ticks: 0, assist: 1, deg: 50, pressTick: 2, expectBlock: false },
     { label: 'AI(0f)     assist=ON  @25° (outside ±20°, no assist boost!)', ticks: 0, assist: 1, deg: 25, pressTick: 2, expectBlock: false },
     { label: 'AI(0f)     assist=OFF @15° (inside ±20°)', ticks: 0, assist: 0, deg: 15, pressTick: 2, expectBlock: true },
@@ -451,20 +439,13 @@ for (const tc of [
 }
 
 // ---------------------------------------------------------------------------
-// Test 9: Rear hit-before-block safety (s_hit < s_block):
-//         Dart flying from BEHIND through seat 0's body into the front +x cone
-//         MUST kill seat 0 (cannot block after getting hit in the back!).
+// Test 9: Rear hit-before-block safety (s_hit < s_block)
 // ---------------------------------------------------------------------------
 {
-  // Seat 0 at (5.0, 5.0) faces & slashes +x; Seat 1 at (3.2, 5.0) (1800mm BEHIND) throws +x.
-  // Tick 1: dart releases at x=3200 (-1800mm)
-  // Tick 2: dart moves +900 -> x=4100 (-900mm, outside hit_r=720)
-  // Tick 3: dart moves +850 -> x=4950 (-50mm, enters 720mm from behind at s_hit=180/850=0.21, then passes body_r=400!)
-  // Even with Normal(4f) slashing +x on tick 3, s_hit < s_block (and never inside ±60° before s_hit) -> MUST DIE!
   const rearMap = makeCustomMap(openRows, '5.0 5.0 3.2 5.0');
   assert(engineInit(rearMap, 2, 0), 'rearMap init failed');
   engineSetHumanSeat(0);
-  engineSetHumanSlashTicks(4);
+  engineSetHumanSlashTicks(3);
   engineSetHumanMeleeAssist(1);
   let blocked = false;
   let st = JSON.parse(engineGetState());
@@ -481,23 +462,16 @@ for (const tc of [
 }
 
 // ---------------------------------------------------------------------------
-// Test 10: Wall occlusion in swept-segment block:
-//          (a) Fully behind wall -> CANNOT block through wall!
-//          (b) Emerges past wall corner while still inside ±60° & 1500mm -> BLOCKS at clearance!
+// Test 10: Wall occlusion in swept-segment block
 // ---------------------------------------------------------------------------
 {
-  // Map cell size = 500mm.
-  // Seat 0 at (5.0, 5.0) = (5000, 5000), cell (10, 10), slashing +x (1000, 0).
-  // Put a 3-cell vertical wall at gx=11 (x=5500..6000), gy=9,10,11 (y=4500..6000).
-  // Case (a): Seat 1 at (6.25, 4.2) throws straight down (+y) past x=6250:
-  //   At y=4600..5450 (distance ~1250..1330, angle ~0..20°), wall at gx=11 blocks ALL line of sight!
   const blockedWallRows = openRows.map((row, y) =>
     y >= 8 && y <= 12 ? row.slice(0, 11) + '#' + row.slice(12) : row,
   );
   const wallBlockedMap = makeCustomMap(blockedWallRows, '5.0 5.0 6.25 3.7');
   assert(engineInit(wallBlockedMap, 2, 0), 'wallBlockedMap init failed');
   engineSetHumanSeat(0);
-  engineSetHumanSlashTicks(4);
+  engineSetHumanSlashTicks(3);
   engineSetHumanMeleeAssist(0);
   let blockedThroughWall = false;
   let st = JSON.parse(engineGetState());
@@ -510,26 +484,17 @@ for (const tc of [
   }
   assert(!blockedThroughWall, 'Swept block must NOT pass through solid wall!');
 
-  // Case (b): Wall only covers gy=9,10 (y=4500..5500) at gx=11; gy=11 (y>=5500) is open!
-  // Dart flies vertically down along x=6250: on tick 3 it moves from y=4600 (behind wall) -> y=5450?
-  // Wait: at y=5800 (dist=sqrt(1250^2+800^2)=1484 <= 1500, angle=32.6° <= 60°), line from (5000,5000) to (6250,5800)
-  // passes x=5500 at y=5320 (still blocked by gy=10 y=5000..5500), so let wall only cover gy=9 (y=4500..5000)!
-  // Then at y=4750 -> y=5600: start (6250, 4750) is blocked by gy=9 (line crosses x=5500..6000 at y=4900..4800),
-  // and once y > 5000 line from (5000, 5000) clears gy=9 completely -> swept block catches it mid-step!
   const cornerWallRows = openRows.map((row, y) =>
     y === 9 ? row.slice(0, 11) + '#' + row.slice(12) : row,
   );
   const wallCornerMap = makeCustomMap(cornerWallRows, '5.0 5.0 6.25 3.85');
   assert(engineInit(wallCornerMap, 2, 0), 'wallCornerMap init failed');
   engineSetHumanSeat(0);
-  engineSetHumanSlashTicks(4);
+  engineSetHumanSlashTicks(3);
   engineSetHumanMeleeAssist(0);
   let cornerBlockEv = null;
   st = JSON.parse(engineGetState());
   for (let tick = 0; tick <= 4 && !st.over; tick++) {
-    // Tick 1: dart releases at (6250, 3850)
-    // Tick 2: dart moves +900 -> (6250, 4750) (behind wall cell (11,9)!)
-    // Tick 3: dart moves +850 -> (6250, 5600) (clears wall at y>5000, dist<=1500, angle<=60°!)
     const a0 = tick === 3 ? '0 0 2 1000 0 0' : '0 0 0 0 0 0';
     const a1 = tick === 0 ? '0 0 1 0 1000 0' : '0 0 0 0 0 0';
     engineStep(`${a0}\n${a1}`);
@@ -546,4 +511,4 @@ for (const tc of [
   console.log(`  [PASS] Wall occlusion: blocked through wall=false; corner emergence blocked at y=${cornerBlockEv.d}`);
 }
 
-console.log('ALL HUMAN SLASH JUDGMENT (NORMAL 4f+SWEPT±60° / STRICT 2f+SWEPT±60° / AI EXACT) WASM TESTS PASSED!');
+console.log('ALL HUMAN SLASH JUDGMENT (NORMAL 3f+SWEPT±60° / STRICT 1f+SWEPT±60° / AI EXACT) WASM TESTS PASSED!');

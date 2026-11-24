@@ -175,7 +175,7 @@ html, body, #app {
 }
 
 .lobby-card {
-  width: min(1140px, 96vw);
+  width: min(1240px, 96vw);
   max-height: 92vh;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -232,7 +232,7 @@ body:not(.is-mobile) .lobby-card-ranked .lobby-nav-row {
   flex: 1 0 100%;
 }
 
-@media (max-width: 1040px) {
+@media (max-width: 1220px) {
   body:not(.is-mobile) .lobby-title-group {
     order: 1;
     margin-right: 0;
@@ -2303,7 +2303,7 @@ body.ui-hidden .lobby-overlay {
 
 /* ---------- Ranked Mode Panel & Map Pool Modal ---------- */
 .lobby-card-ranked {
-  width: min(840px, 95vw);
+  width: min(940px, 96vw);
 }
 
 .ranked-panel {
@@ -5057,7 +5057,7 @@ body.is-mobile .lobby-bots-btn {
 
 /* ---------- Cricket ("斗蛐蛐") Mode ---------- */
 .lobby-card-cricket {
-  width: min(1180px, 96vw);
+  width: min(1240px, 96vw);
   padding: 16px 22px 14px;
 }
 

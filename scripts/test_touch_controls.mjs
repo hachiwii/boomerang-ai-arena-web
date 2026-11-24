@@ -356,7 +356,7 @@ function dartFromBehind(meleeAssist, slashTicksLabel = 'normal') {
   const h = setup(openRows, { meleeAssist, spawn: '7.0 5.0 2.0 5.0' });
   if (slashTicksLabel !== 'normal') {
     h.input['settings'].setSlashJudgment(slashTicksLabel);
-    mod.ccall('engine_set_human_slash_ticks', 'void', ['number'], [slashTicksLabel === 'strict' ? 2 : 0]);
+    mod.ccall('engine_set_human_slash_ticks', 'void', ['number'], [slashTicksLabel === 'strict' ? 1 : 0]);
   }
   const faceRad = (h.st.players[0].face / 100) * (Math.PI / 180);
   assert.ok(Math.cos(faceRad) > 0.9, 'P0 starts facing +x (away from the thrower)');
