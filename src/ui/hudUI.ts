@@ -17,6 +17,7 @@ export interface HudCallbacks {
   onReturnToLobby: (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => void;
   onRestartMatch: () => void;
   onWatchCurrentReplay?: () => void;
+  onToggleCurrentFavorite?: (nextFavorite: boolean) => Promise<void> | void;
   onOpenSettings: () => void;
   onRankCue?: (kind: 'up' | 'down') => void;
   onReplayTogglePause?: () => void;
@@ -986,11 +987,47 @@ export class HudUI {
     this.perfEl.textContent = `逻辑 ${logicStr}Hz${spdTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz · AI ${botMaxMs.toFixed(1)}ms)`;
   }
 
-  public showMatchResult(finalState: TickSnapshot, eloResult: EloUpdateResult | null = null) {
+  private syncResultFavoriteBtn(btn: HTMLButtonElement, isFav: boolean) {
+    btn.classList.toggle('is-fav', isFav);
+    btn.setAttribute('aria-pressed', String(isFav));
+    btn.setAttribute('aria-label', isFav ? '取消收藏此对局' : '收藏此对局');
+    btn.title = isFav
+      ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）'
+      : '收藏此对局（永久保留，不受每模式 50 场上限控制）';
+    btn.innerHTML = `${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span>`;
+  }
+
+  private bindResultFavoriteBtn(
+    btn: HTMLButtonElement | null,
+    initialFav: boolean,
+    onInteracted?: () => void,
+  ) {
+    if (!btn || !this.callbacks.onToggleCurrentFavorite) return;
+    let isFav = Boolean(initialFav);
+    btn.addEventListener('click', () => {
+      const nextFav = !isFav;
+      isFav = nextFav;
+      this.syncResultFavoriteBtn(btn, nextFav);
+      onInteracted?.();
+      void Promise.resolve(this.callbacks.onToggleCurrentFavorite?.(nextFav)).catch((err) => {
+        console.error('Failed to toggle match result favorite:', err);
+        if (btn.isConnected && isFav === nextFav) {
+          isFav = !nextFav;
+          this.syncResultFavoriteBtn(btn, isFav);
+        }
+      });
+    });
+  }
+
+  public showMatchResult(
+    finalState: TickSnapshot,
+    eloResult: EloUpdateResult | null = null,
+    initialFavorite = false,
+  ) {
     this.clearTimers();
     const isRanked = this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa';
     if (isRanked && eloResult) {
-      this.showRankedMatchResult(finalState, eloResult);
+      this.showRankedMatchResult(finalState, eloResult, initialFavorite);
       return;
     }
 
@@ -1005,14 +1042,34 @@ export class HudUI {
 
     const canRestart = this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive);
     const canWatchReplay = this.humanSeat >= 0 && Boolean(this.callbacks.onWatchCurrentReplay);
+    const canToggleFav = canWatchReplay && Boolean(this.callbacks.onToggleCurrentFavorite);
+    const isFav = Boolean(initialFavorite);
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
 
     let remainSec = 4;
     this.resultOverlay.innerHTML = `
-      <div class="result-card">
+      <div class="result-card ${canWatchReplay || canToggleFav ? 'has-corner-actions' : ''}">
         ${
-          canWatchReplay
-            ? `<button type="button" class="result-replay-corner-btn" id="btn-result-replay" title="立即观看本局回放">🎬 回放</button>`
+          canWatchReplay || canToggleFav
+            ? `<div class="result-corner-actions">
+                ${
+                  canWatchReplay
+                    ? `<button type="button" class="result-replay-corner-btn" id="btn-result-replay" title="立即观看本局回放">🎬 回放</button>`
+                    : ''
+                }
+                ${
+                  canToggleFav
+                    ? `<button
+                        type="button"
+                        class="result-fav-corner-btn ${isFav ? 'is-fav' : ''}"
+                        id="btn-result-fav"
+                        aria-pressed="${isFav}"
+                        aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}"
+                        title="${isFav ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）' : '收藏此对局（永久保留，不受每模式 50 场上限控制）'}"
+                      >${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span></button>`
+                    : ''
+                }
+              </div>`
             : ''
         }
         <div class="result-kicker">${winner ? '本局胜者' : '平局结束'}</div>
@@ -1064,20 +1121,42 @@ export class HudUI {
       this.callbacks.onWatchCurrentReplay?.();
     });
 
-    this.countdownInterval = window.setInterval(() => {
-      remainSec--;
-      if (backBtn && remainSec > 0) {
+    const startAutoReturnCountdown = (seconds: number) => {
+      if (this.autoReturnTimer !== null) {
+        window.clearTimeout(this.autoReturnTimer);
+        this.autoReturnTimer = null;
+      }
+      if (this.countdownInterval !== null) {
+        window.clearInterval(this.countdownInterval);
+        this.countdownInterval = null;
+      }
+      remainSec = seconds;
+      if (backBtn) {
         backBtn.textContent = `返回主界面 (${remainSec}s)`;
       }
-    }, 1000);
+      this.countdownInterval = window.setInterval(() => {
+        remainSec--;
+        if (backBtn && remainSec > 0) {
+          backBtn.textContent = `返回主界面 (${remainSec}s)`;
+        }
+      }, 1000);
+      this.autoReturnTimer = window.setTimeout(() => {
+        this.clearTimers();
+        this.callbacks.onReturnToLobby();
+      }, seconds * 1000);
+    };
 
-    this.autoReturnTimer = window.setTimeout(() => {
-      this.clearTimers();
-      this.callbacks.onReturnToLobby();
-    }, 4000);
+    const favBtn = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-fav');
+    this.bindResultFavoriteBtn(favBtn, isFav, () => {
+      if (remainSec < 3) {
+        startAutoReturnCountdown(3);
+      }
+    });
+
+    startAutoReturnCountdown(4);
   }
 
-  private showRankedMatchResult(finalState: TickSnapshot, elo: EloUpdateResult) {
+  private showRankedMatchResult(finalState: TickSnapshot, elo: EloUpdateResult, initialFavorite = false) {
     const modeLabel = elo.mode === 'solo' ? 'SOLO 排位' : '四人混战排位';
     const humanP = this.humanSeat >= 0 ? finalState.players[this.humanSeat] : null;
     const humanWon = finalState.winner >= 0 && finalState.winner === this.humanSeat;
@@ -1193,6 +1272,10 @@ export class HudUI {
       rankDiff > 0 ? `▲ 上升 ${rankDiff} 名` : rankDiff < 0 ? `▼ 下降 ${Math.abs(rankDiff)} 名` : '名次不变';
     const rankDeltaCls = rankDiff > 0 ? 'rk-up' : rankDiff < 0 ? 'rk-down' : 'rk-flat';
 
+    const canWatchReplay = this.humanSeat >= 0 && Boolean(this.callbacks.onWatchCurrentReplay);
+    const canToggleFav = canWatchReplay && Boolean(this.callbacks.onToggleCurrentFavorite);
+    const isFav = Boolean(initialFavorite);
+
     this.resultOverlay.innerHTML = `
       <div class="result-card ranked-result-card">
         <div class="rr-head">
@@ -1203,8 +1286,20 @@ export class HudUI {
           <div class="rr-head-actions">
             <button type="button" class="rr-lb-mini-btn" id="btn-result-lb">🏆 完整榜单</button>
             ${
-              this.humanSeat >= 0 && this.callbacks.onWatchCurrentReplay
+              canWatchReplay
                 ? `<button type="button" class="rr-lb-mini-btn rr-replay-mini-btn" id="btn-result-replay" title="立即观看本局回放">🎬 回放</button>`
+                : ''
+            }
+            ${
+              canToggleFav
+                ? `<button
+                    type="button"
+                    class="rr-lb-mini-btn rr-fav-mini-btn ${isFav ? 'is-fav' : ''}"
+                    id="btn-result-fav"
+                    aria-pressed="${isFav}"
+                    aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}"
+                    title="${isFav ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）' : '收藏此对局（永久保留，不受每模式 50 场上限控制）'}"
+                  >${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span></button>`
                 : ''
             }
           </div>
@@ -1299,6 +1394,10 @@ export class HudUI {
       this.clearTimers();
       this.callbacks.onWatchCurrentReplay?.();
     });
+    this.bindResultFavoriteBtn(
+      this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-fav'),
+      isFav,
+    );
 
     // Choreographed score count-up + ladder row-swap + overtake reveal animation
     const eloNumEl = this.resultOverlay.querySelector<HTMLElement>('#rr-elo-num');

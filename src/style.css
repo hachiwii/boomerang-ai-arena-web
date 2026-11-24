@@ -988,25 +988,87 @@ body.ui-hidden .lobby-overlay {
   text-align: center;
 }
 
-.result-replay-corner-btn {
+.result-corner-actions {
   position: absolute;
   top: 14px;
   right: 14px;
-  padding: 5px 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.result-replay-corner-btn,
+.result-fav-corner-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 10px;
   border-radius: 8px;
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
+}
+
+.result-replay-corner-btn {
   border: 1px solid rgba(114, 174, 255, 0.42);
   background: rgba(61, 126, 255, 0.18);
   color: #cfe3ff;
-  font-size: 11.5px;
-  font-weight: 800;
-  cursor: pointer;
-  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
 }
 
 .result-replay-corner-btn:hover {
   background: rgba(61, 126, 255, 0.34);
   border-color: rgba(146, 196, 255, 0.72);
   color: #fff;
+}
+
+.result-fav-corner-btn {
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e4ecff;
+}
+
+.result-fav-corner-btn svg {
+  flex-shrink: 0;
+  color: rgba(255, 212, 108, 0.85);
+  transition: color 0.14s ease, transform 0.14s ease;
+}
+
+.result-fav-corner-btn:hover {
+  background: rgba(255, 196, 61, 0.18);
+  border-color: rgba(255, 212, 108, 0.62);
+  color: #fff5d6;
+}
+
+.result-fav-corner-btn:hover svg {
+  color: #ffd86b;
+  transform: scale(1.08);
+}
+
+.result-fav-corner-btn.is-fav {
+  background: linear-gradient(135deg, rgba(118, 82, 16, 0.92) 0%, rgba(78, 52, 10, 0.94) 100%);
+  border-color: rgba(255, 214, 102, 0.86);
+  color: #ffebad;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), 0 0 12px rgba(245, 179, 36, 0.26);
+}
+
+.result-fav-corner-btn.is-fav svg {
+  color: #ffd44d;
+}
+
+.result-fav-corner-btn.is-fav:hover {
+  background: linear-gradient(135deg, rgba(138, 96, 20, 0.95) 0%, rgba(92, 62, 14, 0.96) 100%);
+  border-color: rgba(255, 228, 140, 0.94);
+  color: #fff7dc;
+}
+
+@media (max-width: 480px) {
+  .result-card.has-corner-actions {
+    padding-top: 48px;
+  }
 }
 
 .result-kicker {
@@ -2655,7 +2717,8 @@ body.ui-hidden .lobby-overlay {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  flex-wrap: wrap;
+  gap: 8px 10px;
   margin-bottom: 14px;
 }
 
@@ -2693,6 +2756,10 @@ body.ui-hidden .lobby-overlay {
 }
 
 .rr-lb-mini-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   padding: 5px 10px;
   border-radius: 8px;
   border: 1px solid rgba(255, 210, 110, 0.32);
@@ -2700,8 +2767,10 @@ body.ui-hidden .lobby-overlay {
   color: #ffe299;
   font-size: 11.5px;
   font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
   cursor: pointer;
-  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease, box-shadow 0.14s ease;
 }
 
 .rr-lb-mini-btn:hover {
@@ -2718,6 +2787,46 @@ body.ui-hidden .lobby-overlay {
   background: rgba(61, 126, 255, 0.34);
   border-color: rgba(146, 196, 255, 0.72);
   color: #fff;
+}
+
+.rr-fav-mini-btn {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e4ecff;
+}
+
+.rr-fav-mini-btn svg {
+  flex-shrink: 0;
+  color: rgba(255, 212, 108, 0.85);
+  transition: color 0.14s ease, transform 0.14s ease;
+}
+
+.rr-fav-mini-btn:hover {
+  background: rgba(255, 196, 61, 0.18);
+  border-color: rgba(255, 212, 108, 0.62);
+  color: #fff5d6;
+}
+
+.rr-fav-mini-btn:hover svg {
+  color: #ffd86b;
+  transform: scale(1.08);
+}
+
+.rr-fav-mini-btn.is-fav {
+  background: linear-gradient(135deg, rgba(118, 82, 16, 0.92) 0%, rgba(78, 52, 10, 0.94) 100%);
+  border-color: rgba(255, 214, 102, 0.86);
+  color: #ffebad;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3), 0 0 12px rgba(245, 179, 36, 0.26);
+}
+
+.rr-fav-mini-btn.is-fav svg {
+  color: #ffd44d;
+}
+
+.rr-fav-mini-btn.is-fav:hover {
+  background: linear-gradient(135deg, rgba(138, 96, 20, 0.95) 0%, rgba(92, 62, 14, 0.96) 100%);
+  border-color: rgba(255, 228, 140, 0.94);
+  color: #fff7dc;
 }
 
 .rr-hero {

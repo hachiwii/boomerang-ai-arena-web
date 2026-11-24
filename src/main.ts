@@ -240,6 +240,21 @@ async function bootstrap() {
   let pendingHistorySave: Promise<void> | null = null;
   let favoriteWriteQueue: Promise<void> = Promise.resolve();
 
+  const toggleBundleFavorite = (bundle: MatchReplayBundle, nextFavorite: boolean): Promise<void> => {
+    bundle.summary.favorite = nextFavorite;
+    const task = favoriteWriteQueue.then(async () => {
+      if (pendingHistorySave) {
+        await pendingHistorySave;
+      }
+      const updated = await matchHistory.setFavorite(bundle.summary.id, nextFavorite);
+      if (!updated && !(mode === 'replay' && replayController.getState().computing) && bundle.replay.ticks.length > 0) {
+        await matchHistory.saveBundle(bundle);
+      }
+    });
+    favoriteWriteQueue = task.catch(() => undefined);
+    return task;
+  };
+
   const enqueueHistorySave = (bundle: MatchReplayBundle) => {
     const p = matchHistory.saveBundle(bundle).catch((err) => {
       console.error('Failed to save match history bundle:', err);
@@ -651,6 +666,18 @@ async function bootstrap() {
       if (!bundle) return;
       void startReplayBundle(bundle, false);
     },
+    onToggleCurrentFavorite: (nextFavorite) => {
+      let bundle = lastFinishedBundle;
+      if (!bundle && activeConfig && activeMapData) {
+        const ticks = controller.getRecordedTicks().slice();
+        if (ticks.length > 0) {
+          bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, pendingMatchElo?.elo ?? null, false);
+          lastFinishedBundle = bundle;
+        }
+      }
+      if (!bundle) return;
+      return toggleBundleFavorite(bundle, nextFavorite);
+    },
     onOpenSettings: () => {
       settingsModal.open();
     },
@@ -670,20 +697,7 @@ async function bootstrap() {
     onReplaySpeed: (spd) => {
       replayController.setSpeed(spd);
     },
-    onReplayToggleFavorite: (bundle, nextFavorite) => {
-      bundle.summary.favorite = nextFavorite;
-      const task = favoriteWriteQueue.then(async () => {
-        if (pendingHistorySave) {
-          await pendingHistorySave;
-        }
-        const updated = await matchHistory.setFavorite(bundle.summary.id, nextFavorite);
-        if (!updated && !replayController.getState().computing && bundle.replay.ticks.length > 0) {
-          await matchHistory.saveBundle(bundle);
-        }
-      });
-      favoriteWriteQueue = task.catch(() => undefined);
-      return task;
-    },
+    onReplayToggleFavorite: (bundle, nextFavorite) => toggleBundleFavorite(bundle, nextFavorite),
     onReplayExportMp4: async (bundle, signal, onProgress) => {
       const s = settings.get();
       const result = await exportReplayToMp4(bundle, {
@@ -871,7 +885,7 @@ async function bootstrap() {
         if (mode === 'playing') {
           resultOverlayShown = true;
           pendingMatchElo = null;
-          hudUI.showMatchResult(finalState, eloResult);
+          hudUI.showMatchResult(finalState, eloResult, Boolean(lastFinishedBundle?.summary.favorite));
         }
       });
     },
