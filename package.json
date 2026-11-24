@@ -16,6 +16,7 @@
     "export:assets": "python3 scripts/export_assets.py"
   },
   "dependencies": {
+    "@yowasp/clang": "22.0.0-git20695-13",
     "gifenc": "^1.0.3",
     "mp4-muxer": "^5.2.2",
     "sortablejs": "^1.15.7",

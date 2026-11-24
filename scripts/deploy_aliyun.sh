@@ -34,6 +34,16 @@ npm run build
 echo "==> Uploading dist/assets/ to oss://${BUCKET}/assets/ (${REGION})..."
 aliyun ossutil cp -r -f dist/assets/ "oss://${BUCKET}/assets/" \
   --region "$REGION" \
+  --exclude "*.wasm" \
+  --cache-control "public, max-age=2592000"
+
+# In-browser C++ compiler for custom bots (@yowasp/clang, ~100 MB, fetched on a player's first compile only):
+# WebAssembly.compileStreaming requires Content-Type: application/wasm
+echo "==> Uploading dist/assets/*.wasm with Content-Type: application/wasm..."
+aliyun ossutil cp -r -f dist/assets/ "oss://${BUCKET}/assets/" \
+  --region "$REGION" \
+  --include "*.wasm" \
+  --content-type "application/wasm" \
   --cache-control "public, max-age=2592000"
 
 echo "==> Uploading dist/wasm/**/*.wasm with Content-Type: application/wasm..."

@@ -30,7 +30,10 @@ import {
   RankedMode,
   RosterEntry,
 } from './game/types';
+import { BotCompiler } from './game/customBots/botCompiler';
+import { CustomBotStore, customBotRosterEntry } from './game/customBots/customBotStore';
 import { GameRenderer } from './render/renderer';
+import { BotManagerModal } from './ui/botManagerUI';
 import { HistoryModal } from './ui/historyUI';
 import { HudUI } from './ui/hudUI';
 import { AutoFitter } from './ui/autoFit';
@@ -87,6 +90,15 @@ async function bootstrap() {
   ]);
   const maps = (await mapsResp.json()) as MapMeta[];
   const roster = (await rosterResp.json()) as RosterEntry[];
+  // Enabled custom bots (compiled in the browser) join the shared roster; it's mutated in place when they change
+  const customBots = new CustomBotStore();
+  const syncCustomRoster = () => {
+    for (let i = roster.length - 1; i >= 0; i--) {
+      if (roster[i].category === 'custom') roster.splice(i, 1);
+    }
+    roster.push(...customBots.listEnabled().map(customBotRosterEntry));
+  };
+  syncCustomRoster();
 
   const settings = new SettingsStore();
   const platform = new PlatformManager(settings);
@@ -122,7 +134,17 @@ async function bootstrap() {
   input.setTouchMode(platform.isMobile());
   renderer.setMobileView(platform.isMobile());
   const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
-  const cricketStore = new CricketStore(maps, roster);
+  const cricketStore = new CricketStore(
+    maps,
+    roster,
+    customBots.list().map((b) => b.id),
+  );
+  const botManager = new BotManagerModal(customBots, new BotCompiler());
+  customBots.onChange(() => {
+    syncCustomRoster();
+    cricketStore.syncRoster(customBots.list().map((b) => b.id));
+    lobbyUI.handleRosterChanged();
+  });
   const matchHistory = new MatchHistoryStore();
 
   let mode: 'lobby' | 'playing' | 'replay' = 'lobby';
@@ -1022,6 +1044,9 @@ async function bootstrap() {
     onOpenSettings: () => {
       settingsModal.open();
     },
+    onOpenBotManager: () => {
+      if (!platform.isMobile()) botManager.open();
+    },
     getPlatformState: () => ({
       mobile: platform.isMobile(),
       fullscreen: platform.isFullscreen(),
@@ -1063,6 +1088,7 @@ async function bootstrap() {
     renderer.setMobileView(isMobile);
     hudUI.setMobile(isMobile);
     if (!isMobile) layoutEditor.close(false);
+    if (isMobile) botManager.close(); // desktop-only panel
     lobbyUI.refreshPlatformButtons();
     if (mode === 'lobby') {
       showPlatformToast(isMobile ? '已切换到移动端 · 触屏操作 · 横屏全屏' : '已切换到桌面端 · 键鼠操作');
@@ -1088,7 +1114,7 @@ async function bootstrap() {
 
   // Match & Replay keyboard/mouse shortcuts
   window.addEventListener('keydown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen()) return;
     if (!e.repeat && !isTextEditableTarget(e.target) && matchesActionKeyEvent(settings.get().keybindings, 'toggleHideUi', e)) {
       e.preventDefault();
       setUiHidden(!uiHidden, true);
@@ -1151,7 +1177,7 @@ async function bootstrap() {
   });
 
   window.addEventListener('mousedown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen()) return;
     const code = `Mouse${e.button}`;
     if (isBoundToAction(settings.get().keybindings, 'toggleHideUi', code)) {
       e.preventDefault();

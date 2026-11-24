@@ -23,11 +23,41 @@ export class CricketStore {
   private readonly maps: MapMeta[];
   private readonly roster: RosterEntry[];
   private state: CricketState;
+  /** Bots not currently in the roster whose stats should survive (disabled custom bots). */
+  private retainStatIds: Set<string>;
 
-  constructor(maps: MapMeta[], roster: RosterEntry[]) {
+  /** `roster` is shared and may change at runtime (custom bots): call `syncRoster()` afterwards. */
+  constructor(maps: MapMeta[], roster: RosterEntry[], retainStatIds: Iterable<string> = []) {
     this.maps = maps;
     this.roster = roster;
+    this.retainStatIds = new Set(retainStatIds);
     this.state = this.load();
+  }
+
+  /** New bots join the lottery (official / custom) or the excluded zone (sparring). */
+  private static defaultTierFor(r: RosterEntry): CricketTier {
+    return r.category === 'sparring' ? 'excluded' : 'lottery';
+  }
+
+  /**
+   * Reconciles tiers after the roster changed (custom bots added / enabled / disabled / deleted): gone bots leave
+   * every tier, new ones are placed by `defaultTierFor`. Stats are kept for roster bots and `retainStatIds`.
+   */
+  public syncRoster(retainStatIds: Iterable<string> = this.retainStatIds) {
+    this.retainStatIds = new Set(retainStatIds);
+    const valid = new Set(this.roster.map((r) => r.id));
+    const tiers = this.state.tiers;
+    (Object.keys(tiers) as CricketTier[]).forEach((t) => {
+      tiers[t] = tiers[t].filter((id) => valid.has(id));
+    });
+    const placed = new Set([...tiers.invited, ...tiers.lottery, ...tiers.excluded]);
+    for (const r of this.roster) {
+      if (!placed.has(r.id)) tiers[CricketStore.defaultTierFor(r)].push(r.id);
+    }
+    for (const id of Object.keys(this.state.stats)) {
+      if (!valid.has(id) && !this.retainStatIds.has(id)) delete this.state.stats[id];
+    }
+    this.save();
   }
 
   private defaultState(): CricketState {
@@ -35,13 +65,14 @@ export class CricketStore {
       .filter((r) => r.category === 'official')
       .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
       .map((r) => r.id);
-    const sparring = this.roster.filter((r) => r.category !== 'official').map((r) => r.id);
+    const custom = this.roster.filter((r) => r.category === 'custom').map((r) => r.id);
+    const sparring = this.roster.filter((r) => r.category === 'sparring').map((r) => r.id);
     return {
       format: 'ffa4',
       mapPool: this.maps.map((m) => m.id),
       tiers: {
         invited: [],
-        lottery: official,
+        lottery: [...official, ...custom],
         excluded: sparring,
       },
       stats: {},
@@ -90,11 +121,11 @@ export class CricketStore {
         lottery.unshift(...overflow);
       }
 
-      // Any newly added roster bots not yet placed default to lottery (official) or excluded (sparring)
+      // Any newly added roster bots not yet placed default to lottery (official / custom) or excluded (sparring)
       for (const r of this.roster) {
         if (!seen.has(r.id)) {
           seen.add(r.id);
-          if (r.category === 'official') lottery.push(r.id);
+          if (CricketStore.defaultTierFor(r) === 'lottery') lottery.push(r.id);
           else excluded.push(r.id);
         }
       }
@@ -102,7 +133,7 @@ export class CricketStore {
       const stats: Record<string, CricketBotStats> = {};
       if (parsed.stats && typeof parsed.stats === 'object') {
         for (const [id, st] of Object.entries(parsed.stats)) {
-          if (!validBots.has(id) || !st || typeof st !== 'object') continue;
+          if ((!validBots.has(id) && !this.retainStatIds.has(id)) || !st || typeof st !== 'object') continue;
           const m = Number((st as CricketBotStats).matches) || 0;
           const w = Number((st as CricketBotStats).wins) || 0;
           const k = Number((st as CricketBotStats).kills) || 0;

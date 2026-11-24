@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { SoundFX } from '../audio/sfx';
+import { customCharColor, customCharModelId, loadCustomModelJson } from '../game/customBots/customBotStore';
 import { HumanInputController } from '../game/humanInput';
 import { CinematicCameraPose, CinematicDirector } from '../game/killCamDirector';
 import { CountdownStage } from '../game/matchController';
@@ -18,6 +19,7 @@ import {
   TickSnapshot,
 } from '../game/types';
 import { CharacterRig, PitFallKind, RigDeathEffectCallbacks, WINNER_CELEBRATE_DELAY_TICKS } from './charRig';
+import { buildCustomCharModel, CUSTOM_CHAR_TEMPLATE } from './customChar';
 import { FXSystem } from './fxSystem';
 import { ArenaMover, HqArenaMap3D, IArenaMap } from './hqMapBuilder';
 import { getHqTheme } from './hqThemes';
@@ -341,6 +343,30 @@ export class GameRenderer {
   public async loadCharModel(charKey: string): Promise<VoxelModelData> {
     const cached = this.charModelCache.get(charKey);
     if (cached) return cached;
+    const customColor = customCharColor(charKey);
+    if (customColor) {
+      // Custom bot: its uploaded model if any, else the generic hoodie dyed in the bot's colour.
+      // The key carries colour + model id, so replays keep their look (and degrade to the hoodie if the model is gone).
+      const modelId = customCharModelId(charKey);
+      if (modelId) {
+        try {
+          const json = await loadCustomModelJson(modelId);
+          if (json) {
+            const model = JSON.parse(json) as VoxelModelData;
+            model.key = charKey;
+            model.color = customColor; // dart / ring tint
+            model.label = '自定义';
+            this.charModelCache.set(charKey, model);
+            return model;
+          }
+        } catch (err) {
+          console.warn(`custom model ${modelId} unavailable, using the default figure`, err);
+        }
+      }
+      const model = buildCustomCharModel(await this.loadCharModel(CUSTOM_CHAR_TEMPLATE), charKey, customColor);
+      this.charModelCache.set(charKey, model);
+      return model;
+    }
     const resp = await fetch(`/assets/chars/${charKey}.json?v=${__BUILD_ID__}`);
     if (!resp.ok) throw new Error(`Failed to load character model ${charKey}`);
     const data = (await resp.json()) as VoxelModelData;

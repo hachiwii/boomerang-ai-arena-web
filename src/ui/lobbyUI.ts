@@ -6,12 +6,21 @@ import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgme
 import { generateSpawnSeed, MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { clientToLogical, getLogicalViewport, isForcedLandscape, rectToLogical } from '../game/viewport';
 import { getTheme } from '../render/themes';
+import { makeHoodieAvatarDataUrl } from './hoodieAvatar';
 import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_PHONE } from './icons';
 import { LeaderboardPanel } from './leaderboardUI';
 
 const DUP_RING_ACCENTS = ['#FF4D6D', '#2EC4B6', '#FFB703', '#8338EC'];
 const MAP_POOLS_STORAGE_KEY = 'boomerang_arena_map_pools_v1';
 const RECENT_MAPS_STORAGE_KEY = 'boomerang_arena_recent_maps_v1';
+/** The Cricket board was laid out for the 16 bundled bots; beyond that the 抽签 / 落选 zones become fixed-size scroll areas. */
+const CRICKET_BOARD_DESIGN_CAP = 16;
+/** Mobile 16-bot layout: 抽签 + 落选 never need more than 5 card columns between them (4 rows each). */
+const CRICKET_MOBILE_ZONE_COLS = 5;
+
+function escapeHtml(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] || c);
+}
 
 interface DraftSlot {
   kind: 'human' | 'bot';
@@ -23,6 +32,8 @@ export interface LobbyCallbacks {
   onStartMatch: (config: MatchConfig) => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
+  /** Desktop only: opens the custom bot manager (upload / compile / configure user bots). */
+  onOpenBotManager?: () => void;
   /** PC / mobile presentation state for the header toggle + fullscreen buttons. */
   getPlatformState?: () => { mobile: boolean; fullscreen: boolean; fullscreenSupported: boolean };
   onTogglePlatform?: () => void;
@@ -31,27 +42,7 @@ export interface LobbyCallbacks {
 
 export type LobbyTab = 'ranked' | 'cricket' | 'custom';
 
-/**
- * Generates an inline SVG avatar for the built-in generic humanoid (Human & Sparring hoodies)
- * so every contestant card has a crisp square icon.
- */
-export function makeHoodieAvatarDataUrl(hoodColor: string, hairColor: string, label?: string): string {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-    <rect x="14" y="10" width="36" height="28" rx="4" fill="${hairColor}" stroke="#2E2238" stroke-width="3"/>
-    <rect x="20" y="20" width="24" height="16" fill="#FFDCC2"/>
-    <rect x="24" y="23" width="4" height="7" fill="#2B3550"/>
-    <rect x="36" y="23" width="4" height="7" fill="#2B3550"/>
-    <rect x="25" y="23" width="2" height="2" fill="#FFFFFF"/>
-    <rect x="37" y="23" width="2" height="2" fill="#FFFFFF"/>
-    <rect x="20" y="32" width="4" height="3" fill="#FF9FA8"/>
-    <rect x="40" y="32" width="4" height="3" fill="#FF9FA8"/>
-    <rect x="18" y="38" width="28" height="20" rx="3" fill="${hoodColor}" stroke="#2E2238" stroke-width="3"/>
-    <rect x="27" y="39" width="2" height="10" fill="#FFFFFF"/>
-    <rect x="35" y="39" width="2" height="10" fill="#FFFFFF"/>
-    ${label ? `<text x="32" y="55" font-size="9" font-weight="800" fill="#fff" text-anchor="middle" font-family="sans-serif">${label}</text>` : ''}
-  </svg>`;
-  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
-}
+export { makeHoodieAvatarDataUrl };
 
 export function resolveSlots(drafts: DraftSlot[], roster: RosterEntry[]): SlotConfig[] {
   const byId = new Map(roster.map((r) => [r.id, r]));
@@ -179,6 +170,7 @@ export class LobbyUI {
   private mapPoolWarnEl!: HTMLElement;
   private mapPoolTiles = new Map<string, { btn: HTMLButtonElement; checkEl: HTMLElement }>();
   private lastRenderedViewKey = '';
+  private readonly cricketListScroll = new Map<string, number>();
   private readonly maps: MapMeta[];
   private readonly roster: RosterEntry[];
   private readonly leaderboard: LeaderboardStore;
@@ -458,6 +450,11 @@ export class LobbyUI {
   /** Re-render header buttons after a desktop/mobile or fullscreen change. */
   public refreshPlatformButtons() {
     if (this.container.classList.contains('hidden')) return;
+    if (this.activeTab === 'cricket' && this.roster.length > CRICKET_BOARD_DESIGN_CAP) {
+      // Overflowing Cricket board: zone heights and touch drag behaviour differ between desktop and mobile
+      this.render();
+      return;
+    }
     const holder = this.container.querySelector<HTMLElement>('.lobby-header-platform');
     if (!holder) return;
     holder.innerHTML = this.renderPlatformButtonsHtml();
@@ -752,6 +749,7 @@ export class LobbyUI {
 
     const officialBots = this.roster.filter((r) => r.category === 'official');
     const sparringBots = this.roster.filter((r) => r.category === 'sparring');
+    const customBots = this.roster.filter((r) => r.category === 'custom');
 
     const renderBotItem = (b: RosterEntry) => {
       const selected = currentDraft.kind === 'bot' && currentDraft.botId === b.id;
@@ -759,7 +757,9 @@ export class LobbyUI {
       const rankChip =
         isOfficial && b.rank !== null
           ? `<span class="pm-rank">#${b.rank}</span>`
-          : `<span class="pm-rank pm-rank-sp">陪练</span>`;
+          : b.category === 'custom'
+            ? `<span class="pm-rank pm-rank-custom">自定义</span>`
+            : `<span class="pm-rank pm-rank-sp">陪练</span>`;
       const score = isOfficial ? this.officialBotScoreForCustom(b) : null;
       const scoreHtml = score !== null ? `<span class="pm-score elo-zero">${score}</span>` : '';
       return `
@@ -768,7 +768,7 @@ export class LobbyUI {
           <div class="pm-main">
             <div class="pm-name-row">
               ${rankChip}
-              <span class="pm-name">${b.name}</span>
+              <span class="pm-name">${escapeHtml(b.name)}</span>
             </div>
           </div>
           ${scoreHtml}
@@ -804,6 +804,7 @@ export class LobbyUI {
 
       <div class="pm-section-label">陪练</div>
       ${sparringBots.map(renderBotItem).join('')}
+      ${customBots.length > 0 ? `<div class="pm-section-label">自定义 Bot</div>${customBots.map(renderBotItem).join('')}` : ''}
     `;
 
     const rect = rectToLogical(triggerEl.getBoundingClientRect());
@@ -1125,11 +1126,14 @@ export class LobbyUI {
     const winPct = hasGames ? `${Math.round((st.wins / st.matches) * 100)}%` : '--';
     const kdNum = st.deaths === 0 ? st.kills : st.kills / st.deaths;
     const kdStr = hasGames ? kdNum.toFixed(2) : '--';
+    const isCustom = entry.category === 'custom';
     const eloHtml =
       elo !== null
         ? `<span class="cc-elo" title="固定 ELO 分数">${elo}</span>`
-        : `<span class="cc-elo is-sparring" title="陪练角色">陪练</span>`;
-    const tooltip = `${entry.name}${elo !== null ? ` · 固定 ELO ${elo}` : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
+        : isCustom
+          ? `<span class="cc-elo is-custom" title="自定义 Bot（没有 ELO 分数）">自定义</span>`
+          : `<span class="cc-elo is-sparring" title="陪练角色">陪练</span>`;
+    const tooltip = `${escapeHtml(entry.name)}${elo !== null ? ` · 固定 ELO ${elo}` : isCustom ? ' · 自定义 Bot' : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
 
     return `
       <div
@@ -1139,9 +1143,9 @@ export class LobbyUI {
         title="${tooltip}"
       >
         <div class="cc-top">
-          <img class="cc-avatar" src="${avatarForBotEntry(entry)}" alt="${entry.shortName}" style="border-color:${entry.color}" draggable="false" />
+          <img class="cc-avatar" src="${avatarForBotEntry(entry)}" alt="${escapeHtml(entry.shortName)}" style="border-color:${entry.color}" draggable="false" />
           <div class="cc-name-wrap">
-            <span class="cc-name">${entry.shortName}</span>
+            <span class="cc-name">${escapeHtml(entry.shortName)}</span>
           </div>
           ${eloHtml}
         </div>
@@ -1179,8 +1183,21 @@ export class LobbyUI {
     `).join('');
 
     const noticeHtml = this.renderCricketNoticeHtml();
-    const mLotteryCols = Math.min(4, Math.max(1, Math.ceil(lotteryIds.length / 4)));
-    const mExcludedCols = Math.min(4, Math.max(1, Math.ceil(excludedIds.length / 4)));
+    const overflow = this.roster.length > CRICKET_BOARD_DESIGN_CAP;
+    let mLotteryCols = Math.min(4, Math.max(1, Math.ceil(lotteryIds.length / 4)));
+    let mExcludedCols = Math.min(4, Math.max(1, Math.ceil(excludedIds.length / 4)));
+    if (overflow) {
+      // More bots than the board was designed for: keep the 16-bot column budget (cards never get narrower)
+      // and let each zone scroll vertically instead of adding columns.
+      const total = lotteryIds.length + excludedIds.length;
+      mLotteryCols =
+        excludedIds.length === 0
+          ? 4
+          : lotteryIds.length === 0
+            ? 1
+            : Math.min(4, Math.max(1, Math.round((CRICKET_MOBILE_ZONE_COLS * lotteryIds.length) / Math.max(1, total))));
+      mExcludedCols = Math.min(4, Math.max(1, CRICKET_MOBILE_ZONE_COLS - mLotteryCols));
+    }
 
     return `
       <div class="cricket-panel">
@@ -1215,7 +1232,7 @@ export class LobbyUI {
         <div id="cricket-notice-slot" class="${noticeHtml ? '' : 'hidden'}">${noticeHtml}</div>
 
         <div
-          class="cricket-board"
+          class="cricket-board ${overflow ? 'is-overflow' : ''}"
           style="--m-lottery-cols:${mLotteryCols};--m-excluded-cols:${mExcludedCols};--m-board-cols:minmax(0, 1fr) minmax(0, ${mLotteryCols}fr) minmax(0, ${mExcludedCols}fr)"
         >
           <section
@@ -1338,6 +1355,49 @@ export class LobbyUI {
       }
     }
     this.cricketSortables = [];
+  }
+
+  /**
+   * Overflow mode (more bots than the 16 the board was designed for): 抽签 / 落选 become fixed-size scroll areas,
+   * so cards moving between zones during a drag never resize anything. Mobile already uses a fixed 4-row grid;
+   * desktop gets locked to the height 16 cards would need in one zone.
+   */
+  private applyCricketOverflowLayout() {
+    const board = this.container.querySelector<HTMLElement>('.cricket-board');
+    if (!board) return;
+    const grids = Array.from(board.querySelectorAll<HTMLElement>('.cricket-card-grid'));
+    if (board.classList.contains('is-overflow')) {
+      if (!document.body.classList.contains('is-mobile')) {
+        const sample = board.querySelector<HTMLElement>('.cricket-card-grid .cricket-card');
+        const grid = grids[0];
+        if (sample && grid) {
+          const cs = getComputedStyle(grid);
+          const cols = Math.max(1, cs.gridTemplateColumns.split(' ').filter(Boolean).length);
+          const gap = Number.parseFloat(cs.rowGap) || 0;
+          const rows = Math.ceil(CRICKET_BOARD_DESIGN_CAP / cols);
+          const h = rows * sample.getBoundingClientRect().height + (rows - 1) * gap;
+          for (const g of grids) g.style.height = `${Math.ceil(h)}px`;
+        }
+      }
+      const syncMore = (g: HTMLElement) =>
+        g.classList.toggle('has-more-below', g.scrollTop + g.clientHeight < g.scrollHeight - 2);
+      for (const g of grids) {
+        const saved = this.cricketListScroll.get(g.dataset.dropList || '');
+        if (saved) g.scrollTop = saved;
+        syncMore(g);
+        g.addEventListener('scroll', () => syncMore(g), { passive: true });
+      }
+    }
+    this.cricketListScroll.clear();
+  }
+
+  /** Custom bots were added / enabled / disabled / renamed / recoloured: drop stale picks and redraw. */
+  public handleRosterChanged() {
+    const ids = new Set(this.roster.map((r) => r.id));
+    const fallback = this.roster.find((r) => r.category === 'official')?.id ?? this.roster[0]?.id ?? '';
+    this.drafts = this.drafts.map((d) => (ids.has(d.botId) || !d.botId ? d : { ...d, botId: fallback }));
+    this.closeDropdown();
+    if (!this.container.classList.contains('hidden')) this.render();
   }
 
   private bindCricketEvents() {
@@ -1501,9 +1561,15 @@ export class LobbyUI {
       stopActiveDragTracking();
     };
 
+    this.applyCricketOverflowLayout();
+    const holdToDrag = boardEl.classList.contains('is-overflow') && document.body.classList.contains('is-mobile');
+
     for (const listEl of listEls) {
       const tier = listEl.dataset.dropList as CricketTier;
       const sortable = Sortable.create(listEl, {
+        // Overflowing mobile board: cards allow vertical panning, so a swipe scrolls the zone and a short
+        // press-and-hold picks the card up (mouse drags stay immediate)
+        ...(holdToDrag ? { delay: 170, delayOnTouchOnly: true, touchStartThreshold: 6 } : {}),
         group: {
           name: 'cricket-roster',
           pull: true,
@@ -1774,7 +1840,9 @@ export class LobbyUI {
                   ? `<span class="pk-chip pk-chip-human">真人</span>`
                   : isOfficial && botEntry?.rank !== null && botEntry?.rank !== undefined
                     ? `<span class="pk-chip pk-chip-official">#${botEntry.rank} AI</span>`
-                    : `<span class="pk-chip pk-chip-sparring">陪练</span>`;
+                    : botEntry?.category === 'custom'
+                      ? `<span class="pk-chip pk-chip-custom">自定义</span>`
+                      : `<span class="pk-chip pk-chip-sparring">陪练</span>`;
                 const subHtml = isOfficial ? `<div class="pk-sub">${slot.baseName}</div>` : '';
                 const scoreHtml =
                   officialScore !== null ? `<span class="pk-score elo-zero">${officialScore}</span>` : '';
@@ -1817,6 +1885,12 @@ export class LobbyUI {
     this.destroyCricketSortables();
     this.closeDropdown();
     const viewKey = `${this.activeTab}:${this.showLeaderboard ? 'lb' : 'main'}`;
+    this.cricketListScroll.clear();
+    if (viewKey === this.lastRenderedViewKey) {
+      this.container.querySelectorAll<HTMLElement>('[data-drop-list]').forEach((el) => {
+        if (el.scrollTop > 0) this.cricketListScroll.set(el.dataset.dropList || '', el.scrollTop);
+      });
+    }
     const prevScrollTop =
       viewKey === this.lastRenderedViewKey
         ? (this.container.querySelector<HTMLElement>('.lobby-card')?.scrollTop ?? 0)
@@ -1850,6 +1924,7 @@ export class LobbyUI {
             </div>
             <div class="lobby-nav-actions">
               <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）">📜 对局历史</button>
+              <button type="button" class="lobby-settings-btn lobby-bots-btn" id="btn-open-bot-manager" title="上传 C++ 源码在浏览器里编译成自定义 Bot，可在自定义对局和斗蛐蛐中使用">🤖 管理 Bot</button>
               <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置">⚙️ 设置</button>
               <button
                 type="button"
@@ -1909,6 +1984,10 @@ export class LobbyUI {
     this.container.querySelector('#btn-open-settings')?.addEventListener('click', () => {
       this.closeDropdown();
       this.callbacks.onOpenSettings();
+    });
+    this.container.querySelector('#btn-open-bot-manager')?.addEventListener('click', () => {
+      this.closeDropdown();
+      this.callbacks.onOpenBotManager?.();
     });
     this.container.querySelector('#btn-toggle-bgm')?.addEventListener('click', () => {
       this.settings.setBgmEnabled(!this.settings.get().bgmEnabled);

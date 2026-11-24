@@ -53,6 +53,9 @@
 #pragma pop_macro("far")
 #pragma pop_macro("near")
 #endif
+#if defined(__wasi__)
+#include <time.h>
+#endif
 
 namespace dart {
 
@@ -72,6 +75,11 @@ inline i64 thread_cpu_100ns() {
     return i64(ticks(kernel)+ticks(user));
 #elif defined(__EMSCRIPTEN__)
     return i64(emscripten_get_now() * 10000.0);
+#elif defined(__wasi__)
+    // 和 Emscripten 版一样用墙上时钟（浏览器里拿不到线程 CPU 时间）
+    timespec ts;
+    if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return -1;
+    return i64(ts.tv_sec) * 10000000 + i64(ts.tv_nsec) / 100;
 #else
     return -1;
 #endif
@@ -2559,6 +2567,56 @@ const char* bot_decide(const char* obs_str) { \
                    std::to_string(a.act) + " " + std::to_string(a.ax) + " " + \
                    std::to_string(a.ay) + " " + std::to_string(a.msg); \
     return g_wasm_reply.c_str(); \
+} \
+}
+#elif defined(DART_WASI_BOT)
+// 网页里用户上传、浏览器内 clang 编译的 bot（wasm32-wasi reactor）。
+// 和上面的 Emscripten 版是同一套文本协议，只是导出方式不同：宿主先调 _initialize，
+// 用 bot_alloc 申请内存写入以 0 结尾的字符串，再调 bot_init / bot_decide。
+#include <cstdlib>
+#include <memory>
+#include <sstream>
+#include <string>
+
+#define DART_MAIN(BotType) \
+namespace { \
+    dart::GameInfo g_wasi_gi; \
+    std::unique_ptr<BotType> g_wasi_bot; \
+    std::string g_wasi_reply; \
+} \
+extern "C" { \
+__attribute__((export_name("bot_alloc"))) \
+char* bot_alloc(unsigned long n) { return static_cast<char*>(std::malloc(n ? n : 1)); } \
+__attribute__((export_name("bot_free"))) \
+void bot_free(char* p) { std::free(p); } \
+__attribute__((export_name("bot_init"))) \
+int bot_init(const char* header_str) { \
+    g_wasi_gi = dart::GameInfo(); \
+    std::istringstream iss(header_str ? header_str : ""); \
+    if (!dart::read_info(iss, g_wasi_gi)) return 0; \
+    dart::current_info() = &g_wasi_gi; \
+    g_wasi_bot = std::make_unique<BotType>(); \
+    dart::call_init(*g_wasi_bot, g_wasi_gi, 0); \
+    return 1; \
+} \
+__attribute__((export_name("bot_decide"))) \
+const char* bot_decide(const char* obs_str) { \
+    if (!g_wasi_bot) { \
+        g_wasi_reply = "0 0 0 0 0 0"; \
+        return g_wasi_reply.c_str(); \
+    } \
+    dart::current_info() = &g_wasi_gi; \
+    dart::Obs o; \
+    std::istringstream iss(obs_str ? obs_str : ""); \
+    if (!dart::read_obs(iss, g_wasi_gi, o)) { \
+        g_wasi_reply = "0 0 0 0 0 0"; \
+        return g_wasi_reply.c_str(); \
+    } \
+    const dart::Action a = g_wasi_bot->decide(o); \
+    g_wasi_reply = std::to_string(a.mx) + " " + std::to_string(a.my) + " " + \
+                   std::to_string(a.act) + " " + std::to_string(a.ax) + " " + \
+                   std::to_string(a.ay) + " " + std::to_string(a.msg); \
+    return g_wasi_reply.c_str(); \
 } \
 }
 #elif !defined(DART_NO_MAIN)

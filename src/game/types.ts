@@ -77,7 +77,7 @@ export interface RosterEntry {
   rating: number | null;
   duelRating: number | null;
   ffaRating: number | null;
-  category: 'official' | 'sparring';
+  category: 'official' | 'sparring' | 'custom'; // custom = compiled in the browser by the user (no ELO, never ranked)
   color: string;
   avatar: string | null;
 }

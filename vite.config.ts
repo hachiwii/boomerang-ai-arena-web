@@ -19,6 +19,11 @@ export default defineConfig({
   worker: {
     format: 'es',
   },
+  optimizeDeps: {
+    // In-browser clang (custom bots): it locates its ~100 MB of wasm / sysroot next to its own module via
+    // `new URL('./…', import.meta.url)`, which dependency pre-bundling would break.
+    exclude: ['@yowasp/clang'],
+  },
   build: {
     target: 'es2022',
   },
