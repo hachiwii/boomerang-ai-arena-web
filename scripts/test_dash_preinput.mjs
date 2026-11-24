@@ -78,7 +78,7 @@ function setup({ preInput = true, rows = openRows, spawn = '4 6 14 6', bindDashT
 
   assert.equal(mod.ccall('engine_init', 'number', ['string', 'number', 'number'], [makeMap(rows, spawn), 2, 0]), 1);
   mod.ccall('engine_set_human_seat', 'void', ['number'], [0]);
-  mod.ccall('engine_set_human_slash_ticks', 'void', ['number'], [5]);
+  mod.ccall('engine_set_human_slash_ticks', 'void', ['number'], [4]);
 
   const mapData = JSON.parse(mod.ccall('engine_get_map_json', 'string', [], []));
   let state = JSON.parse(mod.ccall('engine_get_state_json', 'string', [], []));

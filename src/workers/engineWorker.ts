@@ -77,7 +77,7 @@ self.onmessage = async (ev: MessageEvent) => {
         return;
       }
       engineSetHumanSeat!(typeof humanSeat === 'number' ? humanSeat : -1);
-      engineSetHumanSlashTicks!(typeof humanSlashTicks === 'number' ? humanSlashTicks : 5);
+      engineSetHumanSlashTicks!(typeof humanSlashTicks === 'number' ? humanSlashTicks : 4);
       engineSetHumanCliffGuard!(cliffGuard ? 1 : 0);
       engineSetHumanMeleeAssist!(meleeAssist === false ? 0 : 1);
       const mapData = JSON.parse(engineGetMapJson!());

@@ -29,6 +29,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -873,6 +874,198 @@ inline bool seg_near_origin(i64 ax, i64 ay, i64 bx, i64 by, i64 R) {
     return l <= r;
 }
 
+// 人类挥砍本步线段扫掠格挡判定（仅用于 human_slash_ticks > 0 的多帧判定窗口）：
+// 飞镖本步从 (dx0, dy0) 飞到 (dx1, dy1)，挥砍者本步从 (px0, py0) 移到 (px1, py1)，朝向单位向量 (pax, pay)。
+// 在飞镖首次命中挥砍者（相对距离 ≤ hit_r）之前的相对轨迹 s ∈ [0, min(1, s_hit)] 内，
+// 若存在时刻 s 使飞镖落入挥砍扇形（距离 ≤ reach，且贴身 ≤ body_r 或夹角余弦 ≥ block_cs）且无墙遮挡，
+// 返回最早可格挡时刻 out_s 及对应拦截落点 (out_bx, out_by)。
+inline bool swept_dart_block(
+    const Map& M,
+    i64 px0, i64 py0, i64 px1, i64 py1, i64 pax, i64 pay,
+    i64 dx0, i64 dy0, i64 dx1, i64 dy1,
+    i64 reach, i64 block_cs, i64 body_r, i64 hit_r,
+    double& out_s, i64& out_bx, i64& out_by
+) {
+    const i64 Ax = dx0 - px0, Ay = dy0 - py0;
+    const i64 Bx = dx1 - px1, By = dy1 - py1;
+    if (!seg_near_origin(Ax, Ay, Bx, By, reach)) return false;
+
+    auto dmin = [](double a, double b) { return a < b ? a : b; };
+    auto dmax = [](double a, double b) { return a > b ? a : b; };
+    auto dclamp = [&](double v, double lo, double hi) { return dmax(lo, dmin(hi, v)); };
+
+    const i64 Ux = Bx - Ax, Uy = By - Ay;
+    const double q2 = double(Ux) * Ux + double(Uy) * Uy;
+    const double q1 = double(Ax) * Ux + double(Ay) * Uy;
+    const double a2 = double(Ax) * Ax + double(Ay) * Ay;
+
+    // 1. 飞镖首次命中挥砍者（相对距离 ≤ hit_r）的参数上限 s_max
+    double s_max = 1.0;
+    if (Ax * Ax + Ay * Ay <= hit_r * hit_r) {
+        s_max = 0.0;
+    } else if (seg_near_origin(Ax, Ay, Bx, By, hit_r)) {
+        if (q2 > 0.0) {
+            const double q0 = a2 - double(hit_r) * hit_r;
+            const double disc = dmax(0.0, q1 * q1 - q2 * q0);
+            s_max = dclamp((-q1 - std::sqrt(disc)) / q2, 0.0, 1.0);
+        } else {
+            s_max = 0.0;
+        }
+    }
+
+    // 2. 在 [0, s_max] 内求落入距离圆 |R(s)| ≤ reach 的区间 [r0, r1]
+    double r0 = 0.0, r1 = s_max;
+    if (q2 > 0.0) {
+        const double q0 = a2 - double(reach) * reach;
+        const double disc = q1 * q1 - q2 * q0;
+        if (disc < 0.0) {
+            const double tc = dclamp(-q1 / q2, 0.0, s_max);
+            r0 = r1 = tc;
+        } else {
+            const double sd = std::sqrt(disc);
+            r0 = dmax(0.0, (-q1 - sd) / q2);
+            r1 = dmin(s_max, (-q1 + sd) / q2);
+        }
+    } else if (Ax * Ax + Ay * Ay > reach * reach) {
+        return false;
+    }
+    if (r0 > r1 + 1e-12) return false;
+    if (r0 > r1) r0 = r1;
+
+    // 精确整数判定：时刻 s 对应的离散点是否在挥砍扇形内且无墙遮挡
+    auto eval_int = [&](double s, i64& bx, i64& by) -> bool {
+        const i64 px = px0 + i64(std::llround(double(px1 - px0) * s));
+        const i64 py = py0 + i64(std::llround(double(py1 - py0) * s));
+        bx = dx0 + i64(std::llround(double(dx1 - dx0) * s));
+        by = dy0 + i64(std::llround(double(dy1 - dy0) * s));
+        const i64 rx = bx - px, ry = by - py;
+        const i64 dd = rx * rx + ry * ry;
+        if (dd > reach * reach) return false;
+        const i64 dl = isqrt(dd);
+        if (dl > body_r) {
+            if ((rx * pax + ry * pay) * 1000 < block_cs * dl * UNIT) return false;
+        }
+        if (wall_between(M, px, py, bx, by)) return false;
+        return true;
+    };
+
+    // 连续几何判定（不含墙）：用于定位扇形子区间
+    const double d0 = double(Ax) * pax + double(Ay) * pay;
+    const double d1 = double(Ux) * pax + double(Uy) * pay;
+    const double K1 = 1000.0;
+    const double K2 = double(block_cs) * double(UNIT);
+    const double K1_2 = K1 * K1;
+    const double K2_2 = K2 * K2;
+    auto in_sector_cont = [&](double s) -> bool {
+        const double rx = double(Ax) + s * double(Ux);
+        const double ry = double(Ay) + s * double(Uy);
+        const double dd = rx * rx + ry * ry;
+        if (dd > double(reach) * reach + 1e-3) return false;
+        if (dd <= double(body_r) * body_r + 1e-3) return true;
+        const double dl = std::sqrt(dd);
+        const double dot = d0 + s * d1;
+        return dot * K1 + 1e-3 >= K2 * dl;
+    };
+
+    // 3. 收集 [r0, r1] 内所有边界临界点（半平面、扇形锥面二次方程、贴身圆二次方程、最近点）
+    double pts[12];
+    int npts = 0;
+    auto add_pt = [&](double s) {
+        if (npts < 12 && std::isfinite(s) && s >= r0 - 1e-12 && s <= r1 + 1e-12) {
+            pts[npts++] = dclamp(s, r0, r1);
+        }
+    };
+    add_pt(r0);
+    add_pt(r1);
+    if (std::fabs(d1) > 1e-12) add_pt(-d0 / d1);
+    {
+        const double c2 = K1_2 * d1 * d1 - K2_2 * q2;
+        const double c1 = 2.0 * (K1_2 * d0 * d1 - K2_2 * q1);
+        const double c0 = K1_2 * d0 * d0 - K2_2 * a2;
+        if (std::fabs(c2) > 1e-9) {
+            const double disc = c1 * c1 - 4.0 * c2 * c0;
+            if (disc >= 0.0) {
+                const double sd = std::sqrt(disc);
+                add_pt((-c1 - sd) / (2.0 * c2));
+                add_pt((-c1 + sd) / (2.0 * c2));
+            }
+        } else if (std::fabs(c1) > 1e-9) {
+            add_pt(-c0 / c1);
+        }
+    }
+    if (q2 > 0.0) {
+        const double pb0 = a2 - double(body_r) * body_r;
+        const double disc = q1 * q1 - q2 * pb0;
+        if (disc >= 0.0) {
+            const double sd = std::sqrt(disc);
+            add_pt((-q1 - sd) / q2);
+            add_pt((-q1 + sd) / q2);
+        }
+        add_pt(-q1 / q2);
+    }
+
+    // 插入排序并去重
+    for (int i = 1; i < npts; ++i) {
+        const double key = pts[i];
+        int j = i - 1;
+        while (j >= 0 && pts[j] > key) {
+            pts[j + 1] = pts[j];
+            --j;
+        }
+        pts[j + 1] = key;
+    }
+    int uniq = 0;
+    for (int i = 0; i < npts; ++i) {
+        if (uniq == 0 || pts[i] - pts[uniq - 1] > 1e-9) pts[uniq++] = pts[i];
+    }
+
+    const double rel_len = std::sqrt(q2);
+    const double move_len = dmax(rel_len, std::hypot(double(dx1 - dx0), double(dy1 - dy0)));
+    const double nudge = (rel_len > 1.0) ? (2.0 / rel_len) : 0.0;
+
+    // 4. 按时间顺序扫描每个临界点与子区间，找到最早通过精确整数判定+无墙遮挡的时刻
+    for (int i = 0; i < uniq; ++i) {
+        i64 bx = 0, by = 0;
+        if (eval_int(pts[i], bx, by)) {
+            out_s = pts[i]; out_bx = bx; out_by = by;
+            return true;
+        }
+        if (i + 1 >= uniq) continue;
+        const double u = pts[i], v = pts[i + 1];
+        const double mid = 0.5 * (u + v);
+        if (!in_sector_cont(mid)) continue;
+        const double u_in = dmin(mid, u + nudge);
+        if (eval_int(u_in, bx, by)) {
+            out_s = u_in; out_bx = bx; out_by = by;
+            return true;
+        }
+        const double span_mm = (v - u) * move_len;
+        const int steps = int(iclamp(i64(std::ceil(span_mm / 40.0)), 2, 32));
+        for (int k = 1; k <= steps; ++k) {
+            const double s = u + (v - u) * (double(k) / double(steps));
+            if (eval_int(s, bx, by)) {
+                double lo = u + (v - u) * (double(k - 1) / double(steps));
+                double hi = s;
+                i64 best_bx = bx, best_by = by;
+                for (int bi = 0; bi < 6; ++bi) {
+                    const double m2 = 0.5 * (lo + hi);
+                    i64 tx = 0, ty = 0;
+                    if (eval_int(m2, tx, ty)) {
+                        hi = m2;
+                        best_bx = tx;
+                        best_by = ty;
+                    } else {
+                        lo = m2;
+                    }
+                }
+                out_s = hi; out_bx = best_bx; out_by = best_by;
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 // ------------------------------------------------------------------ 状态
 
 enum PState {
@@ -1014,10 +1207,10 @@ struct Game {
     i64 t = 0;
     bool over = false;
     i64 winner = -2;         // 结束后：1v1 = 胜者座位，4v4 = 胜队，四人局 = 最后存活者；-1 = 平局 / 没人活；-2 = 未结束
-    int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的近战（挥砍/踢人）从按下起持续 human_slash_ticks 步判定（默认 5 步 = 原速 250ms）
-    i64 human_slash_ticks = 5;  // 原速 20Hz 下 250ms = 5 逻辑 tick（覆盖完整 2 步前摇 + 前 3 步后摇）
+    int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的近战（挥砍/踢人）从按下起持续 human_slash_ticks 步判定（默认 4 步 = 原速 200ms；0 = 与 AI 完全相同）
+    i64 human_slash_ticks = 4;  // 原速 20Hz 下默认 200ms = 4 逻辑 tick（普通 4 帧 / 严格 2 帧 / AI 0 帧）
     bool human_cliff_guard = false;  // 开启跌落防护时：人类冲刺若原本会坠崖，但末尾 25% 存在安全落点，则停在最远安全点
-    bool human_melee_assist = true;  // 开启近战吸附时：人类挥砍格挡飞镖放宽至半角 30°（866）；关闭时恢复原版半角 20°（block_cos=940）
+    bool human_melee_assist = true;  // 保留字段以兼容 WASM 导出接口（砍镖判定范围不再受近战吸附影响，仅由挥砍判定模式决定）
     bool human_dash_target_active = false;
     i64 human_dash_target_x = 0, human_dash_target_y = 0;
     bool record = false;
@@ -1581,7 +1774,7 @@ struct Game {
         bool blocked[MAXP] = {};
         int dret[MAXP] = {}, dcurve[MAXP] = {};  // 统计：被回程的镖打中 / 被拐过弯（累计转过 30 度以上）的回程镖打中
         // 两轮：先处理出镖、起跳、落地、召回完成等，再处理挥砍和踢的判定（这样同一步出手的镖也能被挡，和座位号无关）
-        bool fire[MAXP] = {}, fresh[MAXP] = {}, human_slash_active[MAXP] = {};
+        bool fire[MAXP] = {}, fresh[MAXP] = {}, human_slash_active[MAXP] = {}, human_swept_block[MAXP] = {};
         for (int pass = 0; pass < 2; ++pass)
         for (int k = 0; k < n; ++k) {
             Player& P = p[k];
@@ -1636,16 +1829,16 @@ struct Game {
                     }
                 }
                 if (slash && cf.block) {
-                    const bool assist_block = (k == human_slash_seat) && human_melee_assist;
-                    const i64 block_cs = assist_block ? 866 : cf.block_cos;  // 866 = cos(30°) * 1000
-                    const i64 block_pb = assist_block ? cf.body_r : 0;
+                    // 人类普通(4帧)/严格(2帧)模式：砍镖与砍人统一为 ±60°（cf.slash_cos）+ 贴身免角（cf.body_r），
+                    // 并在第 5 段继续执行本步线段扫掠格挡判定，不再受近战吸附影响
+                    human_swept_block[k] = true;
                     for (int j = 0; j < n; ++j) {
                         if (j == k || blocked[j] || !dart_flying(d[j].st)) continue;
                         const i64 dx = d[j].x - P.x, dy = d[j].y - P.y;
                         const i64 dd = dx * dx + dy * dy;
                         if (dd > cf.slash_reach * cf.slash_reach) continue;
                         const i64 dl = isqrt(dd);
-                        if (dl > block_pb && (dx * P.ax + dy * P.ay) * 1000 < block_cs * dl * UNIT) continue;
+                        if (dl > cf.body_r && (dx * P.ax + dy * P.ay) * 1000 < cf.slash_cos * dl * UNIT) continue;
                         if (wall_between(m, P.x, P.y, d[j].x, d[j].y)) continue;
                         blocked[j] = true;
                         ++nh;
@@ -1729,18 +1922,15 @@ struct Game {
                             ev(EV_KICKHIT, k, q);
                         }
                     }
-                    // 格挡：挥砍出手时，挥砍距离内的飞镖（别人的）被打落在原地；人类开启近战吸附时为半角 30°，关闭时与 AI 同为原版半角 20°
+                    // 格挡：挥砍出手时，挥砍距离内的飞镖（别人的）被打落在原地（AI 与人类 AI 模式严格使用原版半角 20° 单点判定）
                     if (slash && cf.block) {
-                        const bool assist_block = (k == human_slash_seat) && human_melee_assist;
-                        const i64 block_cs = assist_block ? 866 : cf.block_cos;  // 866 = cos(30°) * 1000
-                        const i64 block_pb = assist_block ? cf.body_r : 0;
                         for (int j = 0; j < n; ++j) {
                             if (j == k || blocked[j] || !dart_flying(d[j].st)) continue;
                             const i64 dx = d[j].x - P.x, dy = d[j].y - P.y;
                             const i64 dd = dx * dx + dy * dy;
                             if (dd > cf.slash_reach * cf.slash_reach) continue;
                             const i64 dl = isqrt(dd);
-                            if (dl > block_pb && (dx * P.ax + dy * P.ay) * 1000 < block_cs * dl * UNIT) continue;
+                            if ((dx * P.ax + dy * P.ay) * 1000 < cf.block_cos * dl * UNIT) continue;
                             if (wall_between(m, P.x, P.y, d[j].x, d[j].y)) continue;
                             blocked[j] = true;
                             ++nh;
@@ -1762,8 +1952,8 @@ struct Game {
                     break;
             }
         }
-        // 5. 飞镖。先算每把镖这一步从哪飞到哪（含撞墙截断），再判镖撞镖，最后判命中、落地、折返、接住。
-        struct DMove { bool on = false; i64 x0 = 0, y0 = 0, x1 = 0, y1 = 0; bool wall = false, reach = false; bool clash = false; i64 cn = 0, cd = 1; int with = -1; };
+        // 5. 飞镖。先算每把镖这一步从哪飞到哪（含撞墙截断），再判镖撞镖，再判人类本步线段扫掠格挡，最后判命中、落地、折返、接住。
+        struct DMove { bool on = false; i64 x0 = 0, y0 = 0, x1 = 0, y1 = 0; bool wall = false, reach = false; bool clash = false; i64 cn = 0, cd = 1; int with = -1; bool swept_blk = false; int blk_by = -1; double blk_s = 1.0; };
         DMove mv[MAXP];
         for (int k = 0; k < n; ++k) {
             Dart& D = d[k];
@@ -1859,6 +2049,42 @@ struct Game {
                 Q.reach = false;
             }
         }
+        // 5b2. 人类普通/严格模式本步线段扫掠格挡：飞镖在击中挥砍者前只要扫入 ±60° 挥砍扇形（且无墙遮挡）即在拦截点被打落
+        if (cf.block) {
+            const i64 hit_r = cf.body_r + cf.dart_r;
+            for (int j = 0; j < n; ++j) {
+                if (!mv[j].on) continue;
+                DMove& M5 = mv[j];
+                double best_s = 2.0;
+                int best_k = -1;
+                i64 best_bx = M5.x1, best_by = M5.y1;
+                for (int k = 0; k < n; ++k) {
+                    if (k == j || !human_swept_block[k] || !p[k].alive || p[k].unknown) continue;
+                    const Player& P = p[k];
+                    double s = 0.0;
+                    i64 bx = 0, by = 0;
+                    if (swept_dart_block(m, P.px, P.py, P.x, P.y, P.ax, P.ay, M5.x0, M5.y0, M5.x1, M5.y1,
+                                         cf.slash_reach, cf.slash_cos, cf.body_r, hit_r, s, bx, by)) {
+                        if (best_k < 0 || s < best_s) {
+                            best_s = s;
+                            best_k = k;
+                            best_bx = bx;
+                            best_by = by;
+                        }
+                    }
+                }
+                if (best_k >= 0) {
+                    M5.swept_blk = true;
+                    M5.blk_by = best_k;
+                    M5.blk_s = best_s;
+                    M5.x1 = best_bx;
+                    M5.y1 = best_by;
+                    M5.wall = false;
+                    M5.reach = false;
+                    M5.clash = false;
+                }
+            }
+        }
         for (int k = 0; k < n; ++k) {
             if (!mv[k].on) continue;
             Dart& D = d[k];
@@ -1869,8 +2095,11 @@ struct Game {
             const i64 R = cf.body_r + cf.dart_r;
             for (int q = 0; q < n; ++q) {
                 if (q == k || !p[q].alive || p[q].unknown) continue;
+                if (M5.swept_blk && q == M5.blk_by) continue;  // 已被该挥砍者在本步击中前格挡
                 const Player& Q = p[q];
-                if (seg_near_origin(x0 - Q.px, y0 - Q.py, x1 - Q.x, y1 - Q.y, R)) {
+                const i64 qx1 = M5.swept_blk ? (Q.px + i64(std::llround(double(Q.x - Q.px) * M5.blk_s))) : Q.x;
+                const i64 qy1 = M5.swept_blk ? (Q.py + i64(std::llround(double(Q.y - Q.py) * M5.blk_s))) : Q.y;
+                if (seg_near_origin(x0 - Q.px, y0 - Q.py, x1 - qx1, y1 - qy1, R)) {
                     kill(q, K_DART, k, 1);
                     if (D.st != D_OUT) dret[q] = 1;
                     if (D.st != D_OUT && D.bent >= 3000) dcurve[q] = 1;
@@ -1884,6 +2113,16 @@ struct Game {
             }
             D.x = x1;
             D.y = y1;
+            if (M5.swept_blk) {
+                D.st = D_GROUND;
+                D.left = 0;
+                D.age = 0;
+                D.vx = D.vy = 0;
+                ++p[M5.blk_by].n_block;
+                ++p[M5.blk_by].slash_win_hits;
+                ev(EV_BLOCK, M5.blk_by, k, D.x, D.y);
+                continue;
+            }
             if (M5.wall || M5.clash) {
                 D.st = D_GROUND;
                 D.left = 0;

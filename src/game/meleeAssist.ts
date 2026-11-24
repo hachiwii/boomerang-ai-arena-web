@@ -269,10 +269,11 @@ const RET_ACC = 80;
 const RET_V = 900;
 const RECALL_V = 900;
 const CATCH_R = 600;
+const DART_R = 320;
 const SLASH_PRE = 2;
-// Human block cone with melee assist ON: half-angle 30° (cos 866), point-blank inside BODY_R always blocks
-const ASSIST_BLOCK_COS = 866;
-const ASSIST_BLOCK_HALF_RAD = Math.acos(ASSIST_BLOCK_COS / 1000);
+// AI-identical block cone: half-angle ~20° (cos 940), no point-blank angle exemption
+const BLOCK_COS = 940;
+const BLOCK_HALF_RAD = Math.acos(BLOCK_COS / 1000);
 
 export interface IncomingDartTarget {
   /** Dart seat (owner index) */
@@ -349,9 +350,77 @@ export function predictDartPath(map: EngineMapData, state: TickSnapshot, j: numb
 }
 
 /**
+ * Finds the earliest unobstructed intercept point along segment p0 -> p1 (relative to stationary player)
+ * inside `reach` before the dart enters `hitR` (body_r + dart_r). Matches the engine's swept-segment block.
+ */
+function findSweptReachIntercept(
+  map: EngineMapData,
+  t: number,
+  meX: number,
+  meY: number,
+  p0: [number, number],
+  p1: [number, number],
+  reach: number,
+  hitR: number,
+): [number, number] | null {
+  const ax = p0[0] - meX;
+  const ay = p0[1] - meY;
+  const bx = p1[0] - meX;
+  const by = p1[1] - meY;
+  const ux = bx - ax;
+  const uy = by - ay;
+  const q2 = ux * ux + uy * uy;
+  if (q2 <= 0) return null;
+  const q1 = ax * ux + ay * uy;
+  const a2 = ax * ax + ay * ay;
+
+  let sMax = 1.0;
+  if (a2 <= hitR * hitR) {
+    sMax = 0.0;
+  } else {
+    const discHit = q1 * q1 - q2 * (a2 - hitR * hitR);
+    if (discHit >= 0) {
+      const sd = Math.sqrt(discHit);
+      const sHit0 = (-q1 - sd) / q2;
+      const sHit1 = (-q1 + sd) / q2;
+      if (sHit1 >= 0 && sHit0 <= 1) {
+        sMax = Math.max(0, Math.min(1, sHit0));
+      }
+    }
+  }
+
+  const discReach = q1 * q1 - q2 * (a2 - reach * reach);
+  if (discReach < 0) return null;
+  const sdR = Math.sqrt(discReach);
+  const r0 = Math.max(0, (-q1 - sdR) / q2);
+  const r1 = Math.min(sMax, (-q1 + sdR) / q2);
+  if (r0 > r1) return null;
+
+  const nudge = Math.min((r1 - r0) * 0.5, 2 / Math.max(1, Math.sqrt(q2)));
+  const tryS = (s: number): [number, number] | null => {
+    const px = Math.round(p0[0] + (p1[0] - p0[0]) * s);
+    const py = Math.round(p0[1] + (p1[1] - p0[1]) * s);
+    const dx = px - meX;
+    const dy = py - meY;
+    if (dx * dx + dy * dy > reach * reach) return null;
+    if (wallBetween(map, t, meX, meY, px, py)) return null;
+    return [dx, dy];
+  };
+
+  const first = tryS(r0) ?? tryS(r0 + nudge);
+  if (first) return first;
+  const samples = 8;
+  for (let i = 1; i <= samples; i++) {
+    const hit = tryS(r0 + ((r1 - r0) * i) / samples);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+/**
  * The first enemy dart that will be inside slash reach (with no wall in between) on one of the
- * human slash judgment ticks: k = 0..ticks-1 for the multi-frame window, or only k = SLASH_PRE-1
- * for the AI-identical mode (ticks = 0). The slashing player stands still for the whole swing.
+ * human slash judgment ticks: k = 0..ticks-1 (static + swept segment) for Normal (4f) / Strict (2f),
+ * or only static k = SLASH_PRE-1 for AI-identical mode (ticks = 0).
  */
 export function findIncomingDartTarget(
   map: EngineMapData,
@@ -362,25 +431,40 @@ export function findIncomingDartTarget(
   const me = state.players[seat];
   if (!me || !me.alive) return null;
   const reach = map.slashReach > 0 ? map.slashReach : 1500;
-  const judgeKs = slashTicks > 0 ? Array.from({ length: slashTicks }, (_, i) => i) : [SLASH_PRE - 1];
+  const bodyR = map.bodyR > 0 ? map.bodyR : 400;
+  const dartR = map.dartR > 0 ? map.dartR : DART_R;
+  const hitR = bodyR + dartR;
+  const sweptMode = slashTicks > 0;
+  const judgeKs = sweptMode ? Array.from({ length: slashTicks }, (_, i) => i) : [SLASH_PRE - 1];
   const lastK = judgeKs[judgeKs.length - 1];
   let best: IncomingDartTarget | null = null;
   for (let j = 0; j < state.darts.length; j++) {
     if (j === seat || !isFlying(state.darts[j]?.st)) continue;
-    const path = predictDartPath(map, state, j, lastK);
+    const path = predictDartPath(map, state, j, sweptMode ? lastK + 1 : lastK);
     for (const k of judgeKs) {
       const pos = path[k];
       if (!pos) break;
       const dx = Math.round(pos[0] - me.x);
       const dy = Math.round(pos[1] - me.y);
       const dd = dx * dx + dy * dy;
-      if (dd > reach * reach) continue;
-      if (wallBetween(map, state.t, me.x, me.y, Math.round(pos[0]), Math.round(pos[1]))) continue;
-      const dl = isqrt(dd);
-      if (!best || k < best.k || (k === best.k && dl < best.dl)) {
-        best = { seat: j, k, dx, dy, dl };
+      if (dd <= reach * reach && !wallBetween(map, state.t, me.x, me.y, Math.round(pos[0]), Math.round(pos[1]))) {
+        const dl = isqrt(dd);
+        if (!best || k < best.k || (k === best.k && dl < best.dl)) {
+          best = { seat: j, k, dx, dy, dl };
+        }
+        break;
       }
-      break;
+      if (sweptMode && path[k + 1]) {
+        const swept = findSweptReachIntercept(map, state.t, me.x, me.y, pos, path[k + 1], reach, hitR);
+        if (swept) {
+          const [sdx, sdy] = swept;
+          const dl = isqrt(sdx * sdx + sdy * sdy);
+          if (!best || k < best.k || (k === best.k && dl < best.dl)) {
+            best = { seat: j, k, dx: sdx, dy: sdy, dl };
+          }
+          break;
+        }
+      }
     }
   }
   return best;
@@ -390,7 +474,7 @@ export function findIncomingDartTarget(
  * Mobile melee assist. With the dart in hand and an enemy dart arriving inside the slash judgment
  * window, the swing turns (any angle, 360°) toward that dart's predicted position — and, when an
  * enemy player in reach can share the swing, leans toward them while keeping the dart inside the
- * 30° block cone. Otherwise falls back to the regular player-only assist.
+ * active mode's block cone (±60° for Normal/Strict, ±20° for AI). Otherwise falls back to player assist.
  */
 export function applyMobileMeleeAssist(
   map: EngineMapData,
@@ -406,15 +490,17 @@ export function applyMobileMeleeAssist(
     return applyMeleeAssist(map, state, seat, aimX, aimY);
   }
   const bodyR = map.bodyR > 0 ? map.bodyR : 400;
+  const sweptMode = slashTicks > 0;
   const target = findIncomingDartTarget(map, state, seat, slashTicks);
-  // No incoming dart, or one already point-blank (blocked whatever the direction) → aim at players
-  if (!target || target.dl <= bodyR) {
+  // No incoming dart, or (in Normal/Strict) already point-blank inside BODY_R → aim at players
+  if (!target || target.dl === 0 || (sweptMode && target.dl <= bodyR)) {
     return applyMeleeAssist(map, state, seat, aimX, aimY);
   }
 
   const dartAngle = Math.atan2(target.dy, target.dx);
   const reach = map.slashReach > 0 ? map.slashReach : 1500;
-  const blockHalf = Math.max(0, ASSIST_BLOCK_HALF_RAD - CONE_MARGIN_RAD);
+  const blockCos = sweptMode ? SLASH_COS : BLOCK_COS;
+  const blockHalf = Math.max(0, (sweptMode ? SLASH_HALF_RAD : BLOCK_HALF_RAD) - CONE_MARGIN_RAD);
   const playerHalf = Math.max(0, SLASH_HALF_RAD - CONE_MARGIN_RAD);
   let bestRot = 0;
   let bestNeed = Infinity;
@@ -439,7 +525,7 @@ export function applyMobileMeleeAssist(
   const ax = Math.round(Math.cos(ang) * UNIT);
   const ay = Math.round(Math.sin(ang) * UNIT);
   const unit = scaleToUnit(ax, ay);
-  if (unit && passesEngineCone(target.dx, target.dy, target.dl, unit[0], unit[1], ASSIST_BLOCK_COS)) {
+  if (unit && passesEngineCone(target.dx, target.dy, target.dl, unit[0], unit[1], blockCos)) {
     return [ax, ay];
   }
   return scaleToUnit(target.dx, target.dy) ?? [aimX, aimY];
