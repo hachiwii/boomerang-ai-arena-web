@@ -33,6 +33,7 @@ export interface GameSettings {
   graphicsQuality: GraphicsQualityOption; // 'low' = lightweight instanced, 'high' = faithful open-source art
   lockFps: boolean; // true = monitor refresh rate (VSync), false = uncapped
   dashInputBuffer: boolean; // Buffer throw/melee during dash without interrupting dash
+  meleeAssist: boolean; // Auto-rotate slash/kick aim minimally to include reachable target when mouse cone misses
   cliffGuard: boolean; // Prevent walking off cliffs
   dashGuard: boolean; // Dash-tail 25% cliff save
   slashJudgment: SlashJudgmentOption; // 'normal' (5f) | 'strict' (3f) | 'ai' (windup + 1f)
@@ -150,6 +151,7 @@ export function defaultSettings(): GameSettings {
     graphicsQuality: 'high',
     lockFps: true,
     dashInputBuffer: true,
+    meleeAssist: true,
     cliffGuard: true,
     dashGuard: true,
     slashJudgment: 'normal',
@@ -292,6 +294,8 @@ export class SettingsStore {
             : def.lockFps;
       const dashInputBuffer =
         typeof parsed.dashInputBuffer === 'boolean' ? parsed.dashInputBuffer : def.dashInputBuffer;
+      const meleeAssist =
+        typeof parsed.meleeAssist === 'boolean' ? parsed.meleeAssist : def.meleeAssist;
       const cliffGuard =
         typeof parsed.cliffGuard === 'boolean' ? parsed.cliffGuard : def.cliffGuard;
       const dashGuard =
@@ -347,6 +351,7 @@ export class SettingsStore {
         graphicsQuality,
         lockFps,
         dashInputBuffer,
+        meleeAssist,
         cliffGuard,
         dashGuard,
         slashJudgment,
@@ -434,6 +439,12 @@ export class SettingsStore {
   public setDashInputBuffer(enabled: boolean) {
     if (this.settings.dashInputBuffer === enabled) return;
     this.settings.dashInputBuffer = enabled;
+    this.emit();
+  }
+
+  public setMeleeAssist(enabled: boolean) {
+    if (this.settings.meleeAssist === enabled) return;
+    this.settings.meleeAssist = enabled;
     this.emit();
   }
 

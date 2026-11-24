@@ -1627,13 +1627,15 @@ struct Game {
                     }
                 }
                 if (slash && cf.block) {
+                    const i64 block_cs = (k == human_slash_seat) ? cf.slash_cos : cf.block_cos;
+                    const i64 block_pb = (k == human_slash_seat) ? cf.body_r : 0;
                     for (int j = 0; j < n; ++j) {
                         if (j == k || blocked[j] || !dart_flying(d[j].st)) continue;
                         const i64 dx = d[j].x - P.x, dy = d[j].y - P.y;
                         const i64 dd = dx * dx + dy * dy;
                         if (dd > cf.slash_reach * cf.slash_reach) continue;
                         const i64 dl = isqrt(dd);
-                        if (dl > 0 && (dx * P.ax + dy * P.ay) * 1000 < cf.block_cos * dl * UNIT) continue;
+                        if (dl > block_pb && (dx * P.ax + dy * P.ay) * 1000 < block_cs * dl * UNIT) continue;
                         if (wall_between(m, P.x, P.y, d[j].x, d[j].y)) continue;
                         blocked[j] = true;
                         ++nh;
@@ -1717,15 +1719,17 @@ struct Game {
                             ev(EV_KICKHIT, k, q);
                         }
                     }
-                    // 格挡：挥砍出手时，正前方窄扇形、挥砍距离内的飞镖（别人的）被打落在原地
+                    // 格挡：挥砍出手时，挥砍距离内的飞镖（别人的）被打落在原地；人类玩家与砍人判定扇形及贴身范围一致
                     if (slash && cf.block) {
+                        const i64 block_cs = (k == human_slash_seat) ? cf.slash_cos : cf.block_cos;
+                        const i64 block_pb = (k == human_slash_seat) ? cf.body_r : 0;
                         for (int j = 0; j < n; ++j) {
                             if (j == k || blocked[j] || !dart_flying(d[j].st)) continue;
                             const i64 dx = d[j].x - P.x, dy = d[j].y - P.y;
                             const i64 dd = dx * dx + dy * dy;
                             if (dd > cf.slash_reach * cf.slash_reach) continue;
                             const i64 dl = isqrt(dd);
-                            if (dl > 0 && (dx * P.ax + dy * P.ay) * 1000 < cf.block_cos * dl * UNIT) continue;
+                            if (dl > block_pb && (dx * P.ax + dy * P.ay) * 1000 < block_cs * dl * UNIT) continue;
                             if (wall_between(m, P.x, P.y, d[j].x, d[j].y)) continue;
                             blocked[j] = true;
                             ++nh;

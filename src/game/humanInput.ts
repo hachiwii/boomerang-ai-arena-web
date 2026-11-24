@@ -1,4 +1,5 @@
 import { applyCliffGuard } from './cliffGuard';
+import { applyMeleeAssist } from './meleeAssist';
 import { ActionBindKey, isBoundToAction, SettingsStore } from './settings';
 import { ActType, DState, EngineMapData, HumanAction, PState, TickSnapshot } from './types';
 
@@ -366,6 +367,15 @@ export class HumanInputController {
       return { act: ActType.NONE, at: -1 };
     };
 
+    const makeMeleeAction = (): HumanAction => {
+      let ax = aimX;
+      let ay = aimY;
+      if (this.settings.get().meleeAssist && this.mapData) {
+        [ax, ay] = applyMeleeAssist(this.mapData, state, seat, aimX, aimY);
+      }
+      return { mx, my, act: ActType.MELEE, ax, ay, msg: 0 };
+    };
+
     // A. During DASH
     if (me.st === PState.DASH) {
       if (dashBufferEnabled) {
@@ -384,7 +394,7 @@ export class HumanInputController {
       const canDashMelee = me.timer >= 3 && me.timer <= 6;
       if (hasBufferedMelee && canDashMelee) {
         this.queuedMeleeAt = -1;
-        return { mx, my, act: ActType.MELEE, ax: aimX, ay: aimY, msg: 0 };
+        return makeMeleeAction();
       }
       if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.bufferMs) {
         this.queuedThrowAt = -1;
@@ -408,7 +418,7 @@ export class HumanInputController {
         this.queuedThrowAt = -1;
 
         if (chosenAct === ActType.MELEE) {
-          return { mx, my, act: ActType.MELEE, ax: aimX, ay: aimY, msg: 0 };
+          return makeMeleeAction();
         }
         if (chosenAct === ActType.THROW && dart.st === DState.HAND) {
           this.throwConsumed = true;
@@ -440,7 +450,7 @@ export class HumanInputController {
     // 1. Priority: Melee (Slash / Kick)
     if (hasBufferedMelee && canStartNew && !dashPrecedesMelee) {
       this.queuedMeleeAt = -1;
-      return { mx, my, act: ActType.MELEE, ax: aimX, ay: aimY, msg: 0 };
+      return makeMeleeAction();
     }
 
     // 2. Priority: Dash (movement-direction dash or exact-target dash toward mouse cursor)

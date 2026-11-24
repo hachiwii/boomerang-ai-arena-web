@@ -356,6 +356,7 @@ export class SettingsModal {
     setSwitch('#settings-finishercam-toggle', s.finisherCam, s.finisherCam ? '已开启' : '已关闭');
     setSwitch('#settings-winnercam-toggle', s.winnerCam, s.winnerCam ? '已开启' : '已关闭');
     setSwitch('#settings-dash-buffer-toggle', s.dashInputBuffer, s.dashInputBuffer ? '已开启' : '已关闭');
+    setSwitch('#settings-melee-assist-toggle', s.meleeAssist, s.meleeAssist ? '已开启' : '已关闭');
     setSwitch('#settings-cliff-guard-toggle', s.cliffGuard, s.cliffGuard ? '已开启' : '已关闭');
     setSwitch('#settings-dash-guard-toggle', s.dashGuard, s.dashGuard ? '已开启' : '已关闭');
 
@@ -643,6 +644,23 @@ export class SettingsModal {
 
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">近战吸附</div>
+                  <div class="settings-toggle-desc">挥砍或踢击时若鼠标指向无敌方角色，自动微调最小角度以命中范围内敌人（不影响移动与冲刺，不吸附飞镖）</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${s.meleeAssist ? 'is-on' : ''}"
+                  id="settings-melee-assist-toggle"
+                  role="switch"
+                  aria-checked="${s.meleeAssist}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${s.meleeAssist ? '已开启' : '已关闭'}</span>
+                </button>
+              </div>
+
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">挥砍判定</div>
                   <div class="settings-toggle-desc" id="settings-slash-desc">${getSlashJudgmentDesc(s.slashJudgment)}</div>
                 </div>
@@ -803,9 +821,13 @@ export class SettingsModal {
       this.syncControlsInPlace();
     });
 
-    // Dash pre-input buffer toggle
+    // Dash pre-input buffer & melee aim assist toggles
     this.body.querySelector('#settings-dash-buffer-toggle')?.addEventListener('click', () => {
       this.store.setDashInputBuffer(!this.store.get().dashInputBuffer);
+      this.syncControlsInPlace();
+    });
+    this.body.querySelector('#settings-melee-assist-toggle')?.addEventListener('click', () => {
+      this.store.setMeleeAssist(!this.store.get().meleeAssist);
       this.syncControlsInPlace();
     });
 
