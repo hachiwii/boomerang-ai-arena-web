@@ -342,6 +342,7 @@ export function buildSlicedHalves(model: VoxelModelData, colorHex: string): {
   upper: THREE.Group;
   lower: THREE.Group;
   cutY: number;
+  material: THREE.MeshLambertMaterial;
 } {
   const bodyPart = model.parts['body'];
   let minZ = 999;
@@ -355,7 +356,7 @@ export function buildSlicedHalves(model: VoxelModelData, colorHex: string): {
 
   const upperGroup = new THREE.Group();
   const lowerGroup = new THREE.Group();
-  const mat = createVoxelMaterial(0.2);
+  const mat = createVoxelMaterial(0.2).clone();
   const omat = getOutlineMaterial();
 
   for (const [nm, part] of Object.entries(model.parts)) {
@@ -402,5 +403,5 @@ export function buildSlicedHalves(model: VoxelModelData, colorHex: string): {
   const s = CHAR_SCALE * (model.scale || 1.0);
   upperGroup.scale.setScalar(s);
   lowerGroup.scale.setScalar(s);
-  return { upper: upperGroup, lower: lowerGroup, cutY: zb * VOX_U * s };
+  return { upper: upperGroup, lower: lowerGroup, cutY: zb * VOX_U * s, material: mat };
 }

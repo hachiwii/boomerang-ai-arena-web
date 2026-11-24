@@ -14,9 +14,9 @@ import {
   SlotConfig,
   TickSnapshot,
 } from '../game/types';
-import { CharacterRig, WINNER_CELEBRATE_DELAY_TICKS } from './charRig';
+import { CharacterRig, PitFallKind, RigDeathEffectCallbacks, WINNER_CELEBRATE_DELAY_TICKS } from './charRig';
 import { FXSystem } from './fxSystem';
-import { HqArenaMap3D, IArenaMap } from './hqMapBuilder';
+import { ArenaMover, HqArenaMap3D, IArenaMap } from './hqMapBuilder';
 import { getHqTheme } from './hqThemes';
 import { ArenaMap3D } from './mapBuilder';
 import { getTheme } from './themes';
@@ -138,6 +138,7 @@ export class GameRenderer {
   private readonly _hitPoint = new THREE.Vector3();
   private readonly _projVec = new THREE.Vector3();
   private readonly _focusVec = new THREE.Vector3();
+  private readonly _moversScratch: ArenaMover[] = [];
   private cursorSuppressed = false;
   private activeCursorKey = 'default';
 
@@ -362,6 +363,11 @@ export class GameRenderer {
   public setGraphicsQuality(quality: GraphicsQualityOption) {
     if (this.graphicsQuality === quality) return;
     this.graphicsQuality = quality;
+    const hq = quality === 'high';
+    for (const rig of this.rigs) {
+      rig.setHighQuality(hq);
+    }
+    this.fx?.setHighQuality(hq);
     this.updateSunShadowResolution();
     if (this.arena && this.activeMapData) {
       this.scene.remove(this.arena.root);
@@ -442,10 +448,11 @@ export class GameRenderer {
     this.positionSunForArena();
 
     // Load voxel character models & construct rigs
+    const hq = this.graphicsQuality === 'high';
     const models = await Promise.all(slots.map((s) => this.loadCharModel(s.charKey)));
     this.rigs = slots.map((slot, idx) => {
       const ringCol = slot.ringAccent || slot.color;
-      const rig = new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human', this.scene);
+      const rig = new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human', this.scene, hq);
       rig.setSunDirection(this.sunDirVec.x, this.sunDirVec.y, this.sunDirVec.z);
       return rig;
     });
@@ -453,6 +460,7 @@ export class GameRenderer {
     this.fx = new FXSystem(
       this.scene,
       slots.map((s) => s.ringAccent || s.color),
+      hq,
     );
 
     // Pre-match countdown red 3D indicator arrow above the human player
@@ -771,8 +779,11 @@ export class GameRenderer {
               }
             }
             const len = Math.hypot(dx, dz) || 1;
+            const ndx = dx / len;
+            const ndz = dz / len;
             const yaw = Math.PI * 0.5 - ((vp.face / 100) * Math.PI) / 180;
-            rig.triggerSlice(this.scene, gt, vx, vz, yaw, dx / len, dz / len);
+            const { landUpper, landLower } = this.computeSliceLanding(vx, vz, ndx, ndz, victimIdx, gt);
+            rig.triggerSlice(this.scene, gt, vx, vz, yaw, ndx, ndz, landUpper, landLower);
           } else if (cause === CauseType.SLASH) {
             let dx = 0;
             let dz = 1;
@@ -784,7 +795,8 @@ export class GameRenderer {
           } else if (cause === CauseType.FALL) {
             const mvx = (vp.x - vpPrev.x) / 1000;
             const mvz = (vp.y - vpPrev.y) / 1000;
-            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0);
+            const kind = this.classifyPitFallKind(vp.x, vp.y, killerIdx, gt);
+            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0, kind);
           }
         } else if (targetT - gt <= 20) {
           if (ev.name === 'RELEASE' && this.rigs[ev.a]) this.rigs[ev.a].lastThrowTick = gt;
@@ -793,6 +805,20 @@ export class GameRenderer {
             else this.rigs[ev.a].lastKickTick = gt;
           } else if (ev.name === 'CATCH' && this.rigs[ev.a]) this.rigs[ev.a].lastCatchTick = gt;
           else if (ev.name === 'PICK' && this.rigs[ev.a]) this.rigs[ev.a].lastPickTick = gt;
+          else if (ev.name === 'STOP' && this.rigs[ev.a]) this.rigs[ev.a].lastDashEndTick = gt;
+          else if (ev.name === 'DROP' && this.rigs[ev.a]) this.rigs[ev.a].lastDartLandTick = gt;
+          else if (ev.name === 'KICKHIT' && this.rigs[ev.b]) {
+            this.rigs[ev.b].lastStunTick = gt;
+            const kicker = curr.players[ev.a];
+            const victim = curr.players[ev.b];
+            if (kicker && victim) {
+              const dkx = kicker.x - victim.x;
+              const dky = kicker.y - victim.y;
+              if (Math.hypot(dkx, dky) > 1) {
+                this.rigs[ev.b].lastStunFaceYaw = Math.atan2(dkx, dky);
+              }
+            }
+          }
         }
       }
     }
@@ -840,8 +866,19 @@ export class GameRenderer {
           break;
         }
         case 'KICKHIT': {
+          const kicker = curr.players[ev.a];
           const victim = curr.players[ev.b];
           if (victim) {
+            if (this.rigs[ev.b]) {
+              this.rigs[ev.b].lastStunTick = gt;
+              if (kicker) {
+                const dkx = kicker.x - victim.x;
+                const dky = kicker.y - victim.y;
+                if (Math.hypot(dkx, dky) > 1) {
+                  this.rigs[ev.b].lastStunFaceYaw = Math.atan2(dkx, dky);
+                }
+              }
+            }
             this.fx.spawnKickHit(victim.x / 1000, victim.y / 1000, nowSec);
             this.shakeAmp = Math.max(this.shakeAmp, 0.16);
             this.sfx.playKickHit();
@@ -852,6 +889,15 @@ export class GameRenderer {
           const p = curr.players[ev.a];
           if (p) this.fx.spawnDust(p.x / 1000, p.y / 1000, nowSec, 5, 1.7);
           this.sfx.playDash();
+          break;
+        }
+        case 'STOP': {
+          const seat = ev.a;
+          if (this.rigs[seat]) this.rigs[seat].lastDashEndTick = gt;
+          if (this.graphicsQuality === 'high') {
+            const p = curr.players[seat];
+            if (p) this.fx.spawnDust(p.x / 1000, p.y / 1000, nowSec, 3, 1.0, 0.72);
+          }
           break;
         }
         case 'TURN': {
@@ -870,11 +916,22 @@ export class GameRenderer {
         case 'PICK': {
           const seat = ev.a;
           if (this.rigs[seat]) this.rigs[seat].lastPickTick = gt;
+          if (this.graphicsQuality === 'high') {
+            const p = curr.players[seat];
+            if (p) this.fx.spawnCatch(p.x / 1000, p.y / 1000, this.slots[seat]?.color || '#ffffff', nowSec);
+          }
           this.sfx.playCatch();
           break;
         }
         case 'DROP': {
-          this.fx.spawnDust(ev.b / 1000, ev.c / 1000, nowSec, 3, 1.0);
+          if (this.rigs[ev.a]) this.rigs[ev.a].lastDartLandTick = gt;
+          this.fx.spawnDrop(ev.b / 1000, ev.c / 1000, nowSec);
+          break;
+        }
+        case 'LOST': {
+          if (this.graphicsQuality === 'high') {
+            this.fx.spawnPoof(ev.b / 1000, 0.66, ev.c / 1000, this.slots[ev.a]?.color || '#ffffff', nowSec, 0.55);
+          }
           break;
         }
         case 'CLASH': {
@@ -886,12 +943,21 @@ export class GameRenderer {
           break;
         }
         case 'BLOCK': {
-          this.fx.spawnBlock(ev.c / 1000, ev.d / 1000, this.slots[ev.a]?.color || '#ffffff', nowSec);
+          this.fx.spawnBlock(
+            ev.c / 1000,
+            ev.d / 1000,
+            this.slots[ev.a]?.color || '#ffffff',
+            nowSec,
+            this.slots[ev.b]?.color,
+          );
           this.shakeAmp = Math.max(this.shakeAmp, 0.12);
           this.sfx.playBlock();
           break;
         }
         case 'CALL': {
+          if (this.graphicsQuality === 'high') {
+            this.fx.spawnTurn(ev.b / 1000, ev.c / 1000, this.slots[ev.a]?.color || '#ffffff', nowSec);
+          }
           this.sfx.playRecallCall();
           break;
         }
@@ -929,7 +995,8 @@ export class GameRenderer {
             const ndx = dx / len;
             const ndz = dz / len;
             const yaw = Math.PI * 0.5 - ((vp.face / 100) * Math.PI) / 180;
-            rig.triggerSlice(this.scene, gt, vx, vz, yaw, ndx, ndz);
+            const { landUpper, landLower } = this.computeSliceLanding(vx, vz, ndx, ndz, victimIdx, gt);
+            rig.triggerSlice(this.scene, gt, vx, vz, yaw, ndx, ndz, landUpper, landLower);
             this.fx.spawnSliceHit(
               vx,
               vz,
@@ -949,21 +1016,30 @@ export class GameRenderer {
               dz = vp.y - curr.players[killerIdx].y;
             }
             rig.triggerSlashDeath(gt, vx, vz, dx, dz);
-            this.fx.spawnSliceHit(
-              vx,
-              vz,
-              dx / (Math.hypot(dx, dz) || 1),
-              dz / (Math.hypot(dx, dz) || 1),
-              this.slots[victimIdx].color,
-              killerIdx >= 0 ? this.slots[killerIdx].color : '#ffffff',
-              nowSec,
-            );
+            const killerCol = killerIdx >= 0 ? this.slots[killerIdx].color : '#ffffff';
+            if (this.graphicsQuality === 'high') {
+              this.fx.spawnHit(vx, vz, killerCol, nowSec);
+            } else {
+              this.fx.spawnSliceHit(
+                vx,
+                vz,
+                dx / (Math.hypot(dx, dz) || 1),
+                dz / (Math.hypot(dx, dz) || 1),
+                this.slots[victimIdx].color,
+                killerCol,
+                nowSec,
+              );
+            }
             this.shakeAmp = Math.max(this.shakeAmp, 0.32);
             this.sfx.playHitKill();
           } else if (cause === CauseType.FALL) {
             const mvx = (vp.x - vpPrev.x) / 1000;
             const mvz = (vp.y - vpPrev.y) / 1000;
-            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0);
+            const kind = this.classifyPitFallKind(vp.x, vp.y, killerIdx, gt);
+            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0, kind);
+            if (this.graphicsQuality === 'high') {
+              this.fx.spawnFallCry(vx, vz, nowSec);
+            }
             this.sfx.playFall();
           }
           break;
@@ -981,6 +1057,76 @@ export class GameRenderer {
         }
       }
     }
+  }
+
+  private classifyPitFallKind(xMm: number, yMm: number, killerIdx: number, tick: number): PitFallKind {
+    if (this.arena) {
+      const M = this.arena.mapData;
+      const gx = Math.floor(xMm / M.cell);
+      const gy = Math.floor(yMm / M.cell);
+      if (gx >= 0 && gy >= 0 && gx < M.nx && gy < M.ny) {
+        const w = M.waves[gy * M.nx + gx];
+        if (w >= 0 && w < M.waveSteps.length) {
+          const ws = M.waveSteps[w];
+          if (tick - 2.5 <= ws && ws <= tick + 1.5) return 'ground';
+        }
+      }
+    }
+    return killerIdx >= 0 ? 'kick' : 'walk';
+  }
+
+  private computeSliceLanding(
+    vx: number,
+    vz: number,
+    ndx: number,
+    ndz: number,
+    seat: number,
+    tick: number,
+  ): { landUpper: boolean; landLower: boolean } {
+    let sx = -ndz;
+    let sz = ndx;
+    if (sz < -0.01 || (Math.abs(sz) <= 0.01 && seat % 2 === 1)) {
+      sx = ndz;
+      sz = -ndx;
+    }
+    const landUpper = this.isCellSolidAt((vx + ndx * 1.3) * 1000, (vz + ndz * 1.3) * 1000, tick + 7);
+    const landLower = this.isCellSolidAt((vx + sx * 0.32) * 1000, (vz + sz * 0.32) * 1000, tick + 7);
+    return { landUpper, landLower };
+  }
+
+  private collectArenaMovers(prev: TickSnapshot, curr: TickSnapshot, alpha: number): ArenaMover[] {
+    const out = this._moversScratch;
+    out.length = 0;
+    if (this.graphicsQuality !== 'high') return out;
+    for (let k = 0; k < curr.n; k++) {
+      const p0 = prev.players[k];
+      const p1 = curr.players[k];
+      if (p1 && p1.alive === 1) {
+        const px = (p0.x + (p1.x - p0.x) * alpha) / 1000;
+        const pz = (p0.y + (p1.y - p0.y) * alpha) / 1000;
+        const speed = curr.over ? 0 : Math.hypot(p1.vx, p1.vy) / 1000;
+        out.push({ x: px, z: pz, speed });
+      }
+      const d0 = prev.darts[k];
+      const d1 = curr.darts[k];
+      if (d1 && (d1.st === DState.OUT || d1.st === DState.BACK || d1.st === DState.CALL)) {
+        const usePrev = d0 && d0.st !== DState.HAND && d0.st !== DState.GONE;
+        const dx = (usePrev ? d0.x + (d1.x - d0.x) * alpha : d1.x) / 1000;
+        const dz = (usePrev ? d0.y + (d1.y - d0.y) * alpha : d1.y) / 1000;
+        out.push({ x: dx, z: dz, speed: 0.3 });
+      }
+    }
+    return out;
+  }
+
+  private makeDeathEffectCallbacks(seat: number, nowSec: number): RigDeathEffectCallbacks | undefined {
+    if (this.graphicsQuality !== 'high' || !this.fx) return undefined;
+    const fx = this.fx;
+    const col = this.slots[seat]?.color || '#ffffff';
+    return {
+      onCloudSplash: (x, z) => fx.spawnCloudSplash(x, z, nowSec),
+      onPoof: (x, y, z, size) => fx.spawnPoof(x, y, z, col, nowSec, size),
+    };
   }
 
   private isCellSolidAt(xMm: number, yMm: number, tick: number): boolean {
@@ -1260,10 +1406,19 @@ export class GameRenderer {
         }
       }
 
-      // Update arena collapsing tiles, grass sway, clouds (freeze collapse once match is over!)
+      // Update arena collapsing tiles, grass sway & mover brush-parting, clouds (freeze collapse once match is over!)
+      const movers = this.collectArenaMovers(this.prevState, this.currState, alpha);
+      const liveFx = this.fx;
+      const liveElapsed = this.elapsedSec;
       if (
-        this.arena.update(gt, this.elapsedSec, {
+        this.arena.update(gt, liveElapsed, {
           freezeCollapseAtTick: this.currState.over ? this.currState.t : undefined,
+          movers,
+          onCollapseDust:
+            this.graphicsQuality === 'high' && liveFx && !this.playbackPaused
+              ? (cx, cy, cz, count, spread, size, alpha0, riseVy) =>
+                  liveFx.spawnCollapseDust(cx, cy, cz, liveElapsed, count, spread, size, alpha0, riseVy)
+              : undefined,
         })
       ) {
         this.shadowMapDirty = true;
@@ -1355,6 +1510,7 @@ export class GameRenderer {
           onGround,
           simFrameDt,
           cinePose?.winnerFaceYaw,
+          !currP.alive && !this.playbackPaused ? this.makeDeathEffectCallbacks(k, this.elapsedSec) : undefined,
         );
 
         // Update floating nameplate (hide if behind close-up camera or fading cleanly during winner portrait)
@@ -1534,6 +1690,8 @@ export class GameRenderer {
 
     const cinePose = this.applyCameraWithOptionalCinematic(gt * 0.05, frameDt, opts?.cameraPose);
 
+    const movers = this.collectArenaMovers(prev, curr, alpha);
+    const offFx = this.fx;
     if (
       this.arena.update(gt, elapsedSec, {
         pauseClouds: opts?.pauseClouds,
@@ -1541,6 +1699,12 @@ export class GameRenderer {
         pauseGrass: opts?.pauseGrass,
         pauseWaterfall: opts?.pauseWaterfall,
         freezeCollapseAtTick: curr.over ? curr.t : undefined,
+        movers,
+        onCollapseDust:
+          this.graphicsQuality === 'high' && offFx
+            ? (cx, cy, cz, count, spread, size, alpha0, riseVy) =>
+                offFx.spawnCollapseDust(cx, cy, cz, elapsedSec, count, spread, size, alpha0, riseVy)
+            : undefined,
       })
     ) {
       this.shadowMapDirty = true;
@@ -1587,6 +1751,7 @@ export class GameRenderer {
         onGround,
         frameDt,
         cinePose?.winnerFaceYaw,
+        !currP.alive ? this.makeDeathEffectCallbacks(k, elapsedSec) : undefined,
       );
 
       if (!currP.alive) {

@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { CauseType, DState, PState, PlayerSnapshot, DartSnapshot } from '../game/types';
+import { DState, PState, PlayerSnapshot, DartSnapshot } from '../game/types';
 import {
   buildSlicedHalves,
   buildVoxelDartMesh,
@@ -28,6 +28,13 @@ function bump(t: number): number {
   return Math.sin(Math.PI * clamp(t));
 }
 
+export type PitFallKind = 'walk' | 'kick' | 'ground';
+
+export interface RigDeathEffectCallbacks {
+  onCloudSplash?: (x: number, z: number) => void;
+  onPoof?: (x: number, y: number, z: number, size: number) => void;
+}
+
 export interface SliceAnimState {
   active: boolean;
   startTick: number;
@@ -38,6 +45,9 @@ export interface SliceAnimState {
   dz: number;
   sx: number;
   sz: number;
+  landUpper: boolean;
+  landLower: boolean;
+  poofFired: boolean;
 }
 
 export interface FallAnimState {
@@ -48,6 +58,17 @@ export interface FallAnimState {
   vx: number;
   vz: number;
   kicked: boolean;
+  kind: PitFallKind;
+  splashFired: boolean;
+}
+
+export interface SlashFallAnimState {
+  startTick: number;
+  x: number;
+  z: number;
+  dx: number;
+  dz: number;
+  poofFired: boolean;
 }
 
 let _softShadowTex: THREE.CanvasTexture | null = null;
@@ -75,8 +96,75 @@ function getSoftShadowTexture(): THREE.CanvasTexture {
 }
 
 /**
+ * Exact port of chars.py make_blur_disc: translucent radial disc with 3 brighter sector wedges
+ * rendered just beneath a flying boomerang in high graphics quality.
+ */
+function buildDartBlurDiscMesh(colorHex: string, r = 0.56): THREE.Mesh {
+  const seg = 56;
+  const col = new THREE.Color(colorHex).lerp(new THREE.Color('#ffffff'), 0.45);
+  const radii: [number, number][] = [
+    [0.14, 0.0],
+    [0.5, 0.26],
+    [0.85, 0.34],
+    [1.0, 0.0],
+  ];
+  const pos: number[] = [];
+  const colors: number[] = [];
+  const indices: number[] = [];
+
+  for (const [rr, a] of radii) {
+    for (let k = 0; k < seg; k++) {
+      const ang = (2 * Math.PI * k) / seg;
+      pos.push(r * rr * Math.cos(ang), 0, r * rr * Math.sin(ang));
+      const c3 = Math.max(0, Math.cos(ang * 3));
+      const fa = a * (0.45 + 0.55 * c3 * c3);
+      colors.push(col.r, col.g, col.b, fa);
+    }
+  }
+  for (let j = 0; j < radii.length - 1; j++) {
+    for (let k = 0; k < seg; k++) {
+      const k2 = (k + 1) % seg;
+      const a0 = j * seg + k;
+      const a1 = j * seg + k2;
+      const b0 = (j + 1) * seg + k;
+      const b1 = (j + 1) * seg + k2;
+      indices.push(a0, a1, b1, a0, b1, b0);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 4));
+  geo.setIndex(indices);
+
+  const mat = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 1.0,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.visible = false;
+  mesh.frustumCulled = false;
+  return mesh;
+}
+
+const FALL_HANG: Record<PitFallKind, number> = {
+  walk: 6.0,
+  kick: 0.4,
+  ground: 0.0,
+};
+const FALL_G = 0.05;
+const FALL_SPLASH_Y = -10.5;
+const SLICE_UP_GO = 1.3;
+const SLICE_LOW_GO = 0.32;
+const SLICE_POOF = 16.0;
+const SLICE_LIFE = 19.5;
+
+/**
  * Hierarchical voxel character rig with smooth 240Hz+ procedural animation
- * ported from pose.py & chars_voxel.py.
+ * ported from pose.py, chars.py, & chars_voxel.py.
  */
 export class CharacterRig {
   public readonly seat: number;
@@ -87,21 +175,26 @@ export class CharacterRig {
   public readonly rigRoot = new THREE.Group();
   public readonly heldDart: THREE.Group;
   public readonly flyingDart: THREE.Group;
+  public readonly dartBlurDisc: THREE.Mesh;
   public readonly groundRing: THREE.Mesh;
   public readonly shadowBlob: THREE.Mesh;
+  public readonly shadowBlob2: THREE.Mesh;
   public readonly dashCdRing: THREE.Mesh;
 
+  private highQuality: boolean;
   private parts = new Map<string, THREE.Group>();
   private restPos = new Map<string, THREE.Vector3>();
   private partMaterials: THREE.MeshLambertMaterial[] = [];
+  private flyingDartMat: THREE.MeshLambertMaterial | null = null;
 
   // Pre-built sliced halves (lazy built on boomerang kill!)
   private slicedUpper: THREE.Group | null = null;
   private slicedLower: THREE.Group | null = null;
+  private slicedMat: THREE.MeshLambertMaterial | null = null;
   private sliceCutY = 0.36;
   public sliceState: SliceAnimState | null = null;
   public fallState: FallAnimState | null = null;
-  public slashFallState: { startTick: number; x: number; z: number; dx: number; dz: number } | null = null;
+  public slashFallState: SlashFallAnimState | null = null;
 
   // Action animation timers (in game ticks, continuous float)
   public lastThrowTick = -999;
@@ -109,6 +202,10 @@ export class CharacterRig {
   public lastKickTick = -999;
   public lastCatchTick = -999;
   public lastPickTick = -999;
+  public lastDashEndTick = -999;
+  public lastStunTick = -999;
+  public lastStunFaceYaw: number | null = null;
+  public lastDartLandTick = -999;
   public actionDirAngle = 0;
 
   // Smoothed continuous walk phase and facing
@@ -126,10 +223,15 @@ export class CharacterRig {
   private sunShadowYaw = 0;
   private sunShadowStretch = 1.18;
 
-  // Scratch vectors to guarantee ZERO per-frame allocations at 240Hz+!
+  // Scratch vectors & quaternions to guarantee ZERO per-frame allocations at 240Hz+!
   private readonly _tmpDir = new THREE.Vector3();
   private readonly _downVec = new THREE.Vector3(0, -1, 0);
+  private readonly _upVec = new THREE.Vector3(0, 1, 0);
+  private readonly _axisD = new THREE.Vector3();
   private readonly _tmpQuat = new THREE.Quaternion();
+  private readonly _qYaw = new THREE.Quaternion();
+  private readonly _qRoll = new THREE.Quaternion();
+  private readonly _qSpin = new THREE.Quaternion();
   private readonly _baseTint = new THREE.Color(1, 1, 1);
   private readonly _grassTint = new THREE.Color(0.62, 0.84, 0.72);
   private readonly _flashColor = new THREE.Color(1, 1, 1);
@@ -140,11 +242,13 @@ export class CharacterRig {
     ringColor: string,
     isHuman: boolean,
     parentScene: THREE.Scene,
+    highQuality = true,
   ) {
     this.seat = seat;
     this.model = model;
     this.color = model.color;
     this.ringColor = ringColor;
+    this.highQuality = highQuality;
 
     const baseScale = CHAR_SCALE * (model.scale || 1.0);
     this.rigRoot.scale.setScalar(baseScale);
@@ -162,8 +266,6 @@ export class CharacterRig {
       const grp = new THREE.Group();
       grp.name = nm;
       const mesh = new THREE.Mesh(mainGeo, charMat);
-      // Dynamic characters use a sun-aligned soft ground shadow instead of casting into the
-      // cached static obstacle shadow map (prevents frozen ghost shadows & saves ~44 shadow draws/frame).
       mesh.castShadow = false;
       grp.add(mesh);
       if (outlineGeo) {
@@ -221,12 +323,19 @@ export class CharacterRig {
       this.rigRoot.add(this.heldDart);
     }
 
-    // World-space flying / ground boomerang
+    // World-space flying / ground boomerang + HQ spinning motion-blur disc
     this.flyingDart = buildVoxelDartMesh(this.color, 1.42);
     this.flyingDart.visible = false;
+    const dartFirstMesh = this.flyingDart.children[0] as THREE.Mesh | undefined;
+    if (dartFirstMesh && dartFirstMesh.material instanceof THREE.MeshLambertMaterial) {
+      this.flyingDartMat = dartFirstMesh.material;
+    }
     parentScene.add(this.flyingDart);
 
-    // Sun-aligned soft radial ground shadow (smooth Gaussian penumbra, zero extra shadow pass!)
+    this.dartBlurDisc = buildDartBlurDiscMesh(this.color, 0.56);
+    parentScene.add(this.dartBlurDisc);
+
+    // Sun-aligned soft radial ground shadows (blob + blob2 for separated upper sliced half!)
     const blobGeo = new THREE.PlaneGeometry(1.18, 1.18);
     blobGeo.rotateX(-Math.PI / 2);
     const blobMat = new THREE.MeshBasicMaterial({
@@ -239,6 +348,12 @@ export class CharacterRig {
     this.shadowBlob.position.y = 0.014;
     this.shadowBlob.renderOrder = 1;
     parentScene.add(this.shadowBlob);
+
+    this.shadowBlob2 = new THREE.Mesh(blobGeo, blobMat.clone());
+    this.shadowBlob2.position.y = 0.014;
+    this.shadowBlob2.renderOrder = 1;
+    this.shadowBlob2.visible = false;
+    parentScene.add(this.shadowBlob2);
 
     // Colored foot ring (slightly bolder & bright highlight for Human player!)
     const ringGeo = new THREE.RingGeometry(isHuman ? 0.38 : 0.37, isHuman ? 0.49 : 0.45, 28);
@@ -254,7 +369,7 @@ export class CharacterRig {
     this.groundRing.position.y = 0.022;
     parentScene.add(this.groundRing);
 
-    // Dash cooldown ring (subtle inner arc for human / all players)
+    // Dash cooldown ring
     const cdGeo = new THREE.RingGeometry(0.51, 0.57, 28);
     cdGeo.rotateX(-Math.PI / 2);
     const cdMat = new THREE.MeshBasicMaterial({
@@ -271,6 +386,14 @@ export class CharacterRig {
     parentScene.add(this.root);
     this.setFace('open');
     this.setSunDirection(10, 24, 8);
+  }
+
+  public setHighQuality(hq: boolean) {
+    this.highQuality = hq;
+    if (!hq) {
+      this.dartBlurDisc.visible = false;
+      this.shadowBlob2.visible = false;
+    }
   }
 
   /** Aligns the character's soft ground shadow with the active map's directional sun ray. */
@@ -307,11 +430,14 @@ export class CharacterRig {
     yaw: number,
     dx: number,
     dz: number,
+    landUpper = true,
+    landLower = true,
   ) {
     if (!this.slicedUpper || !this.slicedLower) {
       const built = buildSlicedHalves(this.model, this.color);
       this.slicedUpper = built.upper;
       this.slicedLower = built.lower;
+      this.slicedMat = built.material;
       this.sliceCutY = built.cutY;
       parentScene.add(this.slicedUpper);
       parentScene.add(this.slicedLower);
@@ -319,14 +445,27 @@ export class CharacterRig {
     const len = Math.hypot(dx, dz) || 1;
     const ndx = dx / len;
     const ndz = dz / len;
-    // Perpendicular direction pointing toward camera (+Z)
+    // Perpendicular direction pointing toward camera (+Z) so both cut faces turn toward viewer!
     let sx = -ndz;
     let sz = ndx;
-    if (sz < -0.01) {
+    if (sz < -0.01 || (Math.abs(sz) <= 0.01 && this.seat % 2 === 1)) {
       sx = ndz;
       sz = -ndx;
     }
-    this.sliceState = { active: true, startTick: tick, x, z, yaw, dx: ndx, dz: ndz, sx, sz };
+    this.sliceState = {
+      active: true,
+      startTick: tick,
+      x,
+      z,
+      yaw,
+      dx: ndx,
+      dz: ndz,
+      sx,
+      sz,
+      landUpper,
+      landLower,
+      poofFired: false,
+    };
     this.root.visible = false;
     this.groundRing.visible = false;
     this.dashCdRing.visible = false;
@@ -336,16 +475,42 @@ export class CharacterRig {
 
   public triggerSlashDeath(tick: number, x: number, z: number, dx: number, dz: number) {
     const len = Math.hypot(dx, dz) || 1;
-    this.slashFallState = { startTick: tick, x, z, dx: dx / len, dz: dz / len };
+    this.slashFallState = {
+      startTick: tick,
+      x,
+      z,
+      dx: dx / len,
+      dz: dz / len,
+      poofFired: false,
+    };
     this.groundRing.visible = false;
     this.dashCdRing.visible = false;
   }
 
-  public triggerPitFall(tick: number, x: number, z: number, vx: number, vz: number, kicked: boolean) {
-    this.fallState = { active: true, startTick: tick, x, z, vx, vz, kicked };
+  public triggerPitFall(
+    tick: number,
+    x: number,
+    z: number,
+    vx: number,
+    vz: number,
+    kicked: boolean,
+    kind: PitFallKind = kicked ? 'kick' : 'walk',
+  ) {
+    this.fallState = {
+      active: true,
+      startTick: tick,
+      x,
+      z,
+      vx,
+      vz,
+      kicked,
+      kind,
+      splashFired: false,
+    };
     this.groundRing.visible = false;
     this.dashCdRing.visible = false;
     this.shadowBlob.visible = false;
+    this.shadowBlob2.visible = false;
   }
 
   /**
@@ -358,11 +523,17 @@ export class CharacterRig {
     this.slashFallState = null;
     if (this.slicedUpper) this.slicedUpper.visible = false;
     if (this.slicedLower) this.slicedLower.visible = false;
+    this.dartBlurDisc.visible = false;
+    this.shadowBlob2.visible = false;
     this.lastThrowTick = -999;
     this.lastSlashTick = -999;
     this.lastKickTick = -999;
     this.lastCatchTick = -999;
     this.lastPickTick = -999;
+    this.lastDashEndTick = -999;
+    this.lastStunTick = -999;
+    this.lastStunFaceYaw = null;
+    this.lastDartLandTick = -999;
     this.walkDist = 0;
     this.initializedPos = false;
     this.stealthBlend = 0;
@@ -374,6 +545,7 @@ export class CharacterRig {
     this.shadowBlob.visible = true;
     this.groundRing.visible = true;
     this.dashCdRing.visible = false;
+    this.heldDart.rotation.set(Math.PI * 0.42, 0.2, 0.25);
     this.setFace('open');
   }
 
@@ -392,31 +564,40 @@ export class CharacterRig {
     onGround: boolean,
     frameDt: number,
     winnerFaceYaw?: number | null,
+    deathEvents?: RigDeathEffectCallbacks,
   ) {
-    // 1. Update flying / ground boomerang
-    this.updateDart(prevD, currD, alpha, gt, hiddenFromHuman);
+    // Track dash stop transitions automatically when STOP event isn't caught
+    if (prevP.st === PState.DASH && currP.st !== PState.DASH && this.lastDashEndTick < currTick - 0.5) {
+      this.lastDashEndTick = currTick;
+    }
+
+    // 1. Update flying / ground boomerang + HQ blur disc
+    this.updateDart(prevD, currD, alpha, gt, currTick, hiddenFromHuman);
 
     // 2. Handle death animations
     if (!currP.alive) {
       this.heldDart.visible = false;
       this.dashCdRing.visible = false;
       if (this.sliceState?.active && this.slicedUpper && this.slicedLower) {
-        this.updateSliceAnim(gt);
+        this.updateSliceAnim(gt, deathEvents);
         return;
       }
       if (this.fallState?.active) {
-        this.updatePitFallAnim(gt);
+        this.updatePitFallAnim(gt, deathEvents);
         return;
       }
       if (this.slashFallState) {
-        this.updateSlashDeathAnim(gt);
+        this.updateSlashDeathAnim(gt, deathEvents);
         return;
       }
       this.root.visible = false;
       this.shadowBlob.visible = false;
+      this.shadowBlob2.visible = false;
       this.groundRing.visible = false;
       return;
     }
+
+    this.shadowBlob2.visible = false;
 
     // 3. Alive character interpolation (smooth 240Hz+!)
     const x = (prevP.x + (currP.x - prevP.x) * alpha) / 1000;
@@ -449,12 +630,19 @@ export class CharacterRig {
     }
     this.root.visible = true;
 
+    const hq = this.highQuality;
+
     // Facing yaw interpolation
     const faceDeg0 = prevP.face / 100;
     const faceDeg1 = currP.face / 100;
-    let dDeg = ((faceDeg1 - faceDeg0 + 540) % 360) - 180;
+    const dDeg = ((faceDeg1 - faceDeg0 + 540) % 360) - 180;
     const interpDeg = faceDeg0 + dDeg * alpha;
     let targetYaw = Math.PI * 0.5 - (interpDeg * Math.PI) / 180;
+
+    // Face the kicker while stunned in HQ (pose.py:401-404)
+    if (hq && currP.st === PState.STUN && this.lastStunFaceYaw !== null) {
+      targetYaw = this.lastStunFaceYaw;
+    }
 
     // Wait 4 logic frames after the last enemy dies before turning and celebrating;
     // during those 4 frames, maintain current action animation or stand still cleanly.
@@ -465,11 +653,11 @@ export class CharacterRig {
       targetYaw = winnerFaceYaw ?? 0; // Turn toward camera to celebrate!
     }
 
-    let dYaw = ((targetYaw - this.smoothedYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
+    const dYaw = ((targetYaw - this.smoothedYaw + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
     this.smoothedYaw += dYaw * Math.min(1, frameDt * 24);
 
     // Speed & running hop factor (after matchOver, settle running stride smoothly to standstill)
-    const speedMps = Math.hypot(currP.vx, currP.vy) / 1000 * 20; // m/s (full run = 5 m/s)
+    const speedMps = (Math.hypot(currP.vx, currP.vy) / 1000) * 20;
     const rawRf =
       currP.st === PState.FREE || currP.st === PState.THROW || currP.st === PState.THROWN
         ? clamp(speedMps / 5.0, 0, 1.15)
@@ -511,7 +699,6 @@ export class CharacterRig {
 
     // ---- State-specific procedural poses (ported from pose.py!) ----
     if (currP.st === PState.THROW) {
-      // Windup before releasing dart
       lean = -0.18;
       twist = 0.75;
       sy = 0.91;
@@ -521,7 +708,7 @@ export class CharacterRig {
       armBF = 0.25;
       armBU = 0.42;
       headYaw = -0.32;
-    } else if (currP.st === PState.THROWN || gt - this.lastThrowTick < 4.5) {
+    } else if (currP.st === PState.THROWN || (this.lastThrowTick > -900 && gt >= this.lastThrowTick && gt - this.lastThrowTick < 4.5)) {
       const r = clamp((gt - this.lastThrowTick) / 4.5);
       const w = 1 - ease(r);
       lean += 0.42 * w;
@@ -556,7 +743,7 @@ export class CharacterRig {
       sy = 0.86;
       sx = 1.08;
       lean = 0.12;
-    } else if (currP.st === PState.KICKED || gt - this.lastKickTick < 4.5) {
+    } else if (currP.st === PState.KICKED || (this.lastKickTick > -900 && gt >= this.lastKickTick && gt - this.lastKickTick < 4.5)) {
       const r = clamp((gt - this.lastKickTick) / 4.5);
       const w = bump(r);
       posY += 0.14 * w;
@@ -570,13 +757,11 @@ export class CharacterRig {
 
     if (currP.st === PState.DASH) {
       if (currP.timer > 6) {
-        // Pre-dash crouch
         sy = 0.82;
         sx = 1.12;
         sz = 1.12;
         lean = 0.16;
       } else if (currP.timer > 2) {
-        // High-speed dash lunge
         lean = 0.82;
         sy = 0.9;
         sx = 0.9;
@@ -588,11 +773,34 @@ export class CharacterRig {
         headPitch = -0.5;
         hairBack = 1.25;
       } else {
-        // Dash recovery bounce
         lean = -0.15;
         sy = 0.94;
         sx = 1.06;
       }
+    } else if (hq && this.lastDashEndTick > -900 && gt >= this.lastDashEndTick && gt - this.lastDashEndTick < 3.5) {
+      // HQ damped spring stop recoil after dash (pose.py:362-365)
+      const r = (gt - this.lastDashEndTick) / 3.5;
+      const q = Math.exp(-r * 3.2) * Math.cos(r * 5.5);
+      lean -= 0.3 * q;
+      sy *= 1 - 0.12 * q;
+      sx *= 1 + 0.1 * q;
+      hairBack -= 0.5 * q;
+    }
+
+    // HQ catch damped squash & pick bend-down poses (pose.py:375-386)
+    if (hq && this.lastCatchTick > -900 && gt >= this.lastCatchTick && gt - this.lastCatchTick < 3.5) {
+      const r = (gt - this.lastCatchTick) / 3.5;
+      const q = Math.exp(-r * 3.5) * Math.cos(r * 6.0);
+      sy *= 1 - 0.12 * q;
+      sx *= 1 + 0.08 * q;
+    }
+    if (hq && this.lastPickTick > -900 && gt >= this.lastPickTick && gt - this.lastPickTick < 3.4) {
+      const b = bump((gt - this.lastPickTick) / 3.4);
+      sy *= 1 - 0.24 * b;
+      sx *= 1 + 0.1 * b;
+      lean += 0.25 * b;
+      armAF = armAF * (1 - b) + 0.16 * b;
+      armAU = armAU * (1 - b) + 0.12 * b;
     }
 
     if (currP.st === PState.STUN) {
@@ -609,7 +817,15 @@ export class CharacterRig {
       headPitch = 0.3;
       hairBack = -0.6;
       faceMode = 'tight';
-      if (currP.timer >= 10) flash = 0.65;
+      if (hq && this.lastStunTick > -900 && gt >= this.lastStunTick) {
+        const u = Math.max(0, gt - this.lastStunTick);
+        const sq = Math.exp(-u / 1.3);
+        sy = 1 - 0.26 * sq + 0.06 * (1 - sq);
+        sx = 1 + 0.2 * sq;
+        flash = Math.max(flash, clamp(1 - u / 1.4) * 0.8);
+      } else if (currP.timer >= 10) {
+        flash = 0.65;
+      }
     }
 
     if (currP.st === PState.RECALL) {
@@ -637,12 +853,13 @@ export class CharacterRig {
       const celBlend = ease(clamp(celDt / 1.6));
       const jp = ((celDt * 0.14) % 1 + 1) % 1;
       const jz = Math.sin(Math.PI * jp);
+      const land = hq ? Math.exp(-jp * 9.0) + Math.exp(-(1 - jp) * 9.0) : 0;
       posY = 0.36 * jz;
-      lean = lean * (1 - celBlend);
+      lean = lean * (1 - celBlend) - 0.05 * celBlend;
       roll = roll * (1 - celBlend);
       twist = twist * (1 - celBlend);
-      sx = 1 - 0.05 * jz;
-      sy = 1 + 0.1 * jz;
+      sx = 1 - 0.05 * jz + 0.1 * land;
+      sy = 1 + 0.1 * jz - 0.16 * land;
       sz = 1;
       armASide = armASide * (1 - celBlend) + 0.25 * celBlend;
       armBSide = armBSide * (1 - celBlend) - 0.25 * celBlend;
@@ -657,10 +874,15 @@ export class CharacterRig {
       headPitch = headPitch * (1 - celBlend) - 0.18 * celBlend;
       headYaw = headYaw * (1 - celBlend);
       headRoll = 0.09 * Math.sin(celDt * 0.65) * celBlend;
-      hairBack = 0.03 * breath;
+      hairBack = hq ? 0.25 * jz : 0.03 * breath;
       hairSide = 0;
       flash = 0;
       faceMode = 'happy';
+      if (hq) {
+        this.heldDart.rotation.set(Math.PI * 0.5, celDt * 0.55, 0);
+      }
+    } else {
+      this.heldDart.rotation.set(Math.PI * 0.42, 0.2, 0.25);
     }
 
     // Apply transforms to root
@@ -670,6 +892,93 @@ export class CharacterRig {
     this.rigRoot.scale.set(baseScale * sx, baseScale * sy, baseScale * sz);
 
     // Apply transforms to parts
+    this.applyBodyPose(
+      bodyDy,
+      twist,
+      headPitch,
+      headYaw,
+      headRoll,
+      hairBack,
+      hairSide,
+      armAF,
+      armASide,
+      armAU,
+      armBF,
+      armBSide,
+      armBU,
+      footAPitch,
+      footBPitch,
+      footALift,
+      footBLift,
+    );
+
+    this.setFace(faceMode);
+    this.heldDart.visible = currD.st === DState.HAND;
+
+    // Tint / flash
+    for (const mat of this.partMaterials) {
+      mat.color.copy(this._baseTint).lerp(this._grassTint, this.stealthBlend);
+      if (flash > 0.01) {
+        mat.emissive.copy(this._flashColor);
+        mat.emissiveIntensity = 0.5 + flash * 0.85;
+      } else {
+        mat.emissive.setRGB(0.16, 0.16, 0.16);
+        mat.emissiveIntensity = 0.45;
+      }
+    }
+
+    // Shadow blob & colored ground ring (hide when over pit during dash/stun!)
+    if (!onGround) {
+      this.shadowBlob.visible = false;
+      this.groundRing.visible = false;
+      this.dashCdRing.visible = false;
+    } else {
+      this.shadowBlob.visible = true;
+      const bs = Math.max(0.42, 1 - posY * 0.22);
+      const liftShift = 0.16 + posY * 0.45;
+      this.shadowBlob.position.set(x + this.sunProjX * liftShift, 0.014, z + this.sunProjZ * liftShift);
+      this.shadowBlob.rotation.set(0, this.sunShadowYaw, 0);
+      this.shadowBlob.scale.set(bs, 1, bs * this.sunShadowStretch);
+      const heightFade = 1 / (1 + posY * 0.85);
+      (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity =
+        0.42 * heightFade * (1 - 0.25 * this.stealthBlend) * this.visibilityAlpha;
+
+      this.groundRing.visible = true;
+      this.groundRing.position.set(x, 0.022, z);
+      (this.groundRing.material as THREE.MeshBasicMaterial).opacity =
+        (1 - 0.72 * this.stealthBlend) * 0.86 * this.visibilityAlpha;
+
+      if (currP.cd > 0) {
+        this.dashCdRing.visible = true;
+        this.dashCdRing.position.set(x, 0.024, z);
+        const pct = currP.cd / 20;
+        this.dashCdRing.scale.set(0.85 + 0.15 * pct, 1, 0.85 + 0.15 * pct);
+        (this.dashCdRing.material as THREE.MeshBasicMaterial).opacity = 0.45 * pct * this.visibilityAlpha;
+      } else {
+        this.dashCdRing.visible = false;
+      }
+    }
+  }
+
+  private applyBodyPose(
+    bodyDy: number,
+    twist: number,
+    headPitch: number,
+    headYaw: number,
+    headRoll: number,
+    hairBack: number,
+    hairSide: number,
+    armAF: number,
+    armASide: number,
+    armAU: number,
+    armBF: number,
+    armBSide: number,
+    armBU: number,
+    footAPitch: number,
+    footBPitch: number,
+    footALift: number,
+    footBLift: number,
+  ) {
     const body = this.parts.get('body');
     if (body) {
       body.position.set(0, bodyDy, 0);
@@ -698,11 +1007,9 @@ export class CharacterRig {
       tail.rotation.set(-(this.model.tail_rest || 0) + hairBack * 0.45, hairSide * 1.2, 0);
     }
 
-    // Rotate arms toward target hand vectors
     this.aimArm('armA', armAF, armASide, armAU, 1);
     this.aimArm('armB', armBF, armBSide, armBU, -1);
 
-    // Swing legs
     const footA = this.parts.get('footA');
     if (footA) {
       const rfA = this.restPos.get('footA')!;
@@ -715,60 +1022,11 @@ export class CharacterRig {
       footB.position.set(rfB.x, rfB.y + footBLift, rfB.z);
       footB.rotation.set(footBPitch, 0, 0);
     }
-
-    this.setFace(faceMode);
-    this.heldDart.visible = currD.st === DState.HAND;
-
-    // Tint / flash
-    for (const mat of this.partMaterials) {
-      mat.color.copy(this._baseTint).lerp(this._grassTint, this.stealthBlend);
-      if (flash > 0.01) {
-        mat.emissive.copy(this._flashColor);
-        mat.emissiveIntensity = 0.5 + flash * 0.8;
-      } else {
-        mat.emissive.setRGB(0.16, 0.16, 0.16);
-        mat.emissiveIntensity = 0.45;
-      }
-    }
-
-    // Shadow blob & colored ground ring (hide when over pit during dash/stun!)
-    if (!onGround) {
-      this.shadowBlob.visible = false;
-      this.groundRing.visible = false;
-      this.dashCdRing.visible = false;
-    } else {
-      this.shadowBlob.visible = true;
-      const bs = Math.max(0.42, 1 - posY * 0.22);
-      const liftShift = 0.16 + posY * 0.45;
-      this.shadowBlob.position.set(x + this.sunProjX * liftShift, 0.014, z + this.sunProjZ * liftShift);
-      this.shadowBlob.rotation.set(0, this.sunShadowYaw, 0);
-      this.shadowBlob.scale.set(bs, 1, bs * this.sunShadowStretch);
-      const heightFade = 1 / (1 + posY * 0.85);
-      (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity =
-        0.42 * heightFade * (1 - 0.25 * this.stealthBlend) * this.visibilityAlpha;
-
-      this.groundRing.visible = true;
-      this.groundRing.position.set(x, 0.022, z);
-      (this.groundRing.material as THREE.MeshBasicMaterial).opacity =
-        (1 - 0.72 * this.stealthBlend) * 0.86 * this.visibilityAlpha;
-
-      // Dash cooldown ring indicator
-      if (currP.cd > 0) {
-        this.dashCdRing.visible = true;
-        this.dashCdRing.position.set(x, 0.024, z);
-        const pct = currP.cd / 20;
-        this.dashCdRing.scale.set(0.85 + 0.15 * pct, 1, 0.85 + 0.15 * pct);
-        (this.dashCdRing.material as THREE.MeshBasicMaterial).opacity = 0.45 * pct * this.visibilityAlpha;
-      } else {
-        this.dashCdRing.visible = false;
-      }
-    }
   }
 
   private aimArm(name: string, f: number, sd: number, u: number, sg: number) {
     const arm = this.parts.get(name);
     if (!arm) return;
-    // Map (forward, side, height) into local Three.js arm direction (+Z forward, +Y up, +X left)
     const dx = (sd * sg - 0.22) * sg;
     const dy = u - 0.42;
     const dz = f;
@@ -790,59 +1048,119 @@ export class CharacterRig {
     currD: DartSnapshot,
     alpha: number,
     gt: number,
+    currTick: number,
     hiddenFromHuman: boolean,
   ) {
+    const hq = this.highQuality;
+    const wasFlying = prevD.st === DState.OUT || prevD.st === DState.BACK || prevD.st === DState.CALL;
+    if (wasFlying && (currD.st === DState.GROUND || currD.st === DState.RISE)) {
+      if (this.lastDartLandTick < currTick - 0.5) {
+        this.lastDartLandTick = currTick;
+      }
+    }
+
     if (currD.st === DState.HAND || currD.st === DState.GONE) {
       this.flyingDart.visible = false;
+      this.dartBlurDisc.visible = false;
       return;
     }
-    // If dart just left hand on this tick, avoid snapping from an old position
+
     const usePrev = prevD.st !== DState.HAND && prevD.st !== DState.GONE;
     const x = (usePrev ? prevD.x + (currD.x - prevD.x) * alpha : currD.x) / 1000;
     const z = (usePrev ? prevD.y + (currD.y - prevD.y) * alpha : currD.y) / 1000;
 
     this.flyingDart.visible = true;
     const flying = currD.st === DState.OUT || currD.st === DState.BACK || currD.st === DState.CALL;
+    let dartGlow = 0;
+
     if (flying) {
-      const bob = currD.st === DState.CALL ? 0.08 * Math.sin(gt * 1.4) : 0;
-      this.flyingDart.position.set(x, 0.66 + bob, z);
-      this.flyingDart.rotation.set(0, gt * 2.3 + this.seat * 1.3, 0);
-      const sc = currD.st === DState.BACK && currD.age < 3 ? 1.08 + 0.08 * Math.sin(gt * 2.5) : 1.0;
+      let y = 0.66;
+      if (hq && currD.st === DState.BACK && currD.age < 4) {
+        // Apex hang lift at boomerang turnaround (pose.py:653-655)
+        y += 0.22 * bump((currD.age + alpha) / 3.6);
+      } else if (currD.st === DState.CALL) {
+        y += 0.08 * Math.sin(gt * 1.4);
+      }
+      const spin = gt * 2.15 + this.seat * 1.3;
+      this.flyingDart.position.set(x, y, z);
+      this.flyingDart.rotation.set(0, spin, hq ? 0.12 : 0);
+      const sc = !hq && currD.st === DState.BACK && currD.age < 3 ? 1.08 + 0.08 * Math.sin(gt * 2.5) : 1.0;
       this.flyingDart.scale.setScalar(sc);
+
+      // HQ spinning translucent blur disc under flying boomerang (chars.py:273 + render_bl.py:271-276)
+      if (hq) {
+        this.dartBlurDisc.visible = true;
+        this.dartBlurDisc.position.set(x, y - 0.01, z);
+        this.dartBlurDisc.rotation.set(0, spin * 0.37, 0);
+      } else {
+        this.dartBlurDisc.visible = false;
+      }
     } else if (currD.st === DState.RISE) {
-      // Shaking and levitating slightly during recall channel!
-      const prog = clamp(1 - currD.left / 12);
-      const jx = 0.035 * Math.sin(gt * 4.5) * (0.3 + prog);
-      const jz = 0.035 * Math.cos(gt * 5.2) * (0.3 + prog);
-      this.flyingDart.position.set(x + jx, 0.1 + prog * 0.45, z + jz);
-      this.flyingDart.rotation.set(0.18 * (1 - prog), gt * (0.4 + prog * 1.8), 0);
-      this.flyingDart.scale.setScalar(0.95 + prog * 0.15);
+      this.dartBlurDisc.visible = false;
+      const prog = clamp(1 - (currD.left - alpha) / 12);
+      if (hq) {
+        const y = 0.06 + 0.34 * prog * prog + 0.03 * Math.sin(gt * 3.0);
+        const tilt = 0.22 * Math.sin(gt * 2.7) * (1 - prog);
+        const baseSpin = 2.15 * Math.max(0, this.lastDartLandTick) + this.seat * 1.3 + 6.0;
+        this.flyingDart.position.set(x, y, z);
+        this.flyingDart.rotation.set(tilt, baseSpin + 10.0 * prog * prog, tilt * 0.6);
+        this.flyingDart.scale.setScalar(0.84 + prog * 0.16);
+        const sGlow = Math.sin(gt * 2.4);
+        dartGlow = 0.35 + 0.35 * sGlow * sGlow;
+      } else {
+        const jx = 0.035 * Math.sin(gt * 4.5) * (0.3 + prog);
+        const jz = 0.035 * Math.cos(gt * 5.2) * (0.3 + prog);
+        this.flyingDart.position.set(x + jx, 0.1 + prog * 0.45, z + jz);
+        this.flyingDart.rotation.set(0.18 * (1 - prog), gt * (0.4 + prog * 1.8), 0);
+        this.flyingDart.scale.setScalar(0.95 + prog * 0.15);
+      }
     } else {
-      // Ground dart
-      this.flyingDart.position.set(x, 0.09, z);
-      this.flyingDart.rotation.set(0.14, this.seat * 1.1, 0);
-      this.flyingDart.scale.setScalar(0.92);
+      // Ground dart (double bounce + wobble settle in HQ, pose.py:668-680!)
+      this.dartBlurDisc.visible = false;
+      const u = gt - this.lastDartLandTick;
+      if (hq && this.lastDartLandTick > -900 && u >= 0 && u < 9) {
+        const e = Math.exp(-u / 3.2);
+        const y = 0.065 + 0.38 * Math.abs(Math.cos(u * 0.85)) * e;
+        const tilt = 0.5 * Math.sin(u * 1.4) * e;
+        const spin = 2.15 * this.lastDartLandTick + this.seat * 1.3 + 6.0 * (1 - Math.exp(-u / 3.0));
+        this.flyingDart.position.set(x, y, z);
+        this.flyingDart.rotation.set(tilt, spin, tilt * 0.6);
+        this.flyingDart.scale.setScalar(0.84);
+      } else {
+        this.flyingDart.position.set(x, 0.08, z);
+        const settleSpin = hq && this.lastDartLandTick > -900 ? 2.15 * this.lastDartLandTick + this.seat * 1.3 + 6.0 : this.seat * 1.1;
+        this.flyingDart.rotation.set(0.12, settleSpin, 0);
+        this.flyingDart.scale.setScalar(hq ? 0.84 : 0.92);
+      }
+    }
+
+    if (this.flyingDartMat) {
+      this.flyingDartMat.emissiveIntensity = 0.14 + dartGlow * 0.85;
     }
     void hiddenFromHuman;
   }
 
-  private updateSliceAnim(gt: number) {
+  private updateSliceAnim(gt: number, deathEvents?: RigDeathEffectCallbacks) {
     const H = this.sliceState!;
     const upper = this.slicedUpper!;
     const lower = this.slicedLower!;
     const u = Math.max(0, gt - H.startTick);
-    const LIFE = 22;
-    const POOF = 17;
-    if (u > LIFE) {
+    const hq = this.highQuality;
+    const life = hq ? SLICE_LIFE : 22;
+    const poofT = hq ? SLICE_POOF : 17;
+
+    if (u > life) {
       upper.visible = false;
       lower.visible = false;
       this.shadowBlob.visible = false;
+      this.shadowBlob2.visible = false;
       return;
     }
 
-    // Faithful port of pose.py slice_curve(u)!
-    const carry = 0.12 * (1 - Math.exp(-u / 0.3)) + 1.15 * (1 - Math.exp(-Math.max(0, u - 0.4) / 2.6));
-    const lift = 0.09 * bump(u / 1.8);
+    // Faithful port of pose.py slice_curve(u) + chars_voxel.py _apply_slice!
+    const carry =
+      0.11 * (1 - Math.exp(-u / 0.3)) + (SLICE_UP_GO - 0.11) * (1 - Math.exp(-Math.max(0, u - 0.4) / 2.6));
+    const lift = 0.08 * bump(u / 1.8);
     const v = u - 0.9;
     let thUp = 0;
     if (v <= 0) thUp = 0.05 * clamp(u / 0.6);
@@ -851,78 +1169,351 @@ export class CharacterRig {
 
     const w = u - 3.0;
     let thLow = 0;
-    if (w <= 0) thLow = 0.05 * Math.sin(u * 2.6) * clamp(u / 0.8);
+    if (w <= 0) thLow = 0.045 * Math.sin(u * 2.6) * clamp(u / 0.8);
     else if (w < 2.8) thLow = Math.PI * 0.5 * Math.pow(ease(w / 2.8), 1.7);
     else thLow = Math.PI * 0.5 - 0.1 * Math.abs(Math.sin((w - 2.8) * 1.5)) * Math.exp(-(w - 2.8) / 1.2);
 
-    const fadeScale = 1 - ease((u - POOF) / (LIFE - POOF));
+    const fadeScale = 1 - ease((u - poofT) / (life - poofT));
     const baseS = CHAR_SCALE * (this.model.scale || 1.0) * fadeScale;
 
-    // Upper half slides along dart direction and falls onto the ground
+    // Trigger poof FX on each grounded half when disappearing in HQ (pose.py:771-774)
+    if (hq && u >= poofT && !H.poofFired) {
+      H.poofFired = true;
+      if (H.landUpper) {
+        deathEvents?.onPoof?.(H.x + H.dx * SLICE_UP_GO, 0.25, H.z + H.dz * SLICE_UP_GO, 0.7);
+      }
+      if (H.landLower) {
+        deathEvents?.onPoof?.(H.x + H.sx * SLICE_LOW_GO * 0.6, 0.25, H.z + H.sz * SLICE_LOW_GO * 0.6, 0.7);
+      }
+    }
+
+    // Impact white flash on sliced halves in HQ (pose.py:100)
+    if (this.slicedMat) {
+      const flash = hq ? 0.75 * clamp(1 - (u - 0.2) / 0.9) : 0;
+      if (flash > 0.01) {
+        this.slicedMat.emissive.copy(this._flashColor);
+        this.slicedMat.emissiveIntensity = 0.45 + flash * 0.9;
+      } else {
+        this.slicedMat.emissive.setRGB(0.2, 0.2, 0.2);
+        this.slicedMat.emissiveIntensity = 0.45;
+      }
+    }
+
     const tau = Math.max(0, u - 0.9);
-    const upperY = Math.max(0.18, this.sliceCutY + lift - 0.03 * tau * tau);
-    upper.position.set(H.x + H.dx * carry, upperY, H.z + H.dz * carry);
-    upper.rotation.set(thUp, H.yaw + 0.35 * eout(tau / 6), 0, 'YXZ');
-    upper.scale.setScalar(baseS);
+    const G = 0.03;
 
-    // Lower half wobbles then tips forward toward camera
-    lower.position.set(H.x, 0.02, H.z);
-    lower.rotation.set(thLow, H.yaw, 0, 'YXZ');
-    lower.scale.setScalar(baseS);
+    if (hq) {
+      // Exact world-axis roll around dart flight vector d so both flat cut faces flip toward camera (+s)!
+      this._axisD.set(H.dx, 0, H.dz).normalize();
+      const crossDot = -H.dz * H.sx + H.dx * H.sz;
+      const sg = crossDot >= 0 ? 1 : -1;
+      const yawUp = 0.35 * eout(tau / 6);
 
-    this.shadowBlob.visible = true;
-    this.shadowBlob.position.set(H.x, 0.015, H.z);
-    (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity = 0.25 * fadeScale;
+      // Upper half: slides along dart direction, flips away from camera (cut face turns toward viewer), falls into pit if !landUpper!
+      let upperY = this.sliceCutY + lift - 0.5 * G * tau * tau;
+      if (tau <= 0 || carry < 0.24) {
+        upperY = Math.max(upperY, this.sliceCutY);
+      } else if (H.landUpper) {
+        upperY = Math.max(upperY, 0.18);
+      }
+      const upX = H.x + H.dx * carry;
+      const upZ = H.z + H.dz * carry;
+      upper.visible = upperY > -9.0 && baseS > 0.01;
+      upper.position.set(upX, upperY, upZ);
+      this._qYaw.setFromAxisAngle(this._upVec, H.yaw);
+      this._qRoll.setFromAxisAngle(this._axisD, -sg * thUp);
+      this._qSpin.setFromAxisAngle(this._upVec, yawUp * sg);
+      upper.quaternion.copy(this._qSpin).multiply(this._qRoll).multiply(this._qYaw);
+      upper.scale.setScalar(baseS);
+
+      // Lower half: wobbles then tips toward camera (+s), falls into pit if !landLower!
+      let lowerY = 0.02;
+      if (!H.landLower) {
+        const vl = Math.max(0, u - 4.5);
+        lowerY = 0.02 - 0.5 * G * vl * vl;
+      }
+      const lowTipOff = Math.min(1.0, thLow / 1.5) * 0.14;
+      lower.visible = lowerY > -9.0 && baseS > 0.01;
+      lower.position.set(H.x + H.sx * lowTipOff, lowerY, H.z + H.sz * lowTipOff);
+      this._qRoll.setFromAxisAngle(this._axisD, sg * thLow);
+      lower.quaternion.copy(this._qRoll).multiply(this._qYaw);
+      lower.scale.setScalar(baseS);
+
+      // Dual independent ground shadows (chars_voxel.py:323-342)
+      const ga = clamp(1 - (u - poofT) / 2.5) * 0.42;
+      if (H.landLower && ga > 0.01) {
+        this.shadowBlob.visible = true;
+        this.shadowBlob.position.set(H.x + H.sx * lowTipOff * 1.4, 0.015, H.z + H.sz * lowTipOff * 1.4);
+        this.shadowBlob.rotation.set(0, 0, 0);
+        this.shadowBlob.scale.set(0.95, 1, 0.95);
+        (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity = ga;
+      } else {
+        this.shadowBlob.visible = false;
+      }
+      if (H.landUpper && ga > 0.01 && carry >= 0.24) {
+        this.shadowBlob2.visible = true;
+        this.shadowBlob2.position.set(upX, 0.015, upZ);
+        this.shadowBlob2.rotation.set(0, 0, 0);
+        this.shadowBlob2.scale.set(0.88, 1, 0.88);
+        const hgtFade = Math.max(0.3, 1 - Math.max(0, upperY - 0.18) * 1.2);
+        (this.shadowBlob2.material as THREE.MeshBasicMaterial).opacity = ga * hgtFade;
+      } else {
+        this.shadowBlob2.visible = false;
+      }
+    } else {
+      const upperY = Math.max(0.18, this.sliceCutY + lift - 0.03 * tau * tau);
+      upper.position.set(H.x + H.dx * carry, upperY, H.z + H.dz * carry);
+      upper.rotation.set(thUp, H.yaw + 0.35 * eout(tau / 6), 0, 'YXZ');
+      upper.scale.setScalar(baseS);
+
+      lower.position.set(H.x, 0.02, H.z);
+      lower.rotation.set(thLow, H.yaw, 0, 'YXZ');
+      lower.scale.setScalar(baseS);
+
+      this.shadowBlob.visible = true;
+      this.shadowBlob.position.set(H.x, 0.015, H.z);
+      (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity = 0.25 * fadeScale;
+      this.shadowBlob2.visible = false;
+    }
   }
 
-  private updateSlashDeathAnim(gt: number) {
+  private updateSlashDeathAnim(gt: number, deathEvents?: RigDeathEffectCallbacks) {
     const S = this.slashFallState!;
     const u = Math.max(0, gt - S.startTick);
-    if (u > 12) {
+    const hq = this.highQuality;
+    const life = hq ? 10.5 : 12;
+    if (u > life) {
       this.root.visible = false;
       this.shadowBlob.visible = false;
       return;
     }
     this.root.visible = true;
-    const dist = 2.6 * (1 - Math.exp(-u / 4.2));
-    const y = Math.max(0, 0.42 * u - 0.028 * u * u);
-    const sc = 1 - ease((u - 8) / 4);
+    const dist = 2.7 * (1 - Math.exp(-u / 4.5));
+    const curX = S.x + S.dx * dist;
+    const curZ = S.z + S.dz * dist;
+    const y = Math.max(0, 0.4 * u - 0.026 * u * u);
+
+    // Disappear poof at u=8.6 (pose.py:776-777)
+    if (hq && u >= 8.6 && !S.poofFired) {
+      S.poofFired = true;
+      deathEvents?.onPoof?.(curX, y + 0.5, curZ, 1.0);
+    }
+
+    const sc = 1 - ease((u - (hq ? 7.5 : 8)) / (hq ? 3.0 : 4));
+    const sq = hq ? Math.exp(-u / 0.9) : 0;
     const baseScale = CHAR_SCALE * (this.model.scale || 1.0) * sc;
-    this.root.position.set(S.x + S.dx * dist, y, S.z + S.dz * dist);
+    this.root.position.set(curX, y, curZ);
     this.root.rotation.set(-0.62 * u, this.smoothedYaw, 0.2 * u, 'YXZ');
-    this.rigRoot.scale.setScalar(baseScale);
+    this.rigRoot.scale.set(baseScale * (1 + 0.2 * sq), baseScale * (1 - 0.2 * sq), baseScale);
+
+    if (hq) {
+      const fl = Math.sin(u * 2.2);
+      this.applyBodyPose(
+        0,
+        0,
+        0.2,
+        0,
+        0.1 * fl,
+        0.9,
+        0.2 * fl,
+        0,
+        0.32,
+        0.68 + 0.08 * fl,
+        0,
+        -0.32,
+        0.68 - 0.08 * fl,
+        -0.45 * fl,
+        0.45 * fl,
+        0.04,
+        0.04,
+      );
+      const flash = clamp(1 - (u - 0.65) / 0.7);
+      for (const mat of this.partMaterials) {
+        if (flash > 0.01) {
+          mat.emissive.copy(this._flashColor);
+          mat.emissiveIntensity = 0.5 + flash * 0.85;
+        } else {
+          mat.emissive.setRGB(0.16, 0.16, 0.16);
+          mat.emissiveIntensity = 0.45;
+        }
+      }
+    }
+
     this.setFace('tight');
     this.shadowBlob.visible = sc > 0.05;
-    this.shadowBlob.position.set(S.x + S.dx * dist, 0.015, S.z + S.dz * dist);
+    this.shadowBlob.position.set(curX, 0.015, curZ);
     (this.shadowBlob.material as THREE.MeshBasicMaterial).opacity = 0.28 * sc;
   }
 
-  private updatePitFallAnim(gt: number) {
+  private updatePitFallAnim(gt: number, deathEvents?: RigDeathEffectCallbacks) {
     const F = this.fallState!;
     const u = Math.max(0, gt - F.startTick);
-    const y = -0.055 * u * u - 0.08 * u;
-    if (y < -12) {
+    const hq = this.highQuality;
+
+    if (!hq) {
+      const y = -0.055 * u * u - 0.08 * u;
+      if (y < -12) {
+        this.root.visible = false;
+        return;
+      }
+      this.root.visible = true;
+      const drift = (F.kicked ? 1.8 : 1.1) * (1 - Math.exp(-u / 3.5));
+      const sc = Math.max(0.25, 1 - 0.55 * clamp(-y / 12));
+      const baseScale = CHAR_SCALE * (this.model.scale || 1.0) * sc;
+      this.root.position.set(F.x + F.vx * drift, y, F.z + F.vz * drift);
+      this.root.rotation.set(
+        F.kicked ? -0.25 * u : 0.35 * u,
+        this.smoothedYaw + 0.12 * u,
+        0.2 * Math.sin(u * 1.8),
+        'YXZ',
+      );
+      this.rigRoot.scale.setScalar(baseScale);
+      this.setFace('tight');
+      return;
+    }
+
+    // Faithful 3-mode pit-fall port of pose.py:561-632 (walk / kick / ground)
+    const kind = F.kind;
+    const hang = FALL_HANG[kind];
+    const f = Math.max(0, u - hang);
+    const y = -0.5 * FALL_G * f * f - (kind === 'ground' ? 0.05 * f : 0);
+    if (y < -13.5) {
       this.root.visible = false;
       return;
     }
     this.root.visible = true;
-    const drift = (F.kicked ? 1.8 : 1.1) * (1 - Math.exp(-u / 3.5));
-    const sc = Math.max(0.25, 1 - 0.55 * clamp(-y / 12));
+
+    const drift = (kind === 'kick' ? 3.2 : 2.2) * (1 - Math.exp(-u / 3.0));
+    const curX = F.x + F.vx * drift;
+    const curZ = F.z + F.vz * drift;
+
+    // Trigger billowing cloud-sea splash when passing y = -10.5 (pose.py:781-783)
+    if (y <= FALL_SPLASH_Y && !F.splashFired) {
+      F.splashFired = true;
+      deathEvents?.onCloudSplash?.(curX, curZ);
+    }
+
+    const sc = 1 - 0.55 * clamp(-y / 12.0);
+    const fl = Math.sin(u * 2.2);
+    let sx = 1;
+    let sy = 1;
+    let lean = 0;
+    let roll = 0;
+    let spin = 0;
+    let headPitch = 0.2;
+    let headRoll = 0.1 * fl;
+    let hairBack = 1.4;
+    let hairSide = 0.2 * fl;
+    let armAF = 0;
+    let armASide = 0.3;
+    let armAU = 0.8 + 0.08 * fl;
+    let armBF = 0;
+    let armBSide = -0.3;
+    let armBU = 0.8 - 0.08 * fl;
+    let footAPitch = -0.4 * fl;
+    let footBPitch = 0.4 * fl;
+    let footALift = 0.04;
+    let footBLift = 0.04;
+    let posY = y;
+
+    if (kind === 'walk' && u < hang) {
+      // Teetering on cliff edge: escalating sway + windmilling arms + back foot kicked up!
+      const a = u / hang;
+      const sw = Math.sin(u * 3.4) * (0.25 + 0.35 * a);
+      posY = 0.02 * bump(a);
+      lean = sw + 0.5 * a * a;
+      sy = 1.04;
+      sx = 0.97;
+      armAF = 0.12 * Math.cos(u * 4.2);
+      armASide = 0.36;
+      armAU = 0.62 + 0.24 * Math.sin(u * 4.2);
+      armBF = 0.12 * Math.cos(u * 4.2 + 2.6);
+      armBSide = -0.36;
+      armBU = 0.62 + 0.24 * Math.sin(u * 4.2 + 2.6);
+      footAPitch = -0.25;
+      footBPitch = 0.72 + 0.25 * a;
+      footALift = 0;
+      footBLift = 0.1 + 0.05 * Math.sin(u * 3.4);
+      headPitch = 0.25 * sw;
+      headRoll = 0.08 * fl;
+      hairBack = 0.3 - sw;
+    } else {
+      sy = 1.06;
+      sx = 0.94;
+      roll = 0.25 * fl;
+      if (kind === 'walk') {
+        // Head-first forward tumble after losing balance
+        lean = 0.5 + (0.5 + 0.2 * f + 0.004 * f * f);
+        spin = 0.05 * f;
+      } else if (kind === 'kick') {
+        // Face-up backward tumble with flailing limbs
+        lean = -0.75 - (0.15 * u + 0.004 * u * u);
+        footAPitch = -0.75 + 0.28 * fl;
+        footBPitch = -0.55 - 0.28 * fl;
+        footALift = 0.12 + 0.05 * fl;
+        footBLift = 0.06 - 0.05 * fl;
+        headPitch = 0.3;
+      } else {
+        // Ground collapsed underneath: startled squash then arms straight up spinning down
+        const q = Math.exp(-u / 1.6);
+        sy = 1.06 - 0.2 * q;
+        sx = 0.94 + 0.12 * q;
+        lean = -0.1 - 0.02 * f;
+        spin = 0.08 * f;
+        armAF = 0.05;
+        armASide = 0.26;
+        armAU = 0.9 + 0.06 * fl;
+        armBF = 0.05;
+        armBSide = -0.26;
+        armBU = 0.9 - 0.06 * fl;
+      }
+    }
+
     const baseScale = CHAR_SCALE * (this.model.scale || 1.0) * sc;
-    this.root.position.set(F.x + F.vx * drift, y, F.z + F.vz * drift);
-    this.root.rotation.set(F.kicked ? -0.25 * u : 0.35 * u, this.smoothedYaw + 0.12 * u, 0.2 * Math.sin(u * 1.8), 'YXZ');
-    this.rigRoot.scale.setScalar(baseScale);
+    this.root.position.set(curX, posY, curZ);
+    this.root.rotation.set(lean, this.smoothedYaw + spin, roll, 'YXZ');
+    this.rigRoot.scale.set(baseScale * sx, baseScale * sy, baseScale);
+
+    this.applyBodyPose(
+      0,
+      0,
+      headPitch,
+      0,
+      headRoll,
+      hairBack,
+      hairSide,
+      armAF,
+      armASide,
+      armAU,
+      armBF,
+      armBSide,
+      armBU,
+      footAPitch,
+      footBPitch,
+      footALift,
+      footBLift,
+    );
     this.setFace('tight');
+    for (const mat of this.partMaterials) {
+      mat.emissive.setRGB(0.16, 0.16, 0.16);
+      mat.emissiveIntensity = 0.45;
+    }
   }
 
   public dispose(parentScene: THREE.Scene) {
     parentScene.remove(this.root);
     parentScene.remove(this.flyingDart);
+    parentScene.remove(this.dartBlurDisc);
     parentScene.remove(this.shadowBlob);
+    parentScene.remove(this.shadowBlob2);
     parentScene.remove(this.groundRing);
     parentScene.remove(this.dashCdRing);
+    this.dartBlurDisc.geometry.dispose();
+    (this.dartBlurDisc.material as THREE.Material).dispose();
+    (this.shadowBlob2.material as THREE.Material).dispose();
     if (this.slicedUpper) parentScene.remove(this.slicedUpper);
     if (this.slicedLower) parentScene.remove(this.slicedLower);
+    if (this.slicedMat) this.slicedMat.dispose();
     for (const m of this.partMaterials) m.dispose();
   }
 }

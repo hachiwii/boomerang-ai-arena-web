@@ -30,12 +30,29 @@ import { BridgeSpec, PaintedGroundResult, paintHighQualityGround } from './hqGro
 import { buildOriginalDecorIsland } from './hqOuterIsland';
 import { getHqTheme, HqThemeSpec } from './hqThemes';
 
+export interface ArenaMover {
+  x: number;
+  z: number;
+  speed: number;
+}
+
 export interface ArenaMapUpdateOpts {
   pauseClouds?: boolean;
   hideAmbient?: boolean;
   pauseGrass?: boolean;
   pauseWaterfall?: boolean;
   freezeCollapseAtTick?: number;
+  movers?: readonly ArenaMover[];
+  onCollapseDust?: (
+    x: number,
+    y: number,
+    z: number,
+    count: number,
+    spread: number,
+    sizeScale: number,
+    alpha0: number,
+    riseVy: number,
+  ) => void;
 }
 
 export interface IArenaMap {
@@ -229,6 +246,8 @@ interface CollapseChunk {
   hasShadowCaster: boolean;
   /** 0 = intact/warning, 1 = actively dropping, 2 = fallen out of sight */
   shadowState: 0 | 1 | 2;
+  warnDustFired: boolean;
+  fallDustFired: boolean;
 }
 
 interface WaveBundle {
@@ -852,6 +871,8 @@ export class HqArenaMap3D implements IArenaMap {
         modified: false,
         hasShadowCaster: false,
         shadowState: 0,
+        warnDustFired: false,
+        fallDustFired: false,
       };
       this.chunks.push(chunk);
       this.waveBundles.get(info.wave)?.chunks.push(chunk);
@@ -1197,11 +1218,11 @@ export class HqArenaMap3D implements IArenaMap {
       return d * cs;
     };
 
-    // Group grass cells by chunk (4x4 cell blocks) -> ultra-lean ~10-22 draw calls total!
+    // Group grass cells into responsive 2x2 cell tufts (1m x 1m) for crisp mover-parting interaction!
     const clusters = new Map<string, [number, number][]>();
     for (const [x, y] of grassCells) {
       const cid = this.getChunkForCell(x, y).id;
-      const key = `${cid}_${Math.floor(x / 4)}_${Math.floor(y / 4)}`;
+      const key = `${cid}_${Math.floor(x / 2)}_${Math.floor(y / 2)}`;
       let arr = clusters.get(key);
       if (!arr) {
         arr = [];
@@ -1932,6 +1953,8 @@ export class HqArenaMap3D implements IArenaMap {
               if (ch.cliffMesh) ch.cliffMesh.material = this.sharedCliffMat;
             }
             ch.modified = false;
+            ch.warnDustFired = false;
+            ch.fallDustFired = false;
             if (ch.hasShadowCaster && ch.shadowState !== 0) {
               ch.shadowState = 0;
               shadowDirty = true;
@@ -1983,6 +2006,10 @@ export class HqArenaMap3D implements IArenaMap {
             const tau = (u - delay) / 20;
             const drop = 0.5 * 14.5 * tau * tau + 0.65 * tau;
             if (drop < 18) {
+              if (!ch.fallDustFired) {
+                ch.fallDustFired = true;
+                opts?.onCollapseDust?.(ch.cx, -0.15, ch.cz, 2, 0.52, 0.58 + 0.22 * ch.rnd[1], 0.76, -0.35);
+              }
               anyVisible = true;
               const ox = ch.cx - this.widthM * 0.5;
               const oz = ch.cz - this.heightM * 0.5;
@@ -2029,6 +2056,11 @@ export class HqArenaMap3D implements IArenaMap {
           }
         } else {
           // Warning tremor + orange glow pulse
+          ch.fallDustFired = false;
+          if (!ch.warnDustFired) {
+            ch.warnDustFired = true;
+            opts?.onCollapseDust?.(ch.cx, 0.04, ch.cz, 1, 0.14, 0.34, 0.52, 0.12);
+          }
           anyVisible = true;
           const prog = Math.min(1, Math.max(0, (gt - (fallStep - colWarn)) / Math.max(1, colWarn)));
           const amp = (0.01 + 0.032 * prog) * prog;
@@ -2081,16 +2113,45 @@ export class HqArenaMap3D implements IArenaMap {
       this.warnCliffMat.emissive.copy(this._black);
     }
 
-    // 2. Gentle tall-grass breeze sway (frozen completely when `pauseGrass` is set for compact GIFs!)
-    if (opts?.pauseGrass) {
-      for (let i = 0; i < this.grassClusters.length; i++) {
-        this.grassClusters[i].group.rotation.set(0, 0, 0);
+    // 2. Tall-grass breeze sway + interactive player/dart brush-parting (env.py:1101-1122)
+    const movers = opts?.movers;
+    const pushR = 1.08;
+    for (let i = 0; i < this.grassClusters.length; i++) {
+      const g = this.grassClusters[i];
+      const sw = opts?.pauseGrass ? 0 : Math.sin(elapsedSec * 2.3 + g.cx * 0.7 + g.phase) * 0.075;
+      let best = 0;
+      let ux = 0;
+      let uz = 0;
+      let sp = 0;
+      if (movers && movers.length > 0) {
+        for (let m = 0; m < movers.length; m++) {
+          const mv = movers[m];
+          const dx = g.cx - mv.x;
+          const dz = g.cz - mv.z;
+          if (Math.abs(dx) > pushR || Math.abs(dz) > pushR) continue;
+          const d = Math.hypot(dx, dz);
+          const k = 1 - d / pushR;
+          if (k > best) {
+            best = k;
+            sp = mv.speed;
+            if (d > 1e-4) {
+              ux = dx / d;
+              uz = dz / d;
+            } else {
+              ux = 0;
+              uz = 0;
+            }
+          }
+        }
       }
-    } else {
-      for (let i = 0; i < this.grassClusters.length; i++) {
-        const g = this.grassClusters[i];
-        const sw = Math.sin(elapsedSec * 2.3 + g.cx * 0.7 + g.phase) * 0.075;
+      if (best > 0) {
+        const k = Math.pow(best, 1.3);
+        const tilt = 0.34 * k + 0.09 * k * Math.sin(gt * 2.3 + g.phase) * Math.min(1, sp / 0.08);
+        g.group.rotation.set(sw + uz * tilt, 0, sw * 0.65 - ux * tilt);
+        g.group.scale.set(1 + 0.1 * k, 1 - 0.3 * k, 1 + 0.1 * k);
+      } else {
         g.group.rotation.set(sw, 0, sw * 0.65);
+        g.group.scale.set(1, 1, 1);
       }
     }
 
