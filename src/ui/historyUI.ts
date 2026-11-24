@@ -59,6 +59,13 @@ function formatPlayedTime(ts: number): { short: string; full: string } {
   return { short: `${pad(d.getMonth() + 1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`, full };
 }
 
+function renderFavoriteStarSvg(filled: boolean): string {
+  if (filled) {
+    return `<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2.5 15.09 8.76 22 9.77 17 14.64 18.18 21.52 12 18.27 5.82 21.52 7 14.64 2 9.77 8.91 8.76 12 2.5"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2.5 15.09 8.76 22 9.77 17 14.64 18.18 21.52 12 18.27 5.82 21.52 7 14.64 2 9.77 8.91 8.76 12 2.5"/></svg>`;
+}
+
 export class HistoryModal {
   private readonly store: MatchHistoryStore;
   private readonly settings: SettingsStore;
@@ -70,12 +77,16 @@ export class HistoryModal {
   private readonly closeBtn: HTMLButtonElement;
   private readonly exportCfgBtn: HTMLButtonElement;
   private readonly filterBtns: HTMLButtonElement[];
+  private readonly favOnlyBtn: HTMLButtonElement;
+  private readonly favCountEl: HTMLElement;
   private readonly exportSlotEl: HTMLDivElement;
   private readonly noticeSlotEl: HTMLDivElement;
   private readonly bodyEl: HTMLDivElement;
 
   private openState = false;
   private filter: HistoryFilter = 'all';
+  private favoritesOnly = false;
+  private suppressStoreRefreshCount = 0;
   private summaries: MatchHistorySummary[] = [];
   private loading = false;
   private loadingReplayId: string | null = null;
@@ -113,11 +124,25 @@ export class HistoryModal {
       </div>
 
       <div class="history-toolbar">
-        <div class="history-filter-tabs" role="tablist">
-          <button type="button" class="history-filter-btn active" data-hfilter="all">全部 <span data-fcount="all">0</span></button>
-          <button type="button" class="history-filter-btn" data-hfilter="ranked">🏆 排位赛 <span data-fcount="ranked">0</span></button>
-          <button type="button" class="history-filter-btn" data-hfilter="cricket">🦗 斗蛐蛐 <span data-fcount="cricket">0</span></button>
-          <button type="button" class="history-filter-btn" data-hfilter="custom">🎛️ 自定义 <span data-fcount="custom">0</span></button>
+        <div class="history-toolbar-left">
+          <div class="history-filter-tabs" role="tablist">
+            <button type="button" class="history-filter-btn active" data-hfilter="all">全部 <span data-fcount="all">0</span></button>
+            <button type="button" class="history-filter-btn" data-hfilter="ranked">🏆 排位赛 <span data-fcount="ranked">0</span></button>
+            <button type="button" class="history-filter-btn" data-hfilter="cricket">🦗 斗蛐蛐 <span data-fcount="cricket">0</span></button>
+            <button type="button" class="history-filter-btn" data-hfilter="custom">🎛️ 自定义 <span data-fcount="custom">0</span></button>
+          </div>
+          <button
+            type="button"
+            class="history-fav-filter-btn"
+            id="history-fav-only"
+            role="switch"
+            aria-checked="false"
+            title="只看已收藏的对局（可与左侧模式筛选同时生效）"
+          >
+            <span class="hff-star" aria-hidden="true">★</span>
+            <span>只看收藏</span>
+            <span class="hff-count" id="history-fav-count">0</span>
+          </button>
         </div>
         <button
           type="button"
@@ -137,6 +162,8 @@ export class HistoryModal {
     this.closeBtn = this.card.querySelector<HTMLButtonElement>('#history-close')!;
     this.exportCfgBtn = this.card.querySelector<HTMLButtonElement>('#history-open-export-settings')!;
     this.filterBtns = Array.from(this.card.querySelectorAll<HTMLButtonElement>('[data-hfilter]'));
+    this.favOnlyBtn = this.card.querySelector<HTMLButtonElement>('#history-fav-only')!;
+    this.favCountEl = this.card.querySelector<HTMLElement>('#history-fav-count')!;
     this.exportSlotEl = this.card.querySelector<HTMLDivElement>('#history-export-slot')!;
     this.noticeSlotEl = this.card.querySelector<HTMLDivElement>('#history-notice-slot')!;
     this.bodyEl = this.card.querySelector<HTMLDivElement>('#history-body')!;
@@ -172,7 +199,7 @@ export class HistoryModal {
         return;
       }
       this.clearConfirmReset();
-      void this.store.clearAll();
+      void this.store.clearNonFavorites();
     });
 
     for (const btn of this.filterBtns) {
@@ -185,7 +212,17 @@ export class HistoryModal {
       });
     }
 
+    this.favOnlyBtn.addEventListener('click', () => {
+      this.favoritesOnly = !this.favoritesOnly;
+      this.bodyEl.scrollTop = 0;
+      this.render();
+    });
+
     this.store.onChange(() => {
+      if (this.suppressStoreRefreshCount > 0) {
+        this.suppressStoreRefreshCount--;
+        return;
+      }
       if (this.openState) {
         void this.refresh();
       }
@@ -294,20 +331,61 @@ export class HistoryModal {
 
   private syncHeaderControls() {
     const totalCount = this.summaries.length;
+    const favTotal = this.summaries.filter((m) => m.favorite).length;
+    const unfavTotal = totalCount - favTotal;
     const busy = this.activeExport !== null;
+
     if (this.filter === 'all') {
-      this.countPillEl.textContent = `已保存 ${totalCount} 场 · 各模式上限 ${MAX_HISTORY_PER_MODE}`;
+      this.countPillEl.textContent =
+        favTotal > 0
+          ? `已保存 ${totalCount} 场（含 ${favTotal} 收藏）· 各模式上限 ${MAX_HISTORY_PER_MODE}`
+          : `已保存 ${totalCount} 场 · 各模式上限 ${MAX_HISTORY_PER_MODE}`;
     } else {
       const modeName = this.filter === 'ranked' ? '排位赛' : this.filter === 'cricket' ? '斗蛐蛐' : '自定义';
-      const modeCount = this.filteredSummaries().length;
-      this.countPillEl.textContent = `${modeName} ${modeCount} / ${MAX_HISTORY_PER_MODE} 场`;
+      const modeAll = this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === this.filter);
+      const modeFav = modeAll.filter((m) => m.favorite).length;
+      const modeRegular = modeAll.length - modeFav;
+      this.countPillEl.textContent =
+        modeFav > 0
+          ? `${modeName} ${modeRegular}/${MAX_HISTORY_PER_MODE} + ${modeFav} 收藏`
+          : `${modeName} ${modeRegular} / ${MAX_HISTORY_PER_MODE} 场`;
     }
-    this.clearAllBtn.classList.toggle('hidden', totalCount === 0);
+
+    this.clearAllBtn.classList.toggle('hidden', unfavTotal === 0);
     this.clearAllBtn.classList.toggle('confirm', this.confirmClear);
-    this.clearAllBtn.textContent = this.confirmClear ? '确认清空全部？' : '清空历史';
+    this.clearAllBtn.textContent = this.confirmClear
+      ? favTotal > 0
+        ? `清空未收藏？(保留 ${favTotal} 收藏)`
+        : '确认清空全部？'
+      : '清空历史';
     this.clearAllBtn.disabled = busy;
     this.closeBtn.disabled = busy;
     this.exportCfgBtn.disabled = busy;
+  }
+
+  private syncFilterControls() {
+    const modePool = this.favoritesOnly ? this.summaries.filter((m) => m.favorite) : this.summaries;
+    const filterCounts: Record<HistoryFilter, number> = {
+      all: modePool.length,
+      ranked: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'ranked').length,
+      cricket: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'cricket').length,
+      custom: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'custom').length,
+    };
+    for (const btn of this.filterBtns) {
+      const f = btn.dataset.hfilter as HistoryFilter;
+      btn.classList.toggle('active', f === this.filter);
+      const span = btn.querySelector<HTMLElement>(`[data-fcount="${f}"]`);
+      if (span) span.textContent = String(filterCounts[f]);
+    }
+
+    const modeScopedFavCount = this.summaries.filter((m) => {
+      if (!m.favorite) return false;
+      if (this.filter !== 'all' && getHistoryModeBucket(m.matchMode) !== this.filter) return false;
+      return true;
+    }).length;
+    this.favOnlyBtn.classList.toggle('active', this.favoritesOnly);
+    this.favOnlyBtn.setAttribute('aria-checked', String(this.favoritesOnly));
+    this.favCountEl.textContent = String(modeScopedFavCount);
   }
 
   private async refresh() {
@@ -323,8 +401,11 @@ export class HistoryModal {
   }
 
   private filteredSummaries(): MatchHistorySummary[] {
-    if (this.filter === 'all') return this.summaries;
-    return this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === this.filter);
+    return this.summaries.filter((m) => {
+      if (this.favoritesOnly && !m.favorite) return false;
+      if (this.filter !== 'all' && getHistoryModeBucket(m.matchMode) !== this.filter) return false;
+      return true;
+    });
   }
 
   private updateExportProgressDom() {
@@ -431,8 +512,10 @@ export class HistoryModal {
     const exportPct = isExportingThis ? Math.round((this.activeExport?.progress || 0) * 100) : 0;
     const presetLabel = this.getExportPresetLabel();
 
+    const isFav = Boolean(m.favorite);
+
     return `
-      <div class="history-row ${outcomeCls}" data-history-id="${escapeHtml(m.id)}">
+      <div class="history-row ${outcomeCls} ${isFav ? 'is-favorite' : ''}" data-history-id="${escapeHtml(m.id)}">
         <div class="hm-top">
           <div class="hm-meta-left">
             <span class="hm-outcome ${outcomeCls}">${outcomeText}</span>
@@ -482,6 +565,17 @@ export class HistoryModal {
             </button>
             <button
               type="button"
+              class="hm-fav-btn ${isFav ? 'is-fav' : ''}"
+              data-fav-id="${escapeHtml(m.id)}"
+              aria-pressed="${isFav}"
+              title="${isFav ? '取消收藏（取消后若超出 50 场上限，将在下一场同模式对局后移除）' : '收藏此对局（永久保留，不受每模式 50 场上限控制）'}"
+              aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}"
+              ${busy ? 'disabled' : ''}
+            >
+              ${renderFavoriteStarSvg(isFav)}
+            </button>
+            <button
+              type="button"
               class="hm-del-btn"
               data-delete-id="${escapeHtml(m.id)}"
               title="删除此条对局记录"
@@ -498,40 +592,32 @@ export class HistoryModal {
 
   private render() {
     const totalCount = this.summaries.length;
-    const rankedCount = this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === 'ranked').length;
-    const cricketCount = this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === 'cricket').length;
-    const customCount = this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === 'custom').length;
     const visible = this.filteredSummaries();
     const presetLabel = this.getExportPresetLabel();
 
     this.syncHeaderControls();
+    this.syncFilterControls();
     this.exportCfgBtn.textContent = `⚙️ 导出设置：${presetLabel}`;
-
-    const filterCounts: Record<HistoryFilter, number> = {
-      all: totalCount,
-      ranked: rankedCount,
-      cricket: cricketCount,
-      custom: customCount,
-    };
-    for (const btn of this.filterBtns) {
-      const f = btn.dataset.hfilter as HistoryFilter;
-      btn.classList.toggle('active', f === this.filter);
-      const span = btn.querySelector<HTMLElement>(`[data-fcount="${f}"]`);
-      if (span) span.textContent = String(filterCounts[f]);
-    }
 
     let bodyHtml = '';
     if (this.loading && totalCount === 0) {
       bodyHtml = `<div class="history-empty"><div class="he-title">加载对局历史中...</div></div>`;
     } else if (visible.length === 0) {
+      const hasAnyFav = this.summaries.some((m) => m.favorite);
+      const emptyIcon = this.favoritesOnly ? '★' : '📜';
+      const emptyTitle = this.favoritesOnly ? '暂无收藏的对局' : '暂无对局记录';
       const emptyHint =
         totalCount === 0
           ? `完成任意排位赛、斗蛐蛐或自定义对局后，每个模式各自动保存最近 ${MAX_HISTORY_PER_MODE} 场的完整观战回放。`
-          : '当前筛选条件下暂无对局记录，试试切换到「全部」。';
+          : this.favoritesOnly
+            ? hasAnyFav && this.filter !== 'all'
+              ? '当前模式下暂无收藏的对局，试试切换到「全部」或关闭「只看收藏」。'
+              : `点击对局右侧的星标即可永久收藏，不受每模式 ${MAX_HISTORY_PER_MODE} 场上限限制。`
+            : '当前筛选条件下暂无对局记录，试试切换到「全部」。';
       bodyHtml = `
         <div class="history-empty">
-          <div class="he-icon">📜</div>
-          <div class="he-title">暂无对局记录</div>
+          <div class="he-icon">${emptyIcon}</div>
+          <div class="he-title">${emptyTitle}</div>
           <div class="he-desc">${emptyHint}</div>
         </div>`;
     } else {
@@ -588,6 +674,40 @@ export class HistoryModal {
         const s = summaryById.get(id);
         if (!s) return;
         this.startExport(s);
+      });
+    });
+
+    this.bodyEl.querySelectorAll<HTMLButtonElement>('[data-fav-id]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (this.activeExport) return;
+        const id = btn.dataset.favId!;
+        const s = summaryById.get(id);
+        if (!s) return;
+        const nextFav = !s.favorite;
+        s.favorite = nextFav;
+        this.suppressStoreRefreshCount++;
+        void this.store.setFavorite(id, nextFav).then((updated) => {
+          if (!updated && this.suppressStoreRefreshCount > 0) {
+            this.suppressStoreRefreshCount--;
+          }
+        });
+
+        if (this.favoritesOnly && !nextFav) {
+          this.render();
+          return;
+        }
+
+        // Update row, star button, header count pill, and filter badges strictly in-place (zero flicker!)
+        btn.classList.toggle('is-fav', nextFav);
+        btn.setAttribute('aria-pressed', String(nextFav));
+        btn.title = nextFav
+          ? '取消收藏（取消后若超出 50 场上限，将在下一场同模式对局后移除）'
+          : '收藏此对局（永久保留，不受每模式 50 场上限控制）';
+        btn.setAttribute('aria-label', nextFav ? '取消收藏此对局' : '收藏此对局');
+        btn.innerHTML = renderFavoriteStarSvg(nextFav);
+        btn.closest('.history-row')?.classList.toggle('is-favorite', nextFav);
+        this.syncHeaderControls();
+        this.syncFilterControls();
       });
     });
 

@@ -52,6 +52,7 @@ export interface MatchHistorySummary {
   eloAfter: number | null;
   eloOldRank: number | null;
   eloNewRank: number | null;
+  favorite?: boolean;
 }
 
 export interface MatchReplayPayload {
@@ -118,6 +119,7 @@ export function buildMatchHistoryBundle(
     eloAfter: eloResult ? eloResult.newRating : null,
     eloOldRank: eloResult ? eloResult.oldRank : null,
     eloNewRank: eloResult ? eloResult.newRank : null,
+    favorite: false,
   };
 
   const replay: MatchReplayPayload = {
@@ -198,11 +200,12 @@ export class MatchHistoryStore {
   }
 
   public async saveBundle(bundle: MatchReplayBundle): Promise<void> {
+    const targetBucket = getHistoryModeBucket(bundle.summary.matchMode);
     const db = await this.openDb();
     if (!db) {
       this.memSummaries.set(bundle.summary.id, bundle.summary);
       this.memReplays.set(bundle.replay.id, bundle.replay);
-      this.pruneMemory();
+      this.pruneMemory(targetBucket);
       this.emitChange();
       return;
     }
@@ -219,7 +222,7 @@ export class MatchHistoryStore {
         const allReq = sumStore.getAll();
         allReq.onsuccess = () => {
           const rows = (allReq.result as MatchHistorySummary[]) || [];
-          const staleIds = this.findOverflowIds(rows);
+          const staleIds = this.findOverflowIds(rows, targetBucket);
           for (const oldId of staleIds) {
             sumStore.delete(oldId);
             repStore.delete(oldId);
@@ -234,7 +237,7 @@ export class MatchHistoryStore {
       console.warn('MatchHistoryStore IndexedDB save failed, falling back to memory:', err);
       this.memSummaries.set(bundle.summary.id, bundle.summary);
       this.memReplays.set(bundle.replay.id, bundle.replay);
-      this.pruneMemory();
+      this.pruneMemory(targetBucket);
     }
     this.emitChange();
   }
@@ -243,17 +246,25 @@ export class MatchHistoryStore {
     return rows.sort((a, b) => b.playedAt - a.playedAt || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
   }
 
-  private findOverflowIds(rows: MatchHistorySummary[]): string[] {
+  /**
+   * Computes non-favorited overflow IDs exceeding MAX_HISTORY_PER_MODE.
+   * Favorited records are permanently retained and exempt from the quota.
+   * When targetBucket is specified (during saveBundle), only that mode bucket is pruned,
+   * so an un-favorited older match is evicted only after the next match of that same mode.
+   */
+  public findOverflowIds(rows: MatchHistorySummary[], targetBucket?: HistoryModeBucket): string[] {
+    const buckets: readonly HistoryModeBucket[] = targetBucket ? [targetBucket] : HISTORY_MODE_BUCKETS;
     const byBucket: Record<HistoryModeBucket, MatchHistorySummary[]> = {
       ranked: [],
       cricket: [],
       custom: [],
     };
     for (const r of rows) {
+      if (r.favorite) continue;
       byBucket[getHistoryModeBucket(r.matchMode)].push(r);
     }
     const staleIds: string[] = [];
-    for (const bucket of HISTORY_MODE_BUCKETS) {
+    for (const bucket of buckets) {
       const list = byBucket[bucket];
       if (list.length <= MAX_HISTORY_PER_MODE) continue;
       this.sortSummaries(list);
@@ -264,29 +275,10 @@ export class MatchHistoryStore {
     return staleIds;
   }
 
-  private trimRowsPerMode(rows: MatchHistorySummary[]): MatchHistorySummary[] {
-    const byBucket: Record<HistoryModeBucket, MatchHistorySummary[]> = {
-      ranked: [],
-      cricket: [],
-      custom: [],
-    };
-    for (const r of rows) {
-      byBucket[getHistoryModeBucket(r.matchMode)].push(r);
-    }
-    const kept: MatchHistorySummary[] = [];
-    for (const bucket of HISTORY_MODE_BUCKETS) {
-      const list = byBucket[bucket];
-      if (list.length === 0) continue;
-      this.sortSummaries(list);
-      kept.push(...list.slice(0, MAX_HISTORY_PER_MODE));
-    }
-    return this.sortSummaries(kept);
-  }
-
   public async listSummaries(): Promise<MatchHistorySummary[]> {
     const db = await this.openDb();
     if (!db) {
-      return this.trimRowsPerMode(Array.from(this.memSummaries.values()));
+      return this.sortSummaries(Array.from(this.memSummaries.values()));
     }
 
     try {
@@ -300,10 +292,55 @@ export class MatchHistoryStore {
       const byId = new Map<string, MatchHistorySummary>();
       for (const r of rows) byId.set(r.id, r);
       for (const r of this.memSummaries.values()) byId.set(r.id, r);
-      return this.trimRowsPerMode(Array.from(byId.values()));
+      return this.sortSummaries(Array.from(byId.values()));
     } catch {
-      return this.trimRowsPerMode(Array.from(this.memSummaries.values()));
+      return this.sortSummaries(Array.from(this.memSummaries.values()));
     }
+  }
+
+  /**
+   * Marks or unmarks a match summary as favorite without pruning immediately.
+   * Removing favorite from an older record leaves it in place until the next
+   * match of the same mode triggers per-mode quota pruning.
+   */
+  public async setFavorite(id: string, favorite: boolean): Promise<boolean> {
+    let updated = false;
+    const memRow = this.memSummaries.get(id);
+    if (memRow) {
+      memRow.favorite = favorite;
+      updated = true;
+    }
+
+    const db = await this.openDb();
+    if (db) {
+      try {
+        const dbUpdated = await new Promise<boolean>((resolve, reject) => {
+          const tx = db.transaction([STORE_SUMMARIES], 'readwrite');
+          const sumStore = tx.objectStore(STORE_SUMMARIES);
+          const getReq = sumStore.get(id);
+          let didUpdate = false;
+          getReq.onsuccess = () => {
+            const row = getReq.result as MatchHistorySummary | undefined;
+            if (row) {
+              row.favorite = favorite;
+              sumStore.put(row);
+              didUpdate = true;
+            }
+          };
+          tx.oncomplete = () => resolve(didUpdate);
+          tx.onerror = () => reject(tx.error || new Error('IndexedDB favorite update failed'));
+          tx.onabort = () => reject(tx.error || new Error('IndexedDB favorite update aborted'));
+        });
+        if (dbUpdated) updated = true;
+      } catch (err) {
+        console.warn('MatchHistoryStore setFavorite failed:', err);
+      }
+    }
+
+    if (updated) {
+      this.emitChange();
+    }
+    return updated;
   }
 
   public async getReplayBundle(id: string): Promise<MatchReplayBundle | null> {
@@ -358,6 +395,40 @@ export class MatchHistoryStore {
     this.emitChange();
   }
 
+  public async clearNonFavorites(): Promise<void> {
+    for (const [id, row] of Array.from(this.memSummaries.entries())) {
+      if (!row.favorite) {
+        this.memSummaries.delete(id);
+        this.memReplays.delete(id);
+      }
+    }
+    const db = await this.openDb();
+    if (db) {
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const tx = db.transaction([STORE_SUMMARIES, STORE_REPLAYS], 'readwrite');
+          const sumStore = tx.objectStore(STORE_SUMMARIES);
+          const repStore = tx.objectStore(STORE_REPLAYS);
+          const allReq = sumStore.getAll();
+          allReq.onsuccess = () => {
+            const rows = (allReq.result as MatchHistorySummary[]) || [];
+            for (const row of rows) {
+              if (!row.favorite) {
+                sumStore.delete(row.id);
+                repStore.delete(row.id);
+              }
+            }
+          };
+          tx.oncomplete = () => resolve();
+          tx.onerror = () => reject(tx.error);
+        });
+      } catch {
+        // Ignore
+      }
+    }
+    this.emitChange();
+  }
+
   public async clearAll(): Promise<void> {
     this.memSummaries.clear();
     this.memReplays.clear();
@@ -378,8 +449,8 @@ export class MatchHistoryStore {
     this.emitChange();
   }
 
-  private pruneMemory() {
-    const staleIds = this.findOverflowIds(Array.from(this.memSummaries.values()));
+  private pruneMemory(targetBucket?: HistoryModeBucket) {
+    const staleIds = this.findOverflowIds(Array.from(this.memSummaries.values()), targetBucket);
     for (const oldId of staleIds) {
       this.memSummaries.delete(oldId);
       this.memReplays.delete(oldId);
