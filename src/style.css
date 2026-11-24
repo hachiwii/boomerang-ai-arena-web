@@ -5286,6 +5286,7 @@ body.ui-hidden .lobby-overlay {
 }
 
 .cricket-empty-slot {
+  order: 99;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -5299,6 +5300,10 @@ body.ui-hidden .lobby-overlay {
   padding: 5px 8px;
   text-align: center;
   user-select: none;
+}
+
+.cricket-invited-row.is-receiving-card .cricket-empty-slot.is-last-empty {
+  display: none;
 }
 
 /* Bottom Split: Left = 抽签 (Blue), Right = 落选 (Gray) */
@@ -5399,6 +5404,10 @@ body.ui-hidden .lobby-overlay {
   user-select: none;
 }
 
+.cricket-card-grid:has(.cricket-card) .cricket-zone-empty {
+  display: none;
+}
+
 /* Character Cards */
 .cricket-card {
   display: flex;
@@ -5410,6 +5419,9 @@ body.ui-hidden .lobby-overlay {
   background: rgba(18, 25, 44, 0.88);
   cursor: grab;
   user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+  touch-action: none;
   transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease, opacity 0.14s ease;
 }
 
@@ -5423,12 +5435,39 @@ body.ui-hidden .lobby-overlay {
 }
 
 .cricket-card.is-dragging {
-  opacity: 0.36;
-  transform: scale(0.96);
+  opacity: 0.3;
+  border-style: dashed;
+  border-color: rgba(255, 255, 255, 0.52);
+  box-shadow: none;
 }
 
-.cricket-card.is-drop-before {
-  box-shadow: -3px 0 0 0 #ffffff, 0 0 12px rgba(255, 255, 255, 0.35);
+.cricket-drag-fallback {
+  opacity: 0.96 !important;
+  cursor: grabbing !important;
+  pointer-events: none !important;
+  box-shadow: 0 14px 32px rgba(0, 0, 0, 0.55), 0 0 0 1.5px rgba(255, 255, 255, 0.36) !important;
+  padding: calc(6px * var(--drag-zoom, 1)) calc(8px * var(--drag-zoom, 1));
+  gap: calc(5px * var(--drag-zoom, 1));
+  border-radius: calc(10px * var(--drag-zoom, 1));
+  transition: none !important;
+}
+
+.cricket-drag-fallback > * {
+  zoom: var(--drag-zoom, 1);
+}
+
+body.is-dnd-dragging {
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: grabbing;
+}
+
+body.is-dnd-dragging .lobby-card {
+  touch-action: none;
+}
+
+body.is-dnd-dragging .cricket-card:hover {
+  transform: none;
 }
 
 .cricket-card.is-tier-invited {
@@ -5483,6 +5522,7 @@ body.ui-hidden .lobby-overlay {
   object-fit: cover;
   flex-shrink: 0;
   background: rgba(0, 0, 0, 0.35);
+  pointer-events: none;
 }
 
 .cc-name-wrap {

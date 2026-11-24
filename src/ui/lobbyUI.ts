@@ -1,9 +1,10 @@
+import Sortable from 'sortablejs';
 import { generateBgmSeed } from '../audio/bgm';
 import { CricketFormat, CricketStore, CricketTier } from '../game/cricketStore';
 import { LeaderboardStore } from '../game/leaderboard';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore } from '../game/settings';
 import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
-import { getLogicalViewport, rectToLogical } from '../game/viewport';
+import { clientToLogical, getLogicalViewport, isForcedLandscape, rectToLogical } from '../game/viewport';
 import { getTheme } from '../render/themes';
 import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_PHONE } from './icons';
 import { LeaderboardPanel } from './leaderboardUI';
@@ -194,7 +195,8 @@ export class LobbyUI {
   private mapPoolWarnText: string | null = null;
 
   // Cricket mode transient UI states
-  private draggingBotId: string | null = null;
+  private cricketSortables: Sortable[] = [];
+  private cricketDragCleanup: (() => void) | null = null;
   private cricketNotice: { text: string; kind: 'warn' | 'ok' } | null = null;
   private cricketNoticeTimer: number | null = null;
   private cricketConfirmReset = false;
@@ -402,6 +404,7 @@ export class LobbyUI {
   }
 
   public hide() {
+    this.destroyCricketSortables();
     this.closeDropdown();
     this.closeMapPoolModal();
     this.leaderboardPanel.hideTooltip();
@@ -1128,7 +1131,6 @@ export class LobbyUI {
     return `
       <div
         class="cricket-card is-tier-${tier}"
-        draggable="true"
         data-bot-id="${entry.id}"
         data-bot-tier="${tier}"
         title="${tooltip}"
@@ -1168,7 +1170,7 @@ export class LobbyUI {
         .join('');
 
     const emptyInvitedSlots = Array.from({ length: remainDraw }, (_, i) => `
-      <div class="cricket-empty-slot" aria-hidden="true">
+      <div class="cricket-empty-slot ${i === remainDraw - 1 ? 'is-last-empty' : ''}" aria-hidden="true">
         <span>+ 拖拽角色设为直邀 (${invitedIds.length + i + 1}/${maxP})</span>
       </div>
     `).join('');
@@ -1220,7 +1222,7 @@ export class LobbyUI {
               </div>
               <span class="cz-sub">全部出战 · 不可超过总人数</span>
             </div>
-            <div class="cricket-invited-row" style="--max-invited:${maxP}">
+            <div class="cricket-invited-row" data-drop-list="invited" style="--max-invited:${maxP}">
               ${renderList(invitedIds, 'invited')}
               ${emptyInvitedSlots}
             </div>
@@ -1236,7 +1238,7 @@ export class LobbyUI {
                 </div>
                 <span class="cz-sub">${remainDraw > 0 ? `随机抽取 ${remainDraw} 名补齐` : '名额已由直邀占满'}</span>
               </div>
-              <div class="cricket-card-grid">
+              <div class="cricket-card-grid" data-drop-list="lottery">
                 ${lotteryIds.length > 0 ? renderList(lotteryIds, 'lottery') : '<div class="cricket-zone-empty">拖拽角色卡到此处加入抽签池</div>'}
               </div>
             </section>
@@ -1250,7 +1252,7 @@ export class LobbyUI {
                 </div>
                 <span class="cz-sub">不参与本轮抽签</span>
               </div>
-              <div class="cricket-card-grid">
+              <div class="cricket-card-grid" data-drop-list="excluded">
                 ${excludedIds.length > 0 ? renderList(excludedIds, 'excluded') : '<div class="cricket-zone-empty">拖拽角色卡到此处移出本轮</div>'}
               </div>
             </section>
@@ -1314,7 +1316,25 @@ export class LobbyUI {
     });
   }
 
+  private destroyCricketSortables() {
+    if (this.cricketDragCleanup) {
+      this.cricketDragCleanup();
+      this.cricketDragCleanup = null;
+    }
+    document.body.classList.remove('is-dnd-dragging');
+    for (const s of this.cricketSortables) {
+      try {
+        s.destroy();
+      } catch {
+        // Ignore teardown errors on detached nodes
+      }
+    }
+    this.cricketSortables = [];
+  }
+
   private bindCricketEvents() {
+    this.destroyCricketSortables();
+
     this.container.querySelectorAll<HTMLButtonElement>('[data-cricket-format]').forEach((btn) => {
       btn.addEventListener('click', () => {
         const next = btn.dataset.cricketFormat as CricketFormat;
@@ -1338,100 +1358,294 @@ export class LobbyUI {
 
     this.bindCricketResetButtons();
 
-    const clearDragVisuals = () => {
-      this.container.querySelectorAll('.cricket-zone').forEach((z) => {
-        z.classList.remove('is-drag-over', 'is-drag-full');
-      });
-      this.container.querySelectorAll('.cricket-card').forEach((c) => {
-        c.classList.remove('is-dragging', 'is-drop-before');
-      });
+    const boardEl = this.container.querySelector<HTMLElement>('.cricket-board');
+    const panelEl = this.container.querySelector<HTMLElement>('.cricket-panel');
+    const invitedZoneEl = this.container.querySelector<HTMLElement>('.cricket-zone-invited');
+    const invitedListEl = this.container.querySelector<HTMLElement>('[data-drop-list="invited"]');
+    const zoneEls = Array.from(this.container.querySelectorAll<HTMLElement>('.cricket-zone[data-drop-tier]'));
+    const listEls = Array.from(this.container.querySelectorAll<HTMLElement>('[data-drop-list]'));
+    if (!boardEl || listEls.length === 0) return;
+
+    const extractClientPoint = (ev: Event | null | undefined): [number, number] | null => {
+      if (!ev) return null;
+      const te = ev as TouchEvent;
+      if (te.touches && te.touches.length > 0) {
+        return [te.touches[0].clientX, te.touches[0].clientY];
+      }
+      if (te.changedTouches && te.changedTouches.length > 0) {
+        return [te.changedTouches[0].clientX, te.changedTouches[0].clientY];
+      }
+      const me = ev as MouseEvent;
+      if (typeof me.clientX === 'number' && typeof me.clientY === 'number') {
+        return [me.clientX, me.clientY];
+      }
+      return null;
     };
 
-    this.container.querySelectorAll<HTMLElement>('.cricket-card').forEach((card) => {
-      card.addEventListener('dragstart', (e) => {
-        const botId = card.dataset.botId;
-        if (!botId) return;
-        this.draggingBotId = botId;
-        if (e.dataTransfer) {
-          e.dataTransfer.setData('text/plain', botId);
-          e.dataTransfer.effectAllowed = 'move';
+    const findZoneAtPoint = (cx: number, cy: number): HTMLElement | null => {
+      for (const z of zoneEls) {
+        const r = z.getBoundingClientRect();
+        if (cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom) {
+          return z;
         }
-        window.requestAnimationFrame(() => card.classList.add('is-dragging'));
-      });
+      }
+      return null;
+    };
 
-      card.addEventListener('dragend', () => {
-        this.draggingBotId = null;
-        clearDragVisuals();
-      });
-    });
+    const triggerInvitedFullFeedback = () => {
+      this.cricketShakeInvited = true;
+      const invZone = this.container.querySelector<HTMLElement>('.cricket-zone-invited');
+      if (invZone) {
+        invZone.classList.remove('is-shake');
+        void invZone.offsetWidth;
+        invZone.classList.add('is-shake');
+      }
+      this.showCricketNotice(`直邀数量不能超过比赛总人数（当前上限 ${this.cricket.getMaxPlayers()} 人）`, 'warn');
+      window.setTimeout(() => {
+        this.cricketShakeInvited = false;
+        this.container.querySelector<HTMLElement>('.cricket-zone-invited')?.classList.remove('is-shake');
+      }, 420);
+    };
 
-    this.container.querySelectorAll<HTMLElement>('.cricket-zone').forEach((zoneEl) => {
-      const targetTier = zoneEl.dataset.dropTier as CricketTier;
+    const clearDragVisuals = () => {
+      zoneEls.forEach((z) => z.classList.remove('is-drag-over', 'is-drag-full'));
+      invitedListEl?.classList.remove('is-receiving-card');
+    };
 
-      zoneEl.addEventListener('dragover', (e) => {
-        e.preventDefault();
-        const botId = this.draggingBotId;
-        const maxP = this.cricket.getMaxPlayers();
-        const isFull =
-          targetTier === 'invited' &&
-          this.cricket.getTierIds('invited').length >= maxP &&
-          (!botId || this.cricket.getBotTier(botId) !== 'invited');
+    const syncInvitedReceivingState = (fromTier: CricketTier) => {
+      if (!invitedListEl) return;
+      const count = invitedListEl.querySelectorAll('.cricket-card').length;
+      const baseCount = this.cricket.getTierIds('invited').length;
+      invitedListEl.classList.toggle('is-receiving-card', fromTier !== 'invited' && count > baseCount);
+    };
 
-        if (e.dataTransfer) {
-          e.dataTransfer.dropEffect = 'move';
+    // Track initial press point in logical coordinates so forced-landscape CSS rotation
+    // keeps the floating SortableJS fallback clone locked 1:1 under the user's finger.
+    let tapClientX = 0;
+    let tapClientY = 0;
+    const onBoardPress = (ev: Event) => {
+      const pt = extractClientPoint(ev);
+      if (pt) {
+        tapClientX = pt[0];
+        tapClientY = pt[1];
+      }
+    };
+    boardEl.addEventListener('pointerdown', onBoardPress, { capture: true, passive: true });
+    boardEl.addEventListener('touchstart', onBoardPress, { capture: true, passive: true });
+
+    let activeFromTier: CricketTier | null = null;
+    let lastClientX = 0;
+    let lastClientY = 0;
+    let hasLastPoint = false;
+    let tapLogicalX = 0;
+    let tapLogicalY = 0;
+
+    const getFallbackEl = () => document.body.querySelector<HTMLElement>('.cricket-drag-fallback');
+
+    const updateHoverVisuals = (cx: number, cy: number) => {
+      if (!activeFromTier) return;
+      const maxP = this.cricket.getMaxPlayers();
+      const invitedAtCap = this.cricket.getTierIds('invited').length >= maxP;
+      const hoveredZone = findZoneAtPoint(cx, cy);
+      for (const z of zoneEls) {
+        if (z !== hoveredZone) {
+          z.classList.remove('is-drag-over', 'is-drag-full');
+          continue;
         }
-        zoneEl.classList.toggle('is-drag-full', isFull);
-        zoneEl.classList.toggle('is-drag-over', !isFull);
+        const tier = z.dataset.dropTier as CricketTier;
+        const isFull = tier === 'invited' && activeFromTier !== 'invited' && invitedAtCap;
+        z.classList.toggle('is-drag-full', isFull);
+        z.classList.toggle('is-drag-over', !isFull);
+      }
+    };
 
-        this.container.querySelectorAll('.cricket-card.is-drop-before').forEach((c) => {
-          c.classList.remove('is-drop-before');
-        });
-        if (!isFull) {
-          const overCard = (e.target as Element | null)?.closest<HTMLElement>('.cricket-card');
-          if (overCard && overCard.dataset.botId && overCard.dataset.botId !== botId) {
-            overCard.classList.add('is-drop-before');
+    const onDragPointerMove = (ev: Event) => {
+      if (!activeFromTier) return;
+      const pt = extractClientPoint(ev);
+      if (!pt) return;
+      lastClientX = pt[0];
+      lastClientY = pt[1];
+      hasLastPoint = true;
+      updateHoverVisuals(lastClientX, lastClientY);
+
+      if (isForcedLandscape()) {
+        const fb = getFallbackEl();
+        if (fb) {
+          const [lx, ly] = clientToLogical(lastClientX, lastClientY);
+          fb.style.transform = `translate3d(${(lx - tapLogicalX).toFixed(1)}px, ${(ly - tapLogicalY).toFixed(1)}px, 0)`;
+        }
+      }
+    };
+
+    const stopActiveDragTracking = () => {
+      activeFromTier = null;
+      hasLastPoint = false;
+      window.removeEventListener('pointermove', onDragPointerMove);
+      window.removeEventListener('touchmove', onDragPointerMove);
+      window.removeEventListener('mousemove', onDragPointerMove);
+      document.body.classList.remove('is-dnd-dragging');
+      clearDragVisuals();
+    };
+
+    this.cricketDragCleanup = () => {
+      boardEl.removeEventListener('pointerdown', onBoardPress, true);
+      boardEl.removeEventListener('touchstart', onBoardPress, true);
+      stopActiveDragTracking();
+    };
+
+    for (const listEl of listEls) {
+      const tier = listEl.dataset.dropList as CricketTier;
+      const sortable = Sortable.create(listEl, {
+        group: {
+          name: 'cricket-roster',
+          pull: true,
+          put: (_to, from) => {
+            if (tier !== 'invited') return true;
+            if (from.el === listEl) return true;
+            return this.cricket.getTierIds('invited').length < this.cricket.getMaxPlayers();
+          },
+        },
+        draggable: '.cricket-card',
+        animation: 150,
+        easing: 'cubic-bezier(0.2, 0.9, 0.3, 1)',
+        forceFallback: true,
+        fallbackOnBody: true,
+        fallbackTolerance: 4,
+        emptyInsertThreshold: 24,
+        ghostClass: 'is-dragging',
+        chosenClass: 'is-chosen',
+        fallbackClass: 'cricket-drag-fallback',
+        onStart: (evt) => {
+          activeFromTier = (evt.from.dataset.dropList as CricketTier) || tier;
+          document.body.classList.add('is-dnd-dragging');
+
+          const [tlx, tly] = clientToLogical(tapClientX, tapClientY);
+          tapLogicalX = tlx;
+          tapLogicalY = tly;
+          lastClientX = tapClientX;
+          lastClientY = tapClientY;
+          hasLastPoint = true;
+
+          const fb = getFallbackEl();
+          if (fb) {
+            const zoomVal = Number.parseFloat(panelEl?.style.zoom || '1') || 1;
+            if (Math.abs(zoomVal - 1) > 0.005) {
+              fb.style.setProperty('--drag-zoom', zoomVal.toFixed(3));
+            }
+            if (isForcedLandscape()) {
+              const lr = rectToLogical(evt.item.getBoundingClientRect());
+              fb.style.left = `${lr.left.toFixed(1)}px`;
+              fb.style.top = `${lr.top.toFixed(1)}px`;
+              fb.style.width = `${lr.width.toFixed(1)}px`;
+              fb.style.height = `${lr.height.toFixed(1)}px`;
+              fb.style.transform = 'translate3d(0px, 0px, 0)';
+            }
           }
-        }
-      });
 
-      zoneEl.addEventListener('dragleave', (e) => {
-        const rel = e.relatedTarget as Node | null;
-        if (rel && zoneEl.contains(rel)) return;
-        zoneEl.classList.remove('is-drag-over', 'is-drag-full');
-        zoneEl.querySelectorAll('.cricket-card.is-drop-before').forEach((c) => {
-          c.classList.remove('is-drop-before');
-        });
-      });
-
-      zoneEl.addEventListener('drop', (e) => {
-        e.preventDefault();
-        const botId = this.draggingBotId || e.dataTransfer?.getData('text/plain') || '';
-        this.draggingBotId = null;
-        clearDragVisuals();
-        if (!botId) return;
-
-        const overCard = (e.target as Element | null)?.closest<HTMLElement>('.cricket-card');
-        const beforeId = overCard && overCard.dataset.botId !== botId ? overCard.dataset.botId : null;
-        const res = this.cricket.moveBot(botId, targetTier, beforeId);
-        if (!res.ok && res.reason === 'invited_full') {
-          this.cricketShakeInvited = true;
-          const invZone = this.container.querySelector<HTMLElement>('.cricket-zone-invited');
-          if (invZone) {
-            invZone.classList.remove('is-shake');
-            void invZone.offsetWidth;
-            invZone.classList.add('is-shake');
+          window.addEventListener('pointermove', onDragPointerMove, { passive: true });
+          window.addEventListener('touchmove', onDragPointerMove, { passive: true });
+          window.addEventListener('mousemove', onDragPointerMove, { passive: true });
+        },
+        onChange: () => {
+          if (activeFromTier) {
+            syncInvitedReceivingState(activeFromTier);
           }
-          this.showCricketNotice(`直邀数量不能超过比赛总人数（当前上限 ${this.cricket.getMaxPlayers()} 人）`, 'warn');
-          window.setTimeout(() => {
-            this.cricketShakeInvited = false;
-            this.container.querySelector<HTMLElement>('.cricket-zone-invited')?.classList.remove('is-shake');
-          }, 420);
-          return;
-        }
-        this.cricketNotice = null;
-        this.render();
+        },
+        onAdd: () => {
+          if (activeFromTier) {
+            syncInvitedReceivingState(activeFromTier);
+          }
+        },
+        onRemove: () => {
+          if (activeFromTier) {
+            syncInvitedReceivingState(activeFromTier);
+          }
+        },
+        onEnd: (evt) => {
+          const fromTier = activeFromTier ?? (evt.from.dataset.dropList as CricketTier);
+          const endPt = extractClientPoint((evt as unknown as { originalEvent?: Event }).originalEvent);
+          if (endPt) {
+            lastClientX = endPt[0];
+            lastClientY = endPt[1];
+            hasLastPoint = true;
+          }
+          const finalX = lastClientX;
+          const finalY = lastClientY;
+          const hadPoint = hasLastPoint;
+          stopActiveDragTracking();
+
+          const botId = evt.item.dataset.botId;
+          if (!botId) return;
+
+          const toTier = evt.to.dataset.dropList as CricketTier | undefined;
+          const nextCardBeforeId = (item: HTMLElement): string | null => {
+            let sib = item.nextElementSibling;
+            while (sib) {
+              if (sib instanceof HTMLElement && sib.classList.contains('cricket-card') && sib.dataset.botId && sib.dataset.botId !== botId) {
+                return sib.dataset.botId;
+              }
+              sib = sib.nextElementSibling;
+            }
+            return null;
+          };
+
+          // Check actual final pointer zone first so fast flicks across an intermediate zone
+          // (faster than SortableJS's internal dragover throttle) or drops on zone headers
+          // always land in the zone actually under the user's finger/cursor.
+          const hoveredZone = hadPoint ? findZoneAtPoint(finalX, finalY) : null;
+          const hoveredTier = hoveredZone?.dataset.dropTier as CricketTier | undefined;
+          if (hoveredTier && hoveredTier !== toTier) {
+            if (
+              hoveredTier === 'invited' &&
+              fromTier !== 'invited' &&
+              invitedZoneEl &&
+              this.cricket.getTierIds('invited').length >= this.cricket.getMaxPlayers()
+            ) {
+              if (evt.to !== evt.from) this.render();
+              triggerInvitedFullFeedback();
+              return;
+            }
+            if (hoveredTier !== fromTier) {
+              const res = this.cricket.moveBot(botId, hoveredTier, null);
+              if (!res.ok && res.reason === 'invited_full') {
+                if (evt.to !== evt.from) this.render();
+                triggerInvitedFullFeedback();
+                return;
+              }
+              this.cricketNotice = null;
+              this.render();
+              return;
+            }
+            // User swept across another zone and returned back to the original zone
+            if (evt.to !== evt.from) {
+              this.render();
+            }
+            return;
+          }
+
+          // Case 1: SortableJS moved the card across containers
+          if (toTier && evt.to !== evt.from) {
+            const res = this.cricket.moveBot(botId, toTier, nextCardBeforeId(evt.item));
+            if (!res.ok && res.reason === 'invited_full') {
+              this.render();
+              triggerInvitedFullFeedback();
+              return;
+            }
+            this.cricketNotice = null;
+            this.render();
+            return;
+          }
+
+          // Case 2: Reordered within the same zone
+          if (toTier && evt.oldDraggableIndex !== evt.newDraggableIndex) {
+            this.cricket.moveBot(botId, toTier, nextCardBeforeId(evt.item));
+            this.cricketNotice = null;
+            this.render();
+          }
+        },
       });
-    });
+      this.cricketSortables.push(sortable);
+    }
   }
 
   private renderCustomBody(): string {
@@ -1592,6 +1806,7 @@ export class LobbyUI {
   }
 
   private render() {
+    this.destroyCricketSortables();
     this.closeDropdown();
     const viewKey = `${this.activeTab}:${this.showLeaderboard ? 'lb' : 'main'}`;
     const prevScrollTop =

@@ -64,6 +64,7 @@ export class AutoFitter {
   }
 
   private runAll() {
+    if (document.body.classList.contains('is-dnd-dragging')) return;
     const on = this.enabled();
     for (const r of this.rules) {
       const targets = r.targets();
