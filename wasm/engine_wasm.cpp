@@ -1,6 +1,9 @@
 #define DART_NO_MAIN
 #include "dart.hpp"
 #include <emscripten/emscripten.h>
+#include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -13,29 +16,301 @@ size_t g_last_event_idx = 0;
 std::string g_ret_buf;
 std::string g_err_buf;
 
-std::string json_escape(const std::string& s) {
-    std::string out;
-    out.reserve(s.size() + 8);
-    for (char c : s) {
-        if (c == '"' || c == '\\') { out += '\\'; out += c; }
-        else if (c == '\n') out += "\\n";
-        else if (c == '\r') {}
-        else out += c;
+enum SymOp : int {
+    SYM_ID = 0,
+    SYM_LR = 1,
+    SYM_TB = 2,
+    SYM_R180 = 3,
+    SYM_R90 = 4,
+    SYM_R270 = 5,
+    SYM_D1 = 6,
+    SYM_D2 = 7,
+};
+
+inline void apply_sym_point(dart::i64 W, dart::i64 H, int op, dart::i64 x, dart::i64 y, dart::i64& ox, dart::i64& oy) {
+    switch (op) {
+        case SYM_ID:   ox = x;     oy = y;     break;
+        case SYM_LR:   ox = W - x; oy = y;     break;
+        case SYM_TB:   ox = x;     oy = H - y; break;
+        case SYM_R180: ox = W - x; oy = H - y; break;
+        case SYM_R90:  ox = W - y; oy = x;     break;
+        case SYM_R270: ox = y;     oy = W - x; break;
+        case SYM_D1:   ox = y;     oy = x;     break;
+        case SYM_D2:   ox = W - y; oy = W - x; break;
+        default:       ox = x;     oy = y;     break;
     }
-    return out;
 }
 
-}  // namespace
-
-extern "C" {
-
-EMSCRIPTEN_KEEPALIVE
-const char* engine_last_error() {
-    return g_err_buf.c_str();
+inline void apply_sym_vec(int op, dart::i64 dx, dart::i64 dy, dart::i64& ox, dart::i64& oy) {
+    apply_sym_point(0, 0, op, dx, dy, ox, oy);
 }
 
-EMSCRIPTEN_KEEPALIVE
-int engine_init(const char* map_text, int n_players, unsigned int seed) {
+inline bool circle_hits_pit(const dart::Map& M, dart::i64 r, dart::i64 x, dart::i64 y) {
+    const int cx = dart::cell_index(x), cy = dart::cell_index(y);
+    const dart::i64 r2 = r * r;
+    for (int gy = cy - 1; gy <= cy + 1; ++gy) {
+        for (int gx = cx - 1; gx <= cx + 1; ++gx) {
+            if (M.inside(gx, gy) && M.at(gx, gy) != dart::C_PIT) continue;
+            const dart::i64 qx = dart::iclamp(x, dart::i64(gx) * dart::CELL, dart::i64(gx + 1) * dart::CELL);
+            const dart::i64 qy = dart::iclamp(y, dart::i64(gy) * dart::CELL, dart::i64(gy + 1) * dart::CELL);
+            const dart::i64 dx = x - qx, dy = y - qy;
+            if (dx * dx + dy * dy < r2) return true;
+        }
+    }
+    return false;
+}
+
+struct OrbitMember {
+    int seat;
+    int sym_op;  // transforms representative's (dx, dy) into this seat's offset
+};
+
+// Randomize spawns uniformly inside a circle of radius cf.see_r (grass detection radius = 2500mm)
+// centered at each original map spawn point, while automatically detecting and preserving
+// the original spawns' geometric symmetry (Klein-4, C4, R180, LR, TB, diagonals, or partial pairs).
+void randomize_spawns_symmetric(const dart::Config& cf, const dart::Map& m, dart::u64 spawn_seed, dart::i64* sx, dart::i64* sy) {
+    const int md = int(dart::iclamp(cf.mode, 0, 2));
+    const int np = dart::MODE_PLAYERS[md];
+    dart::i64 orig_x[dart::MAXP] = {};
+    dart::i64 orig_y[dart::MAXP] = {};
+    for (int k = 0; k < np; ++k) {
+        orig_x[k] = m.spx[md][k];
+        orig_y[k] = m.spy[md][k];
+        sx[k] = orig_x[k];
+        sy[k] = orig_y[k];
+    }
+    const dart::i64 R = cf.see_r;
+    if (spawn_seed == 0 || R <= 0) return;
+
+    const dart::i64 W = m.width();
+    const dart::i64 H = m.height();
+    const bool is_square = (W == H);
+
+    // 1. Detect free symmetry group acting on the original spawns (no fixed points, so 2D disk never collapses to 1D)
+    auto is_valid_free_sym = [&](int op, int perm_out[dart::MAXP]) -> bool {
+        if (op >= SYM_R90 && !is_square) return false;
+        bool used[dart::MAXP] = {};
+        for (int k = 0; k < np; ++k) {
+            dart::i64 ox, oy;
+            apply_sym_point(W, H, op, orig_x[k], orig_y[k], ox, oy);
+            int match = -1;
+            for (int j = 0; j < np; ++j) {
+                if (std::llabs(ox - orig_x[j]) <= 1 && std::llabs(oy - orig_y[j]) <= 1) {
+                    match = j;
+                    break;
+                }
+            }
+            if (match < 0 || match == k || used[match]) return false;
+            used[match] = true;
+            perm_out[k] = match;
+        }
+        return true;
+    };
+
+    int p_lr[dart::MAXP] = {}, p_tb[dart::MAXP] = {}, p_r180[dart::MAXP] = {};
+    int p_r90[dart::MAXP] = {}, p_r270[dart::MAXP] = {}, p_d1[dart::MAXP] = {}, p_d2[dart::MAXP] = {};
+    const bool has_lr = is_valid_free_sym(SYM_LR, p_lr);
+    const bool has_tb = is_valid_free_sym(SYM_TB, p_tb);
+    const bool has_r180 = is_valid_free_sym(SYM_R180, p_r180);
+    const bool has_r90 = is_square && is_valid_free_sym(SYM_R90, p_r90);
+    const bool has_r270 = is_square && is_valid_free_sym(SYM_R270, p_r270);
+    const bool has_d1 = is_square && is_valid_free_sym(SYM_D1, p_d1);
+    const bool has_d2 = is_square && is_valid_free_sym(SYM_D2, p_d2);
+
+    std::vector<std::vector<OrbitMember>> orbits;
+    bool assigned[dart::MAXP] = {};
+
+    auto build_group_orbits = [&](const std::vector<std::pair<int, const int*>>& ops) {
+        for (int k = 0; k < np; ++k) {
+            if (assigned[k]) continue;
+            std::vector<OrbitMember> orb;
+            orb.push_back({k, SYM_ID});
+            assigned[k] = true;
+            for (const auto& [op, perm] : ops) {
+                int target = perm[k];
+                if (!assigned[target]) {
+                    orb.push_back({target, op});
+                    assigned[target] = true;
+                }
+            }
+            orbits.push_back(std::move(orb));
+        }
+    };
+
+    if (has_lr && has_tb && has_r180) {
+        build_group_orbits({{SYM_LR, p_lr}, {SYM_R180, p_r180}, {SYM_TB, p_tb}});
+    } else if (has_r90 && has_r180 && has_r270) {
+        build_group_orbits({{SYM_R90, p_r90}, {SYM_R180, p_r180}, {SYM_R270, p_r270}});
+    } else if (has_r180) {
+        build_group_orbits({{SYM_R180, p_r180}});
+    } else if (has_lr) {
+        build_group_orbits({{SYM_LR, p_lr}});
+    } else if (has_tb) {
+        build_group_orbits({{SYM_TB, p_tb}});
+    } else if (has_d1) {
+        build_group_orbits({{SYM_D1, p_d1}});
+    } else if (has_d2) {
+        build_group_orbits({{SYM_D2, p_d2}});
+    } else {
+        // Partial pairwise symmetry fallback (e.g. yinyang 4p where seats 0 & 2 are exact R180 partners)
+        const int cand_ops[5] = {SYM_R180, SYM_LR, SYM_TB, SYM_D1, SYM_D2};
+        const int num_cand = is_square ? 5 : 3;
+        for (int oi = 0; oi < num_cand; ++oi) {
+            const int op = cand_ops[oi];
+            for (int u = 0; u < np; ++u) {
+                if (assigned[u]) continue;
+                dart::i64 ox, oy;
+                apply_sym_point(W, H, op, orig_x[u], orig_y[u], ox, oy);
+                for (int v = u + 1; v < np; ++v) {
+                    if (assigned[v]) continue;
+                    if (std::llabs(ox - orig_x[v]) <= 1 && std::llabs(oy - orig_y[v]) <= 1) {
+                        orbits.push_back({{u, SYM_ID}, {v, op}});
+                        assigned[u] = true;
+                        assigned[v] = true;
+                        break;
+                    }
+                }
+            }
+        }
+        for (int u = 0; u < np; ++u) {
+            if (!assigned[u]) {
+                orbits.push_back({{u, SYM_ID}});
+                assigned[u] = true;
+            }
+        }
+    }
+
+    // 2. Compute walkable connected component from each original spawn so players never land on isolated islands
+    std::vector<std::vector<uint8_t>> reachable(static_cast<size_t>(np));
+    for (int k = 0; k < np; ++k) {
+        std::vector<uint8_t> vis(size_t(m.nx) * m.ny, 0);
+        int sgx = dart::iclamp(dart::cell_index(orig_x[k]), 0, m.nx - 1);
+        int sgy = dart::iclamp(dart::cell_index(orig_y[k]), 0, m.ny - 1);
+        int sc = m.at(sgx, sgy);
+        if (sc == dart::C_FLOOR || sc == dart::C_GRASS) {
+            std::vector<int> q;
+            q.reserve(size_t(m.nx) * m.ny);
+            vis[size_t(sgy) * m.nx + sgx] = 1;
+            q.push_back(sgy * m.nx + sgx);
+            static const int dxs[4] = {1, -1, 0, 0};
+            static const int dys[4] = {0, 0, 1, -1};
+            for (size_t qi = 0; qi < q.size(); ++qi) {
+                int idx = q[qi];
+                int cx = idx % m.nx;
+                int cy = idx / m.nx;
+                for (int dir = 0; dir < 4; ++dir) {
+                    int nx2 = cx + dxs[dir];
+                    int ny2 = cy + dys[dir];
+                    if (!m.inside(nx2, ny2)) continue;
+                    size_t nidx = size_t(ny2) * m.nx + nx2;
+                    if (vis[nidx]) continue;
+                    int c = m.at(nx2, ny2);
+                    if (c != dart::C_FLOOR && c != dart::C_GRASS) continue;
+                    vis[nidx] = 1;
+                    q.push_back(int(nidx));
+                }
+            }
+        }
+        reachable[size_t(k)] = std::move(vis);
+    }
+
+    // 3. Minimum pairwise separation between distinct spawns (2500mm, capped at original map's min distance)
+    dart::i64 min_sep_d2 = dart::i64(2500) * 2500;
+    for (int i = 0; i < np; ++i) {
+        for (int j = i + 1; j < np; ++j) {
+            dart::i64 ddx = orig_x[i] - orig_x[j];
+            dart::i64 ddy = orig_y[i] - orig_y[j];
+            dart::i64 d2 = ddx * ddx + ddy * ddy;
+            if (d2 < min_sep_d2) min_sep_d2 = d2;
+        }
+    }
+
+    auto point_valid = [&](int seat, dart::i64 x, dart::i64 y, bool strict_pit) -> bool {
+        if (x < cf.body_r || y < cf.body_r || x > W - cf.body_r || y > H - cf.body_r) return false;
+        const int c = dart::cell_of_point(cf, m, x, y, 0);
+        if (c != dart::C_FLOOR && c != dart::C_GRASS) return false;
+        if (dart::circle_hits_wall(m, cf.body_r, x, y)) return false;
+        if (strict_pit && circle_hits_pit(m, cf.body_r, x, y)) return false;
+        int gx[4], gy[4];
+        const int ncells = dart::point_cells(x, y, gx, gy);
+        bool any_reach = false;
+        const auto& vis = reachable[size_t(seat)];
+        for (int i = 0; i < ncells; ++i) {
+            if (m.inside(gx[i], gy[i]) && vis[size_t(gy[i]) * m.nx + gx[i]]) {
+                any_reach = true;
+                break;
+            }
+        }
+        return any_reach;
+    };
+
+    // 4. Rejection-sample one uniform (dx, dy) in disk dx^2 + dy^2 <= R^2 per symmetry orbit
+    dart::SplitMix64 rng(spawn_seed * 0x9E3779B97F4A7C15ULL + 0x51ED270B27C6F3A1ULL);
+    const dart::i64 R2 = R * R;
+    bool placed[dart::MAXP] = {};
+
+    for (const auto& orb : orbits) {
+        bool found = false;
+        for (int pass = 0; pass < 2 && !found; ++pass) {
+            const bool strict_pit = (pass == 0);
+            const int max_disk_tries = (pass == 0) ? 512 : 256;
+            int disk_tries = 0;
+            for (int raw = 0; raw < max_disk_tries * 4 && disk_tries < max_disk_tries; ++raw) {
+                const dart::i64 dx = rng.range(-R, R);
+                const dart::i64 dy = rng.range(-R, R);
+                if (dx * dx + dy * dy > R2) continue;
+                ++disk_tries;
+
+                dart::i64 tx[dart::MAXP];
+                dart::i64 ty[dart::MAXP];
+                bool ok = true;
+                for (size_t i = 0; i < orb.size() && ok; ++i) {
+                    const int u = orb[i].seat;
+                    dart::i64 ox, oy;
+                    apply_sym_vec(orb[i].sym_op, dx, dy, ox, oy);
+                    tx[i] = orig_x[u] + ox;
+                    ty[i] = orig_y[u] + oy;
+                    if (!point_valid(u, tx[i], ty[i], strict_pit)) {
+                        ok = false;
+                        break;
+                    }
+                    // Check separation against intra-orbit peers
+                    for (size_t j = 0; j < i; ++j) {
+                        const dart::i64 sx_d = tx[i] - tx[j];
+                        const dart::i64 sy_d = ty[i] - ty[j];
+                        if (sx_d * sx_d + sy_d * sy_d < min_sep_d2) {
+                            ok = false;
+                            break;
+                        }
+                    }
+                    // Check separation against already-placed orbits
+                    for (int other = 0; other < np && ok; ++other) {
+                        if (!placed[other]) continue;
+                        const dart::i64 sx_d = tx[i] - sx[other];
+                        const dart::i64 sy_d = ty[i] - sy[other];
+                        if (sx_d * sx_d + sy_d * sy_d < min_sep_d2) {
+                            ok = false;
+                        }
+                    }
+                }
+                if (ok) {
+                    for (size_t i = 0; i < orb.size(); ++i) {
+                        const int u = orb[i].seat;
+                        sx[u] = tx[i];
+                        sy[u] = ty[i];
+                    }
+                    found = true;
+                    break;
+                }
+            }
+        }
+        for (const auto& mem : orb) {
+            placed[mem.seat] = true;
+        }
+    }
+}
+
+int init_engine_impl(const char* map_text, int n_players, unsigned int seed, unsigned int spawn_seed) {
     g_err_buf.clear();
     if (n_players < 2 || n_players > 4) {
         g_err_buf = "n_players must be 2..4";
@@ -75,16 +350,69 @@ int engine_init(const char* map_text, int n_players, unsigned int seed) {
         return 0;
     }
 
-    g_game = std::make_unique<dart::Game>(cf, m, true, dart::u64(seed));
-
-    if (n_players == 3) {
-        // Pick 3 well-spaced seats from the 4 FFA spawns (0, 1, 2)
-        g_game->n = 3;
+    if (spawn_seed != 0) {
+        // Bypass legacy square jitter_spawns and apply symmetry-preserving circular randomization (radius = see_r)
+        g_game = std::make_unique<dart::Game>(cf, m, true, dart::u64(0));
+        g_game->seed = dart::u64(seed);
+        randomize_spawns_symmetric(cf, *m, dart::u64(spawn_seed), g_game->spx, g_game->spy);
+        const dart::i64 W = m->width(), H = m->height();
+        for (int k = 0; k < g_game->n; ++k) {
+            dart::Player& P = g_game->p[k];
+            P.x = g_game->spx[k];
+            P.y = g_game->spy[k];
+            P.px = P.x;
+            P.py = P.y;
+            P.face = dart::iatan2(H / 2 - P.y, W / 2 - P.x);
+            g_game->d[k].x = P.x;
+            g_game->d[k].y = P.y;
+        }
+        if (n_players == 3) {
+            // Pick 3 well-spaced seats from the 4 FFA spawns (0, 1, 2)
+            g_game->n = 3;
+        }
         g_game->snapshot();
+    } else {
+        // Legacy engine_init path: 100% backward compatible with old seeds and tests
+        g_game = std::make_unique<dart::Game>(cf, m, true, dart::u64(seed));
+        if (n_players == 3) {
+            g_game->n = 3;
+            g_game->snapshot();
+        }
     }
 
     g_last_event_idx = 0;
     return 1;
+}
+
+std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        if (c == '"' || c == '\\') { out += '\\'; out += c; }
+        else if (c == '\n') out += "\\n";
+        else if (c == '\r') {}
+        else out += c;
+    }
+    return out;
+}
+
+}  // namespace
+
+extern "C" {
+
+EMSCRIPTEN_KEEPALIVE
+const char* engine_last_error() {
+    return g_err_buf.c_str();
+}
+
+EMSCRIPTEN_KEEPALIVE
+int engine_init(const char* map_text, int n_players, unsigned int seed) {
+    return init_engine_impl(map_text, n_players, seed, 0);
+}
+
+EMSCRIPTEN_KEEPALIVE
+int engine_init_with_spawn_seed(const char* map_text, int n_players, unsigned int seed, unsigned int spawn_seed) {
+    return init_engine_impl(map_text, n_players, seed, spawn_seed);
 }
 
 EMSCRIPTEN_KEEPALIVE

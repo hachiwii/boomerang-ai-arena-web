@@ -100,12 +100,26 @@ export interface MatchConfig {
   mapMeta: MapMeta;
   slots: SlotConfig[];
   seed: number;
+  spawnSeed?: number; // Independent RNG seed for symmetric circular spawn randomization (radius = see_r)
   bgmSeed?: number; // Independent RNG seed for special BGM selection (re-rolled on Custom restart)
   speed: number; // 0.1 .. 2.0 (fixed 1.0 in ranked)
   cliffGuard: boolean; // Prevent human from walking off cliffs
   dashGuard?: boolean; // Dash-tail 25% cliff save in WASM engine
   meleeAssist?: boolean; // Enables 30° human dart-block cone in WASM engine (20° when off)
   humanSlashTicks?: number; // 5 (normal) | 3 (strict) | 0 (AI 1-frame with windup)
+}
+
+/**
+ * Generates an independent non-zero 32-bit random seed for per-match spawn randomization,
+ * decoupled from legacy `seed` and `bgmSeed` so old replays remain untouched.
+ */
+export function generateSpawnSeed(): number {
+  if (typeof crypto !== 'undefined' && typeof crypto.getRandomValues === 'function') {
+    const buf = new Uint32Array(1);
+    crypto.getRandomValues(buf);
+    return buf[0] || 1;
+  }
+  return ((Math.imul(Date.now() >>> 0, 2654435761) ^ Math.floor(Math.random() * 0x100000000)) >>> 0) || 1;
 }
 
 export interface EngineMapData {

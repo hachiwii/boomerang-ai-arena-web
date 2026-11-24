@@ -3,7 +3,7 @@ import { generateBgmSeed } from '../audio/bgm';
 import { CricketFormat, CricketStore, CricketTier } from '../game/cricketStore';
 import { LeaderboardStore } from '../game/leaderboard';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore } from '../game/settings';
-import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
+import { generateSpawnSeed, MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { clientToLogical, getLogicalViewport, isForcedLandscape, rectToLogical } from '../game/viewport';
 import { getTheme } from '../render/themes';
 import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_PHONE } from './icons';
@@ -550,6 +550,7 @@ export class LobbyUI {
       mapMeta,
       slots,
       seed,
+      spawnSeed: generateSpawnSeed(),
       bgmSeed: generateBgmSeed(),
       speed: 1.0, // Fixed standard speed in Ranked
       cliffGuard: s.cliffGuard,
@@ -590,6 +591,7 @@ export class LobbyUI {
       mapMeta,
       slots,
       seed: seed || 1,
+      spawnSeed: generateSpawnSeed(),
       bgmSeed: generateBgmSeed(),
       speed: 1.0,
       cliffGuard: false,
@@ -709,6 +711,7 @@ export class LobbyUI {
       mapMeta,
       slots,
       seed,
+      spawnSeed: generateSpawnSeed(),
       bgmSeed: generateBgmSeed(),
       speed: this.gameSpeed,
       cliffGuard: s.cliffGuard,

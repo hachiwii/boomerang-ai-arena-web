@@ -20,7 +20,16 @@ import {
   matchesActionKeyEvent,
   SettingsStore,
 } from './game/settings';
-import { CellType, EngineMapData, isRankedMatchMode, MapMeta, MatchConfig, RankedMode, RosterEntry } from './game/types';
+import {
+  CellType,
+  EngineMapData,
+  generateSpawnSeed,
+  isRankedMatchMode,
+  MapMeta,
+  MatchConfig,
+  RankedMode,
+  RosterEntry,
+} from './game/types';
 import { GameRenderer } from './render/renderer';
 import { HistoryModal } from './ui/historyUI';
 import { HudUI } from './ui/hudUI';
@@ -518,6 +527,7 @@ async function bootstrap() {
       const freshCfg: MatchConfig = {
         ...activeConfig,
         seed: (Date.now() ^ Math.floor(Math.random() * 0x7fffffff)) >>> 0,
+        spawnSeed: generateSpawnSeed(),
         bgmSeed: generateBgmSeed(),
         slots: activeConfig.slots.map((s) => ({ ...s })),
       };
@@ -568,11 +578,12 @@ async function bootstrap() {
         .map((s) => s.botId!);
       cfg = lobbyUI.createRankedMatchConfig(rankedMode, prevBotIds);
     } else {
-      // Custom R restart: exact same map, contestants, spawn order, gameplay seed, and speed;
-      // re-roll independent bgmSeed so special BGM rolls freshly on each restart.
+      // Custom R restart: exact same map, contestants, spawn order, legacy seed, and speed;
+      // re-roll independent spawnSeed & bgmSeed so spawns and special BGM roll freshly on each match.
       const s = settings.get();
       cfg = {
         ...activeConfig,
+        spawnSeed: generateSpawnSeed(),
         bgmSeed: generateBgmSeed(),
         slots: activeConfig.slots.map((s) => ({ ...s })),
         cliffGuard: s.cliffGuard,
