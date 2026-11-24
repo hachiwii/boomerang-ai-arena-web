@@ -5,16 +5,30 @@ export function normalizeCinematicOptions(
   opt: boolean | Partial<CinematicOptions> | undefined,
 ): CinematicOptions {
   if (typeof opt === 'boolean') {
-    return { killCam: opt, finisherCam: opt, winnerCam: opt };
+    return { killCam: opt, finisherCam: opt, winnerCam: opt, killFx: false };
   }
+  const killCam = opt?.killCam ?? false;
   return {
-    killCam: opt?.killCam ?? false,
+    killCam,
     finisherCam: opt?.finisherCam ?? false,
     winnerCam: opt?.winnerCam ?? false,
+    // Defensive guard: upstream kill FX (hit-stop + overview impact punch) never runs alongside killCam
+    killFx: killCam ? false : (opt?.killFx ?? false),
   };
 }
 
 const TICK_SEC = LOGIC_DT_MS / 1000; // 0.05s
+const UPSTREAM_FPS = 30;
+const HITSTOP_OFFSET_TICKS = 0.6; // Exact peak slice/flash beat in upstream timeline.py:126
+const HITSTOP_NORMAL_SEC = 3 / UPSTREAM_FPS; // 3 frames @ 30fps (0.100s)
+const HITSTOP_FINAL_SEC = 5 / UPSTREAM_FPS; // 5 frames @ 30fps (0.167s)
+const IMPACT_DURATION_FRAMES = 14; // 14 frames @ 30fps (0.467s) in timeline.py:247
+const IMPACT_SHAKE_AMP_NORMAL = 0.1; // timeline.py:233
+const IMPACT_SHAKE_AMP_FINAL = 0.16; // timeline.py:233
+const IMPACT_ZOOM_PUNCH = 0.022; // timeline.py:233
+const IMPACT_SHAKE_TAU_FRAMES = 3.2; // timeline.py:248
+const IMPACT_PUNCH_TAU_FRAMES = 4.5; // timeline.py:251
+
 const PRE_KILL_SIM_SEC = 0.50; // Slow down the 0.5s before every kill
 const POST_KILL_SIM_SEC_FINAL = 0.16; // Final kill impact beat at 0.25x (0.64s real)
 const POST_KILL_SIM_SEC_NON_FINAL = 0.22; // Non-final kill impact beat at 0.5x (0.44s real)
@@ -42,10 +56,26 @@ export interface CinematicCameraPose {
   winnerBlend: number;
   /** Target yaw (rad) for the winning rig so it looks directly into the close-up lens */
   winnerFaceYaw: number | null;
-  /** Current simulation time-scale factor (0.25 during kill slow-mo, 1.0 otherwise) */
+  /** Current simulation time-scale factor (0 during hit-stop, 0.25/0.5 during kill slow-mo, 1.0 otherwise) */
   timeScale: number;
   /** True when inside an active slow-motion kill segment */
   inKillSlowMo: boolean;
+  /** True when simulation time is frozen inside an upstream kill hit-stop */
+  inHitStop: boolean;
+  /** Camera distance multiplier from upstream impact zoom punch (1.0 normally, dips to 0.978 on impact) */
+  zoomMul: number;
+  /** Upstream screen-plane camera shake offsets (meters along camera right & up axes) */
+  shakeRight: number;
+  shakeUp: number;
+}
+
+interface HitStopEvent {
+  killTickIdx: number;
+  stopSimSec: number;
+  durationRealSec: number;
+  isFinal: boolean;
+  realStartSec: number;
+  realEndSec: number;
 }
 
 interface KillSegment {
@@ -130,27 +160,36 @@ export class CinematicDirector {
   private readonly matchEndSimSec: number;
 
   private readonly kills: KillSegment[] = [];
+  private readonly hitStops: HitStopEvent[] = [];
   private readonly winnerShot: WinnerShotPlan | null = null;
   private readonly timeIntervals: TimeInterval[] = [];
 
   /**
    * Creates a lightweight post-match director for live matches (human matches, or AI matches
-   * with only `winnerCam` enabled): keeps gameplay 100% real-time, then smoothly glides into
-   * the front-facing winner close-up right after the winning blow lands.
+   * with only `winnerCam` / `killFx` enabled): keeps gameplay 100% real-time, then applies
+   * optional final-kill hit-stop + impact punch and smoothly glides into the winner close-up.
    */
   public static createWinnerCloseupOnly(
     finalState: TickSnapshot,
     mapData: EngineMapData,
     winnerCamEnabled: boolean,
+    killFxEnabled = false,
   ): CinematicDirector | null {
-    if (!winnerCamEnabled || !finalState.over || finalState.winner < 0) return null;
+    if (!finalState.over) return null;
+    const hasHitKill =
+      killFxEnabled &&
+      finalState.events.some(
+        (ev) => ev.name === 'DEATH' && (ev.b === CauseType.DART || ev.b === CauseType.SLASH),
+      );
+    const wantWinner = winnerCamEnabled && finalState.winner >= 0;
+    if (!wantWinner && !hasHitKill) return null;
     const dir = new CinematicDirector(
       [finalState],
       mapData,
-      { killCam: false, finisherCam: false, winnerCam: true },
+      { killCam: false, finisherCam: false, winnerCam: wantWinner, killFx: hasHitKill },
       finalState,
     );
-    return dir.hasWinnerCloseup() ? dir : null;
+    return dir.hasWinnerCloseup() || dir.hasKillFx() ? dir : null;
   }
 
   constructor(
@@ -169,21 +208,33 @@ export class CinematicDirector {
     this.heightM = mapData.ny * this.cellM;
 
     if (winnerOnlyFinalState) {
-      this.enabled = this.options.winnerCam;
+      this.enabled = this.options.winnerCam || this.options.killFx;
       this.matchEndSimSec = winnerOnlyFinalState.t * TICK_SEC;
       this.kills = [];
+      if (
+        this.options.killFx &&
+        winnerOnlyFinalState.events.some(
+          (ev) => ev.name === 'DEATH' && (ev.b === CauseType.DART || ev.b === CauseType.SLASH),
+        )
+      ) {
+        this.hitStops = [
+          {
+            killTickIdx: winnerOnlyFinalState.t,
+            stopSimSec: (winnerOnlyFinalState.t + HITSTOP_OFFSET_TICKS) * TICK_SEC,
+            durationRealSec: HITSTOP_FINAL_SEC,
+            isFinal: true,
+            realStartSec: 0,
+            realEndSec: 0,
+          },
+        ];
+      }
       this.winnerShot = this.options.winnerCam ? this.planWinnerShot(winnerOnlyFinalState, 0.22) : null;
-      this.timeIntervals.push({
-        simStart: 0,
-        simEnd: 1e9,
-        realStart: 0,
-        realEnd: 1e9,
-        scale: 1.0,
-      });
+      this.timeIntervals = this.buildTimeIntervals();
       return;
     }
 
-    const anyEnabled = this.options.killCam || this.options.finisherCam || this.options.winnerCam;
+    const anyEnabled =
+      this.options.killCam || this.options.finisherCam || this.options.winnerCam || this.options.killFx;
     this.enabled = anyEnabled && ticks.length >= 2;
     this.matchEndSimSec = Math.max(0, ticks.length - 1) * TICK_SEC;
 
@@ -199,6 +250,7 @@ export class CinematicDirector {
     }
 
     this.kills = this.detectKillSegments();
+    this.hitStops = this.options.killFx ? this.detectHitStopEvents() : [];
     this.winnerShot = this.options.winnerCam ? this.planWinnerShot(undefined, 0.22) : null;
     this.timeIntervals = this.buildTimeIntervals();
   }
@@ -213,6 +265,17 @@ export class CinematicDirector {
 
   public hasKillCams(): boolean {
     return this.enabled && this.kills.length > 0;
+  }
+
+  public hasKillFx(): boolean {
+    return this.enabled && this.options.killFx;
+  }
+
+  /** Exact 1x real-time duration (s) of stepping across logic tick `[tickIdx, tickIdx + 1]`. */
+  public getTickRealDurationSec(tickIdx: number): number {
+    const s0 = tickIdx * TICK_SEC;
+    const s1 = (tickIdx + 1) * TICK_SEC;
+    return Math.max(0.005, this.simToReal(s1) - this.simToReal(s0));
   }
 
   /**
@@ -233,22 +296,19 @@ export class CinematicDirector {
   /** Recommended real-time post-match outro duration (at 1x base speed) so winner close-up shines. */
   public getRecommendedOutroRealSec(fallbackSec: number): number {
     if (!this.enabled) return fallbackSec;
+    const endReal = this.simToReal(this.matchEndSimSec);
     const decisive = this.kills.find((k) => k.isDecisive);
-    if (decisive && this.winnerShot) {
-      const postSlowReal = Math.max(0, decisive.slowEndSim - this.matchEndSimSec) / decisive.timeScale;
-      const extraWaitReal = Math.max(
-        0,
-        this.winnerShot.glideStartSim - Math.max(decisive.slowEndSim, this.matchEndSimSec),
-      );
-      return postSlowReal + extraWaitReal + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
-    }
     if (this.winnerShot) {
-      const preDelay = Math.max(0, this.winnerShot.glideStartSim - this.matchEndSimSec);
-      return preDelay + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
+      const glideStartReal = this.simToReal(this.winnerShot.glideStartSim);
+      return Math.max(0, glideStartReal - endReal) + WINNER_GLIDE_REAL_SEC + WINNER_HOLD_REAL_SEC;
     }
     if (decisive) {
-      const postSlowReal = Math.max(0, decisive.slowEndSim - this.matchEndSimSec) / decisive.timeScale;
+      const postSlowReal = Math.max(0, this.simToReal(decisive.slowEndSim) - endReal);
       return Math.max(fallbackSec, postSlowReal + 0.85);
+    }
+    const finalStop = this.hitStops.find((h) => h.stopSimSec >= this.matchEndSimSec);
+    if (finalStop) {
+      return Math.max(fallbackSec, finalStop.realEndSec - endReal + 0.85);
     }
     return fallbackSec;
   }
@@ -271,6 +331,10 @@ export class CinematicDirector {
     if (!this.enabled || simSec <= 0) return Math.max(0, simSec);
     for (let i = 0; i < this.timeIntervals.length; i++) {
       const iv = this.timeIntervals[i];
+      if (iv.scale === 0) {
+        if (simSec <= iv.simStart) return iv.realStart;
+        continue;
+      }
       if (simSec <= iv.simEnd) {
         return iv.realStart + (simSec - iv.simStart) / iv.scale;
       }
@@ -293,12 +357,18 @@ export class CinematicDirector {
   }
 
   /**
-   * Evaluates the smooth cinematic camera pose at continuous simulation time `simSec`,
-   * blending cleanly with the caller's standard overview camera `(ovPos, ovLookAt)`.
+   * Evaluates the smooth cinematic camera pose at continuous simulation time `simSec`
+   * (and optional 1x real-time `realSec` so hit-stop camera shake & zoom punch keep animating
+   * while `simSec` is frozen), blending cleanly with `(ovPos, ovLookAt)`.
    */
-  public evaluate(simSec: number, ovPos: Vec3Tuple, ovLookAt: Vec3Tuple): CinematicCameraPose {
-    const timeScale = this.getSpeedScaleAtSim(simSec);
-    const inKillSlowMo = timeScale < 0.99;
+  public evaluate(
+    simSec: number,
+    ovPos: Vec3Tuple,
+    ovLookAt: Vec3Tuple,
+    realSec?: number,
+  ): CinematicCameraPose {
+    const baseTimeScale = this.getSpeedScaleAtSim(simSec);
+    const inKillSlowMo = baseTimeScale < 0.99;
 
     if (!this.enabled) {
       return {
@@ -309,8 +379,34 @@ export class CinematicDirector {
         winnerFaceYaw: null,
         timeScale: 1.0,
         inKillSlowMo: false,
+        inHitStop: false,
+        zoomMul: 1.0,
+        shakeRight: 0,
+        shakeUp: 0,
       };
     }
+
+    const evalRealSec = realSec ?? this.simToReal(simSec);
+    let inHitStop = false;
+    let zoomMul = 1.0;
+    let shakeRight = 0;
+    let shakeUp = 0;
+    for (let i = 0; i < this.hitStops.length; i++) {
+      const h = this.hitStops[i];
+      if (evalRealSec >= h.realStartSec && evalRealSec < h.realEndSec) {
+        inHitStop = true;
+      }
+      const a = (evalRealSec - h.realStartSec) * UPSTREAM_FPS;
+      if (a >= 0 && a < IMPACT_DURATION_FRAMES) {
+        const f0 = h.realStartSec * UPSTREAM_FPS;
+        const amp = h.isFinal ? IMPACT_SHAKE_AMP_FINAL : IMPACT_SHAKE_AMP_NORMAL;
+        const e = amp * Math.exp(-a / IMPACT_SHAKE_TAU_FRAMES);
+        shakeRight += e * Math.sin(a * 2.9 + f0);
+        shakeUp += e * Math.cos(a * 3.7 + f0 * 1.3);
+        zoomMul -= IMPACT_ZOOM_PUNCH * Math.exp(-a / IMPACT_PUNCH_TAU_FRAMES);
+      }
+    }
+    const timeScale = inHitStop ? 0 : baseTimeScale;
 
     // 1. Evaluate active kill segments overlapping simSec (handles even close chain kills smoothly!)
     let totalKillW = 0;
@@ -397,6 +493,10 @@ export class CinematicDirector {
       winnerFaceYaw,
       timeScale,
       inKillSlowMo,
+      inHitStop,
+      zoomMul,
+      shakeRight,
+      shakeUp,
     };
   }
 
@@ -890,38 +990,93 @@ export class CinematicDirector {
     return occ;
   }
 
+  private detectHitStopEvents(): HitStopEvent[] {
+    // Exact port of upstream timeline.py:117-126:
+    // Dart (1) & Slash (2) kills freeze at td + 0.6 ticks (3 frames @ 30fps normal, 5 frames @ 30fps final kill).
+    const byTick = new Map<number, HitStopEvent>();
+    for (let i = 1; i < this.ticks.length; i++) {
+      const snap = this.ticks[i];
+      for (const ev of snap.events) {
+        if (ev.name !== 'DEATH') continue;
+        const cause = ev.b as CauseType;
+        if (cause !== CauseType.DART && cause !== CauseType.SLASH) continue;
+        const isFinal = Boolean(snap.over);
+        const dur = isFinal ? HITSTOP_FINAL_SEC : HITSTOP_NORMAL_SEC;
+        const existing = byTick.get(i);
+        if (existing) {
+          if (isFinal) existing.isFinal = true;
+          if (dur > existing.durationRealSec) existing.durationRealSec = dur;
+        } else {
+          byTick.set(i, {
+            killTickIdx: i,
+            stopSimSec: (i + HITSTOP_OFFSET_TICKS) * TICK_SEC,
+            durationRealSec: dur,
+            isFinal,
+            realStartSec: 0,
+            realEndSec: 0,
+          });
+        }
+      }
+    }
+    return Array.from(byTick.values()).sort((a, b) => a.stopSimSec - b.stopSimSec);
+  }
+
   private buildTimeIntervals(): TimeInterval[] {
-    // Partition timeline by all slow-mo start/end breakpoints so mixed 0.5x & 0.25x segments map exactly!
+    // Partition timeline by all slow-mo start/end breakpoints AND hit-stop pause moments
+    // so mixed 0.5x / 0.25x slow-mo segments and 0x hit-stop freezes map monotonically & exactly!
     const points = new Set<number>([0]);
     for (const k of this.kills) {
       points.add(Math.max(0, k.slowStartSim));
       points.add(Math.max(0, k.slowEndSim));
+    }
+    const stopBySim = new Map<number, HitStopEvent>();
+    for (const h of this.hitStops) {
+      points.add(h.stopSimSec);
+      stopBySim.set(h.stopSimSec, h);
     }
     const sorted = Array.from(points).sort((a, b) => a - b);
 
     const intervals: TimeInterval[] = [];
     let realCursor = 0;
 
+    const emitPauseAt = (simPoint: number) => {
+      const h = stopBySim.get(simPoint);
+      if (!h) return;
+      h.realStartSec = realCursor;
+      h.realEndSec = realCursor + h.durationRealSec;
+      intervals.push({
+        simStart: simPoint,
+        simEnd: simPoint,
+        realStart: h.realStartSec,
+        realEnd: h.realEndSec,
+        scale: 0,
+      });
+      realCursor = h.realEndSec;
+    };
+
+    emitPauseAt(0);
     for (let i = 0; i < sorted.length - 1; i++) {
       const s0 = sorted[i];
       const s1 = sorted[i + 1];
-      if (s1 - s0 <= 1e-6) continue;
-      const scale = this.getSpeedScaleAtSim((s0 + s1) * 0.5);
-      const realDur = (s1 - s0) / scale;
-      const prev = intervals[intervals.length - 1];
-      if (prev && Math.abs(prev.scale - scale) < 1e-6 && Math.abs(prev.simEnd - s0) < 1e-6) {
-        prev.simEnd = s1;
-        prev.realEnd += realDur;
-      } else {
-        intervals.push({
-          simStart: s0,
-          simEnd: s1,
-          realStart: realCursor,
-          realEnd: realCursor + realDur,
-          scale,
-        });
+      if (s1 - s0 > 1e-6) {
+        const scale = this.getSpeedScaleAtSim((s0 + s1) * 0.5);
+        const realDur = (s1 - s0) / scale;
+        const prev = intervals[intervals.length - 1];
+        if (prev && prev.scale > 0 && Math.abs(prev.scale - scale) < 1e-6 && Math.abs(prev.simEnd - s0) < 1e-6) {
+          prev.simEnd = s1;
+          prev.realEnd += realDur;
+        } else {
+          intervals.push({
+            simStart: s0,
+            simEnd: s1,
+            realStart: realCursor,
+            realEnd: realCursor + realDur,
+            scale,
+          });
+        }
+        realCursor += realDur;
       }
-      realCursor += realDur;
+      emitPauseAt(s1);
     }
 
     const tailSim = sorted[sorted.length - 1] ?? 0;

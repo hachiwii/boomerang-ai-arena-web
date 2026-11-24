@@ -15,6 +15,7 @@ import {
   getSlashJudgmentDesc,
   GRAPHICS_QUALITY_OPTIONS,
   GraphicsQualityOption,
+  isKillFxAvailable,
   isModifierKeyCode,
   SettingsStore,
   SLASH_JUDGMENT_OPTIONS,
@@ -433,6 +434,19 @@ export class SettingsModal {
 
     setSwitch('#settings-lock-fps-toggle', s.lockFps, s.lockFps ? '显示器帧率' : '无上限');
     setSwitch('#settings-killcam-toggle', s.killCam, s.killCam ? '已开启' : '已关闭');
+    const killFxAvail = isKillFxAvailable(s);
+    const killFxRow = this.body.querySelector<HTMLElement>('#settings-killfx-row');
+    killFxRow?.classList.toggle('is-dim', !killFxAvail);
+    const killFxBtn = this.body.querySelector<HTMLButtonElement>('#settings-killfx-toggle');
+    if (killFxBtn) {
+      killFxBtn.disabled = !killFxAvail;
+      killFxBtn.setAttribute('aria-disabled', String(!killFxAvail));
+    }
+    setSwitch(
+      '#settings-killfx-toggle',
+      killFxAvail && s.killFx,
+      killFxAvail ? (s.killFx ? '已开启' : '已关闭') : '不可用',
+    );
     setSwitch('#settings-finishercam-toggle', s.finisherCam, s.finisherCam ? '已开启' : '已关闭');
     setSwitch('#settings-winnercam-toggle', s.winnerCam, s.winnerCam ? '已开启' : '已关闭');
     setSwitch('#settings-dash-buffer-toggle', s.dashInputBuffer, s.dashInputBuffer ? '已开启' : '已关闭');
@@ -670,6 +684,30 @@ export class SettingsModal {
                   <span class="rand-label">${s.killCam ? '已开启' : '已关闭'}</span>
                 </button>
               </div>
+
+              ${(() => {
+                const killFxAvail = isKillFxAvailable(s);
+                const killFxOn = killFxAvail && s.killFx;
+                return `
+              <div class="settings-toggle-row ${killFxAvail ? '' : 'is-dim'}" id="settings-killfx-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">击杀特效</div>
+                  <div class="settings-toggle-desc">仅在高画质且关闭击杀特写时可用；回放/观战启用原版击杀顿帧与特效</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${killFxOn ? 'is-on' : ''}"
+                  id="settings-killfx-toggle"
+                  role="switch"
+                  aria-checked="${killFxOn}"
+                  aria-disabled="${!killFxAvail}"
+                  ${killFxAvail ? '' : 'disabled'}
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${killFxAvail ? (s.killFx ? '已开启' : '已关闭') : '不可用'}</span>
+                </button>
+              </div>`;
+              })()}
 
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
@@ -1037,9 +1075,15 @@ export class SettingsModal {
       });
     });
 
-    // Cinematic camera toggles (non-final kill, finisher kill, winner close-up)
+    // Cinematic camera toggles (non-final kill, kill FX, finisher kill, winner close-up)
     this.body.querySelector('#settings-killcam-toggle')?.addEventListener('click', () => {
       this.store.setKillCam(!this.store.get().killCam);
+      this.syncControlsInPlace();
+    });
+    this.body.querySelector('#settings-killfx-toggle')?.addEventListener('click', () => {
+      const cur = this.store.get();
+      if (!isKillFxAvailable(cur)) return;
+      this.store.setKillFx(!cur.killFx);
       this.syncControlsInPlace();
     });
     this.body.querySelector('#settings-finishercam-toggle')?.addEventListener('click', () => {

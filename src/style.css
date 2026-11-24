@@ -1973,6 +1973,12 @@ body.ui-hidden .lobby-overlay {
   color: #e9f1ff;
 }
 
+.rand-switch:disabled {
+  cursor: not-allowed;
+  pointer-events: none;
+  opacity: 0.72;
+}
+
 .rand-switch.is-on {
   border-color: rgba(92, 164, 255, 0.55);
   background: rgba(61, 126, 255, 0.2);

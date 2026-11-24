@@ -119,6 +119,7 @@ export async function exportReplayClipToGif(
     killCam: baseCinematic.killCam,
     finisherCam: baseCinematic.finisherCam,
     winnerCam: false,
+    killFx: baseCinematic.killFx,
   });
 
   const endPlaySimSec = endTickIndex * tickSec;
@@ -128,7 +129,10 @@ export async function exportReplayClipToGif(
   const outroRealSec = atMatchEnd
     ? finisherEndRealSec !== null
       ? Math.max(0, finisherEndRealSec - endPlayRealSec)
-      : NO_FINISHER_END_TAIL_SEC
+      : Math.max(
+          NO_FINISHER_END_TAIL_SEC,
+          director.simToReal(endPlaySimSec + NO_FINISHER_END_TAIL_SEC) - endPlayRealSec,
+        )
     : 0;
   const totalEndRealSec = endPlayRealSec + outroRealSec;
   const startRealSec = Math.max(0, totalEndRealSec - maxDurationSec);
@@ -267,7 +271,7 @@ export async function exportReplayClipToGif(
         const realSec = Math.min(totalEndRealSec, startRealSec + f * frameDt);
         const simSec = director.realToSim(realSec);
         const frameDtSim = Math.max(
-          1e-4,
+          0,
           f === 0 ? frameDt * director.getSpeedScaleAtSim(simSec) : simSec - stateRef.prevSimSec,
         );
         stateRef.prevSimSec = simSec;
@@ -307,6 +311,8 @@ export async function exportReplayClipToGif(
         const nameplates = offRenderer.renderOfflineFrame(prevSnap, currSnap, alpha, gt, frameDtSim, simSec, {
           ...staticGifEnvOpts,
           skipRender,
+          realSec,
+          realFrameDt: frameDt,
         });
 
         if (!skipRender) {

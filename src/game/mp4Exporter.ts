@@ -893,6 +893,7 @@ export async function exportReplayToMp4(
       let outroAlpha = 0;
       let frameDtSim = frameDtReal * speed;
       let elapsedSimSec = videoTimeSec * speed;
+      let evalReal1xSec = 0;
 
       if (videoTimeSec < LEAD_IN_SEC || ticks.length === 1) {
         prevSnap = ticks[0];
@@ -906,8 +907,9 @@ export async function exportReplayToMp4(
           elapsedSincePlay <= playDurationSec
             ? elapsedSincePlay * speed
             : matchEndReal1x + integrateOutroTo1x(elapsedSincePlay - playDurationSec);
+        evalReal1xSec = playReal1xSec;
         const simSec = director.realToSim(playReal1xSec);
-        frameDtSim = Math.max(1e-4, simSec - prevSimSec);
+        frameDtSim = Math.max(0, simSec - prevSimSec);
         prevSimSec = simSec;
         elapsedSimSec = LEAD_IN_SEC * speed + simSec;
 
@@ -927,6 +929,7 @@ export async function exportReplayToMp4(
               ticks[nextIdx - 1],
               ticks[nextIdx],
               LEAD_IN_SEC * speed + eventSimSec,
+              tickSec,
             );
             processedTickIdx = nextIdx;
           }
@@ -947,6 +950,7 @@ export async function exportReplayToMp4(
               ticks[nextIdx - 1],
               ticks[nextIdx],
               LEAD_IN_SEC * speed + eventSimSec,
+              tickSec,
             );
             processedTickIdx = nextIdx;
           }
@@ -968,6 +972,10 @@ export async function exportReplayToMp4(
         gt,
         frameDtSim,
         elapsedSimSec,
+        {
+          realSec: evalReal1xSec,
+          realFrameDt: frameDtReal,
+        },
       );
 
       compCtx.drawImage(webglCanvas, 0, 0, width, height);

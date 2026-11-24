@@ -131,11 +131,16 @@ export class GameRenderer {
   private cinematicDirector: CinematicDirector | null = null;
   private overElapsedSimSec = 0;
   private overElapsedRealSec = 0;
+  private overElapsedReal1xSec = 0;
+  private prevTickRenderedSimSec = 0;
+  private liveSpectatorKillFx = false;
+  private liveKillStop: { tickT: number; freezeDurationReal1x: number; impactTriggered: boolean } | null = null;
+  private liveImpactImpulses: { startRealMs: number; amp: number; punch: number; seed: number }[] = [];
   private nextWinnerRibbonSec = -1;
   private winnerRibbonWave = 0;
   private pendingEndConfetti: { seat: number; triggerTick: number } | null = null;
 
-  // Raycasting scratch (zero allocation per frame)
+  // Raycasting & camera scratch (zero allocation per frame)
   private readonly _raycaster = new THREE.Raycaster();
   private readonly _ndc = new THREE.Vector2();
   // Intersect at y = 0.06 to match the 3D aim-line height with zero parallax offset
@@ -143,6 +148,10 @@ export class GameRenderer {
   private readonly _hitPoint = new THREE.Vector3();
   private readonly _projVec = new THREE.Vector3();
   private readonly _focusVec = new THREE.Vector3();
+  private readonly _camFwd = new THREE.Vector3();
+  private readonly _camRight = new THREE.Vector3();
+  private readonly _camUp = new THREE.Vector3();
+  private readonly _worldUp = new THREE.Vector3(0, 1, 0);
   private readonly _moversScratch: ArenaMover[] = [];
   private cursorSuppressed = false;
   private activeCursorKey = 'default';
@@ -562,6 +571,10 @@ export class GameRenderer {
     this.shakeAmp = 0;
     this.overElapsedSimSec = 0;
     this.overElapsedRealSec = 0;
+    this.overElapsedReal1xSec = 0;
+    this.prevTickRenderedSimSec = initialState.t * 0.05;
+    this.liveKillStop = null;
+    this.liveImpactImpulses = [];
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
     this.pendingEndConfetti = null;
@@ -807,6 +820,10 @@ export class GameRenderer {
     this.shakeAmp = 0;
     this.overElapsedSimSec = 0;
     this.overElapsedRealSec = 0;
+    this.overElapsedReal1xSec = 0;
+    this.prevTickRenderedSimSec = this.prevState ? this.prevState.t * 0.05 : 0;
+    this.liveKillStop = null;
+    this.liveImpactImpulses = [];
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
     this.pendingEndConfetti = null;
@@ -840,28 +857,67 @@ export class GameRenderer {
     this.cinematicDirector = director;
   }
 
+  public setKillFxEnabled(enabled: boolean) {
+    this.liveSpectatorKillFx = enabled;
+    if (!enabled) {
+      this.liveKillStop = null;
+      this.liveImpactImpulses = [];
+    }
+  }
+
   public pushTick(prev: TickSnapshot, next: TickSnapshot, tickDurationMs?: number) {
     this.prevState = prev;
     this.currState = next;
     if (tickDurationMs && tickDurationMs > 0) {
       this.tickIntervalMs = tickDurationMs;
     }
+    this.prevTickRenderedSimSec = prev.t * 0.05;
     if (!next.over) {
       this.overElapsedSimSec = 0;
       this.overElapsedRealSec = 0;
+      this.overElapsedReal1xSec = 0;
       this.nextWinnerRibbonSec = -1;
       this.winnerRibbonWave = 0;
     }
+    // Live 4P post-death spectator hit-stop: prev tick had a dart/slash death while human was already spectating
+    if (
+      !this.cinematicDirector?.hasKillFx() &&
+      this.graphicsQuality === 'high' &&
+      this.liveSpectatorKillFx &&
+      this.humanSeat >= 0 &&
+      prev.players[this.humanSeat]?.alive === 0 &&
+      !next.over &&
+      prev.events.some(
+        (ev) => ev.name === 'DEATH' && (ev.b === CauseType.DART || ev.b === CauseType.SLASH),
+      )
+    ) {
+      this.liveKillStop = { tickT: prev.t, freezeDurationReal1x: 3 / 30, impactTriggered: false };
+    } else {
+      this.liveKillStop = null;
+    }
     this.tickReceivedAtMs = performance.now();
     this.pausedAlpha = 1.0;
-    this.processEvents(prev, next, next.events);
+    this.processEvents(prev, next, next.events, next.over ? 0 : 0.05);
   }
 
   public setPlaybackSpeed(speed: number) {
     const nextSpeed = Math.max(0.1, Math.min(4.0, speed || 1.0));
     const curSimSec = this.currState ? this.currState.t * 0.05 : 0;
-    const cineScale = this.cinematicDirector?.getSpeedScaleAtSim(curSimSec) ?? 1.0;
-    const nextInterval = LOGIC_DT_MS / (nextSpeed * cineScale);
+    let nextInterval: number;
+    if (
+      this.cinematicDirector &&
+      this.prevState &&
+      this.currState &&
+      !this.currState.over &&
+      this.prevState.t < this.currState.t
+    ) {
+      nextInterval = (this.cinematicDirector.getTickRealDurationSec(this.prevState.t) * 1000) / nextSpeed;
+    } else if (this.liveKillStop && this.prevState && this.currState && !this.currState.over) {
+      nextInterval = ((LOGIC_DT_MS / 1000 + this.liveKillStop.freezeDurationReal1x) * 1000) / nextSpeed;
+    } else {
+      const cineScale = this.cinematicDirector?.getSpeedScaleAtSim(curSimSec) ?? 1.0;
+      nextInterval = LOGIC_DT_MS / (nextSpeed * cineScale);
+    }
     const now = performance.now();
     if (!this.playbackPaused && this.currState && !this.currState.over) {
       const curAlpha = Math.max(0, Math.min(1, (now - this.tickReceivedAtMs) / this.tickIntervalMs));
@@ -977,6 +1033,10 @@ export class GameRenderer {
     this.currState = ticks[idx];
     this.overElapsedSimSec = 0;
     this.overElapsedRealSec = 0;
+    this.overElapsedReal1xSec = 0;
+    this.prevTickRenderedSimSec = this.prevState.t * 0.05;
+    this.liveKillStop = null;
+    this.liveImpactImpulses = [];
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
     this.pendingEndConfetti = null;
@@ -985,10 +1045,15 @@ export class GameRenderer {
     this.invalidateShadowMap();
   }
 
-  private processEvents(prev: TickSnapshot, curr: TickSnapshot, events: GameEvent[]) {
+  private processEvents(prev: TickSnapshot, curr: TickSnapshot, events: GameEvent[], deathBornOffsetSec = 0) {
     if (!this.fx) return;
     const nowSec = this.elapsedSec;
     const gt = curr.t;
+    const isSpectatingLive = this.humanSeat >= 0 && prev.players[this.humanSeat]?.alive === 0;
+    const useUpstreamKillFx =
+      this.graphicsQuality === 'high' &&
+      (Boolean(this.cinematicDirector?.hasKillFx()) || (isSpectatingLive && this.liveSpectatorKillFx));
+    const killBornSec = useUpstreamKillFx ? nowSec + deathBornOffsetSec : nowSec;
 
     for (const ev of events) {
       switch (ev.name) {
@@ -1161,9 +1226,12 @@ export class GameRenderer {
               ndz,
               this.slots[victimIdx].color,
               killerIdx >= 0 ? this.slots[killerIdx].color : '#ffffff',
-              nowSec,
+              killBornSec,
+              useUpstreamKillFx,
             );
-            this.shakeAmp = Math.max(this.shakeAmp, 0.34);
+            if (!useUpstreamKillFx) {
+              this.shakeAmp = Math.max(this.shakeAmp, 0.34);
+            }
             this.sfx.playHitKill();
           } else if (cause === CauseType.SLASH) {
             let dx = 0;
@@ -1175,7 +1243,7 @@ export class GameRenderer {
             rig.triggerSlashDeath(gt, vx, vz, dx, dz);
             const killerCol = killerIdx >= 0 ? this.slots[killerIdx].color : '#ffffff';
             if (this.graphicsQuality === 'high') {
-              this.fx.spawnHit(vx, vz, killerCol, nowSec);
+              this.fx.spawnHit(vx, vz, killerCol, killBornSec, useUpstreamKillFx);
             } else {
               this.fx.spawnSliceHit(
                 vx,
@@ -1187,7 +1255,9 @@ export class GameRenderer {
                 nowSec,
               );
             }
-            this.shakeAmp = Math.max(this.shakeAmp, 0.32);
+            if (!useUpstreamKillFx) {
+              this.shakeAmp = Math.max(this.shakeAmp, 0.32);
+            }
             this.sfx.playHitKill();
           } else if (cause === CauseType.FALL) {
             const mvx = (vp.x - vpPrev.x) / 1000;
@@ -1410,6 +1480,9 @@ export class GameRenderer {
     simSec: number,
     frameDt: number,
     explicitPose?: CinematicCameraPose | null,
+    realSec?: number,
+    realFrameDt?: number,
+    nowMs?: number,
   ): CinematicCameraPose | null {
     const ovPos = {
       x: this.camTargetX,
@@ -1426,31 +1499,77 @@ export class GameRenderer {
       explicitPose !== undefined
         ? explicitPose
         : this.cinematicDirector?.isEnabled()
-          ? this.cinematicDirector.evaluate(simSec, ovPos, ovLook)
+          ? this.cinematicDirector.evaluate(simSec, ovPos, ovLook, realSec)
           : null;
 
     const camPos = pose ? pose.pos : ovPos;
     const camLook = pose ? pose.lookAt : ovLook;
 
-    // Scale camera shake proportionally to camera distance so close-up shots stay dramatic without jarring jumps
+    const vx = camPos.x - camLook.x;
+    const vy = camPos.y - camLook.y;
+    const vz = camPos.z - camLook.z;
+    const distNow = Math.hypot(vx, vy, vz);
+    const shakeScale = Math.max(0.25, Math.min(1.0, distNow / Math.max(1, this.camDist)));
+
+    // Upstream kill impact zoom punch & screen-plane shake (timeline.py:242-270)
+    let zoomMul = pose ? pose.zoomMul : 1.0;
+    let impRight = pose ? pose.shakeRight : 0;
+    let impUp = pose ? pose.shakeUp : 0;
+    if (nowMs !== undefined && this.liveImpactImpulses.length > 0) {
+      for (let i = this.liveImpactImpulses.length - 1; i >= 0; i--) {
+        const imp = this.liveImpactImpulses[i];
+        const a = ((nowMs - imp.startRealMs) / 1000) * 30;
+        if (a >= 14) {
+          this.liveImpactImpulses.splice(i, 1);
+          continue;
+        }
+        if (a >= 0) {
+          const e = imp.amp * Math.exp(-a / 3.2);
+          impRight += e * Math.sin(a * 2.9 + imp.seed);
+          impUp += e * Math.cos(a * 3.7 + imp.seed * 1.3);
+          zoomMul -= imp.punch * Math.exp(-a / 4.5);
+        }
+      }
+    }
+
+    let posX = camLook.x + vx * zoomMul;
+    let posY = camLook.y + vy * zoomMul;
+    let posZ = camLook.z + vz * zoomMul;
+    let lookX = camLook.x;
+    let lookY = camLook.y;
+    let lookZ = camLook.z;
+
+    if (Math.abs(impRight) > 1e-5 || Math.abs(impUp) > 1e-5) {
+      this._camFwd.set(-vx, -vy, -vz).normalize();
+      this._camRight.crossVectors(this._camFwd, this._worldUp).normalize();
+      this._camUp.crossVectors(this._camRight, this._camFwd).normalize();
+      const ox = (this._camRight.x * impRight + this._camUp.x * impUp) * shakeScale;
+      const oy = (this._camRight.y * impRight + this._camUp.y * impUp) * shakeScale;
+      const oz = (this._camRight.z * impRight + this._camUp.z * impUp) * shakeScale;
+      // Pure translate (both camera & lookAt shift identically, preserving exact pitch/yaw with zero roll!)
+      posX += ox;
+      posY += oy;
+      posZ += oz;
+      lookX += ox;
+      lookY += oy;
+      lookZ += oz;
+    }
+
+    // Legacy non-kill camera shake (clashes, blocks, kicks, collapses, and kills when killFx is OFF)
     let sx = 0;
     let sz = 0;
+    const decayDt = realFrameDt ?? frameDt;
     if (this.shakeAmp > 0.002) {
-      const distNow = Math.hypot(
-        camPos.x - camLook.x,
-        camPos.y - camLook.y,
-        camPos.z - camLook.z,
-      );
-      const shakeScale = Math.max(0.18, Math.min(1.0, distNow / Math.max(1, this.camDist)));
-      sx = Math.sin(this.elapsedSec * 72) * this.shakeAmp * shakeScale;
-      sz = Math.cos(this.elapsedSec * 64) * this.shakeAmp * shakeScale;
-      this.shakeAmp *= Math.exp(-frameDt * 12);
+      const legacyScale = Math.max(0.18, Math.min(1.0, distNow / Math.max(1, this.camDist)));
+      sx = Math.sin(this.elapsedSec * 72) * this.shakeAmp * legacyScale;
+      sz = Math.cos(this.elapsedSec * 64) * this.shakeAmp * legacyScale;
+      this.shakeAmp *= Math.exp(-decayDt * 12);
     } else {
       this.shakeAmp = 0;
     }
 
-    this.camera.position.set(camPos.x + sx, camPos.y, camPos.z + sz);
-    this.camera.lookAt(camLook.x + sx * 0.4, camLook.y, camLook.z + sz * 0.4);
+    this.camera.position.set(posX + sx, posY, posZ + sz);
+    this.camera.lookAt(lookX + sx * 0.4, lookY, lookZ + sz * 0.4);
     this.camera.updateMatrixWorld();
     return pose;
   }
@@ -1490,47 +1609,110 @@ export class GameRenderer {
         this.shadowMapDirty = true;
       }
     } else if (this.arena && this.prevState && this.currState) {
-      // Smooth sub-tick interpolation factor [0..1] adapted to current game speed & kill-cam slow-mo!
+      // Smooth sub-tick interpolation factor [0..1] adapted to current game speed, kill-cam slow-mo & hit-stop!
       const sameTick = this.prevState === this.currState || this.prevState.t === this.currState.t;
-      const alpha = this.playbackPaused
+      const tickFrac = this.playbackPaused
         ? this.pausedAlpha
         : this.currState.over || sameTick
           ? 1.0
           : Math.max(0, Math.min(1, (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs));
 
+      let alpha = tickFrac;
       let gt: number;
-      let liveScale = 1.0;
+      let simFrameDt = 0;
+      let evalRealSec: number | undefined;
       let effectiveBaseSpeed = this.gameSpeed;
+
       if (this.playbackPaused) {
-        gt = this.currState.over
-          ? this.currState.t + this.overElapsedSimSec * 20
-          : sameTick
-            ? this.currState.t
-            : this.prevState.t + alpha;
-        liveScale = this.cinematicDirector?.getSpeedScaleAtSim(gt * 0.05) ?? 1.0;
+        if (this.currState.over) {
+          const endSim = this.currState.t * 0.05;
+          const endReal = this.cinematicDirector?.simToReal(endSim) ?? endSim;
+          evalRealSec = endReal + this.overElapsedReal1xSec;
+          gt = this.currState.t + this.overElapsedSimSec * 20;
+        } else if (!sameTick && this.cinematicDirector?.hasKillFx()) {
+          const baseReal = this.cinematicDirector.simToReal(this.prevState.t * 0.05);
+          const durReal = this.cinematicDirector.getTickRealDurationSec(this.prevState.t);
+          evalRealSec = baseReal + tickFrac * durReal;
+          const curSim = this.cinematicDirector.realToSim(evalRealSec);
+          gt = curSim / 0.05;
+          alpha = Math.max(0, Math.min(1, gt - this.prevState.t));
+        } else {
+          gt = sameTick ? this.currState.t : this.prevState.t + tickFrac;
+        }
+        simFrameDt = 0;
       } else if (this.currState.over) {
         // Smoothly transition base playback speed from configured gameSpeed -> 1.0x after match end
-        // so winner close-up, victory hops, confetti, and result overlay always play cleanly at 1.0x!
+        // so final hit-stop, winner close-up, victory hops, confetti, and result overlay play cleanly at 1.0x!
         this.overElapsedRealSec += frameDt;
         const uRamp = Math.min(1, this.overElapsedRealSec / 0.45);
         const smoothRamp = uRamp * uRamp * (3 - 2 * uRamp);
         effectiveBaseSpeed = this.gameSpeed + (1.0 - this.gameSpeed) * smoothRamp;
 
-        const curOverSim = this.currState.t * 0.05 + this.overElapsedSimSec;
-        liveScale = this.cinematicDirector?.getSpeedScaleAtSim(curOverSim) ?? 1.0;
-        this.overElapsedSimSec += frameDt * effectiveBaseSpeed * liveScale;
+        this.overElapsedReal1xSec += frameDt * effectiveBaseSpeed;
+        const endSim = this.currState.t * 0.05;
+        const endReal = this.cinematicDirector?.simToReal(endSim) ?? endSim;
+        evalRealSec = endReal + this.overElapsedReal1xSec;
+        const prevOverSim = endSim + this.overElapsedSimSec;
+        const curOverSim = this.cinematicDirector?.isEnabled()
+          ? this.cinematicDirector.realToSim(evalRealSec)
+          : endSim + this.overElapsedReal1xSec;
+        this.overElapsedSimSec = Math.max(0, curOverSim - endSim);
         gt = this.currState.t + this.overElapsedSimSec * 20;
+        simFrameDt = Math.max(0, curOverSim - prevOverSim);
+      } else if (!sameTick && this.cinematicDirector?.hasKillFx()) {
+        const baseReal = this.cinematicDirector.simToReal(this.prevState.t * 0.05);
+        const durReal = this.cinematicDirector.getTickRealDurationSec(this.prevState.t);
+        evalRealSec = baseReal + tickFrac * durReal;
+        const curSim = this.cinematicDirector.realToSim(evalRealSec);
+        gt = curSim / 0.05;
+        alpha = Math.max(0, Math.min(1, gt - this.prevState.t));
+        simFrameDt = Math.max(0, curSim - this.prevTickRenderedSimSec);
+        this.prevTickRenderedSimSec = curSim;
+      } else if (!sameTick && this.liveKillStop && this.liveKillStop.tickT === this.prevState.t) {
+        // Live 4P post-death spectator hit-stop: freeze at prev.t + 0.6 ticks for 0.100s (1x)
+        const freeze1x = this.liveKillStop.freezeDurationReal1x;
+        const total1x = 0.05 + freeze1x;
+        const elapsed1x = tickFrac * total1x;
+        let localSimOff: number;
+        if (elapsed1x < 0.03) {
+          localSimOff = elapsed1x;
+        } else if (elapsed1x < 0.03 + freeze1x) {
+          localSimOff = 0.03;
+          if (!this.liveKillStop.impactTriggered) {
+            this.liveKillStop.impactTriggered = true;
+            this.liveImpactImpulses.push({
+              startRealMs: tWork0,
+              amp: 0.1,
+              punch: 0.022,
+              seed: this.prevState.t * 1.7,
+            });
+          }
+        } else {
+          localSimOff = Math.min(0.05, elapsed1x - freeze1x);
+        }
+        const curSim = this.prevState.t * 0.05 + localSimOff;
+        gt = curSim / 0.05;
+        alpha = Math.max(0, Math.min(1, gt - this.prevState.t));
+        simFrameDt = Math.max(0, curSim - this.prevTickRenderedSimSec);
+        this.prevTickRenderedSimSec = curSim;
       } else {
-        gt = sameTick ? this.currState.t : this.prevState.t + alpha;
-        liveScale = this.cinematicDirector?.getSpeedScaleAtSim(gt * 0.05) ?? 1.0;
+        gt = sameTick ? this.currState.t : this.prevState.t + tickFrac;
+        const liveScale = this.cinematicDirector?.getSpeedScaleAtSim(gt * 0.05) ?? 1.0;
+        simFrameDt = frameDt * effectiveBaseSpeed * liveScale;
       }
 
-      const simFrameDt = frameDt * effectiveBaseSpeed * liveScale;
       if (!this.playbackPaused) {
         this.elapsedSec += simFrameDt;
       }
 
-      const cinePose = this.applyCameraWithOptionalCinematic(gt * 0.05, simFrameDt);
+      const cinePose = this.applyCameraWithOptionalCinematic(
+        gt * 0.05,
+        simFrameDt,
+        undefined,
+        evalRealSec,
+        frameDt,
+        tWork0,
+      );
 
       // Update hardware-plane tactical crosshair cursor (0ms OS cursor latency):
       // Blue = holding dart, Yellow = dart flying/recalled, Red = dart on ground (+ growing center dot while channeling recall)
@@ -2010,11 +2192,16 @@ export class GameRenderer {
     return null;
   }
 
-  public processOfflineTickEvents(prev: TickSnapshot, curr: TickSnapshot, elapsedSec: number) {
+  public processOfflineTickEvents(
+    prev: TickSnapshot,
+    curr: TickSnapshot,
+    elapsedSec: number,
+    deathBornOffsetSec = 0,
+  ) {
     this.elapsedSec = elapsedSec;
     this.prevState = prev;
     this.currState = curr;
-    this.processEvents(prev, curr, curr.events);
+    this.processEvents(prev, curr, curr.events, deathBornOffsetSec);
   }
 
   /**
@@ -2035,13 +2222,21 @@ export class GameRenderer {
       pauseWaterfall?: boolean;
       skipRender?: boolean;
       cameraPose?: CinematicCameraPose | null;
+      realSec?: number;
+      realFrameDt?: number;
     },
   ): ProjectedNameplate[] {
     this.elapsedSec = elapsedSec;
     const out: ProjectedNameplate[] = [];
     if (!this.arena) return out;
 
-    const cinePose = this.applyCameraWithOptionalCinematic(gt * 0.05, frameDt, opts?.cameraPose);
+    const cinePose = this.applyCameraWithOptionalCinematic(
+      gt * 0.05,
+      frameDt,
+      opts?.cameraPose,
+      opts?.realSec,
+      opts?.realFrameDt,
+    );
 
     const movers = this.collectArenaMovers(prev, curr, alpha, false);
     const offFx = this.fx;
@@ -2188,6 +2383,10 @@ export class GameRenderer {
     this.pausedAlpha = 1.0;
     this.overElapsedSimSec = 0;
     this.overElapsedRealSec = 0;
+    this.overElapsedReal1xSec = 0;
+    this.prevTickRenderedSimSec = 0;
+    this.liveKillStop = null;
+    this.liveImpactImpulses = [];
     this.nextWinnerRibbonSec = -1;
     this.winnerRibbonWave = 0;
     this.pendingEndConfetti = null;

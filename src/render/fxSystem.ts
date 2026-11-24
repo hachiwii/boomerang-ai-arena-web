@@ -30,6 +30,12 @@ interface ActiveBurst {
   color: THREE.Color;
   bornSec: number;
   lifeSec: number;
+  /** Optional faster scale-expansion duration (s); defaults to `lifeSec` (matches upstream fx.py snap-expand bursts). */
+  expandSec?: number;
+  /** Optional full-brightness hold duration (s) before fading out over `lifeSec - holdSec`. */
+  holdSec?: number;
+  /** Optional fade exponent applied to `(1 - fadeU)^fadePow`. */
+  fadePow?: number;
   spin: number;
   gravity: number;
   flat?: boolean;
@@ -49,11 +55,13 @@ class MeshPool {
     count: number,
     geo: THREE.BufferGeometry,
     baseMat: THREE.MeshBasicMaterial,
+    renderOrder = 0,
   ) {
     for (let i = 0; i < count; i++) {
       const m = new THREE.Mesh(geo, baseMat.clone());
       m.visible = false;
       m.frustumCulled = false;
+      if (renderOrder !== 0) m.renderOrder = renderOrder;
       scene.add(m);
       this.meshes.push(m);
     }
@@ -511,7 +519,7 @@ export class FXSystem {
     this.slotColors = slotColors.map((c) => new THREE.Color(c));
     this.highQuality = highQuality;
 
-    const vcolMat = (opacity = 1.0) =>
+    const vcolMat = (opacity = 1.0, hot = false) =>
       new THREE.MeshBasicMaterial({
         color: '#ffffff',
         vertexColors: true,
@@ -519,14 +527,15 @@ export class FXSystem {
         opacity,
         side: THREE.DoubleSide,
         depthWrite: false,
+        toneMapped: !hot,
       });
 
-    this.rings = new MeshPool(scene, 40, createFeatheredRingGeo(0.88), vcolMat(0.95));
-    this.discs = new MeshPool(scene, 16, createGlowDiscGeo(), vcolMat(0.95));
-    this.stars = new MeshPool(scene, 16, createStarGeo(8, 0.3, 0.62), vcolMat(1.0));
-    this.arcs = new MeshPool(scene, 12, createCrescentArcGeo(), vcolMat(0.95));
-    this.streaks = new MeshPool(scene, 14, createFeatheredStreakGeo(), vcolMat(1.0));
-    this.starSparks = new MeshPool(scene, 110, createStarGeo(4, 0.22, 1.0), vcolMat(1.0));
+    this.rings = new MeshPool(scene, 40, createFeatheredRingGeo(0.88), vcolMat(0.95, false), 4);
+    this.discs = new MeshPool(scene, 16, createGlowDiscGeo(), vcolMat(0.95, true), 9);
+    this.stars = new MeshPool(scene, 16, createStarGeo(8, 0.3, 0.62), vcolMat(1.0, true), 11);
+    this.arcs = new MeshPool(scene, 12, createCrescentArcGeo(), vcolMat(0.95, true), 10);
+    this.streaks = new MeshPool(scene, 14, createFeatheredStreakGeo(), vcolMat(1.0, true), 11);
+    this.starSparks = new MeshPool(scene, 110, createStarGeo(4, 0.22, 1.0), vcolMat(1.0, true), 10);
 
     const sparkGeo = new THREE.OctahedronGeometry(0.14, 0);
     this.sparks = new MeshPool(
@@ -877,8 +886,10 @@ export class FXSystem {
   /**
    * Non-sliced impact burst (melee slash kill — fx.py:257-266):
    * glow disc + dual counter-rotated comic 8-point starbursts + ground ring + sparks.
+   * When `upstreamKillFx` is true, snaps glow/starbursts to full size in 1.0 tick (0.05s)
+   * and holds full brightness through the upstream 0.6-tick hit-stop freeze frame.
    */
-  public spawnHit(x: number, z: number, killerColor: string, nowSec: number) {
+  public spawnHit(x: number, z: number, killerColor: string, nowSec: number, upstreamKillFx = false) {
     const c = new THREE.Color(killerColor);
     const cl = c.clone().lerp(this._white, 0.45);
     if (this.highQuality) {
@@ -891,11 +902,13 @@ export class FXSystem {
         vy: 0,
         vz: 0,
         rotY: 0,
-        scale0: 0.25,
+        scale0: upstreamKillFx ? 0.08 : 0.25,
         scale1: 1.05,
         color: this._white.clone(),
         bornSec: nowSec,
-        lifeSec: 0.15,
+        lifeSec: upstreamKillFx ? 0.14 : 0.15,
+        expandSec: upstreamKillFx ? 0.05 : undefined,
+        fadePow: upstreamKillFx ? 1.0 : undefined,
         spin: 0,
         gravity: 0,
         alpha0: 0.42,
@@ -909,11 +922,14 @@ export class FXSystem {
         vy: 0,
         vz: 0,
         rotY: nowSec * 1.7,
-        scale0: 0.3,
+        scale0: upstreamKillFx ? 0.1 : 0.3,
         scale1: 1.3,
         color: c.clone().lerp(this._white, 0.2),
         bornSec: nowSec,
         lifeSec: 0.27,
+        expandSec: upstreamKillFx ? 0.05 : undefined,
+        holdSec: upstreamKillFx ? 0.12 : undefined,
+        fadePow: upstreamKillFx ? 1.0 : undefined,
         spin: 0.25,
         gravity: 0,
         flat: false,
@@ -927,11 +943,14 @@ export class FXSystem {
         vy: 0,
         vz: 0,
         rotY: nowSec * 1.7 + 0.39,
-        scale0: 0.2,
-        scale1: 0.74,
+        scale0: upstreamKillFx ? 0.06 : 0.2,
+        scale1: upstreamKillFx ? 0.72 : 0.74,
         color: this._white.clone(),
         bornSec: nowSec,
         lifeSec: 0.23,
+        expandSec: upstreamKillFx ? 0.05 : undefined,
+        holdSec: upstreamKillFx ? 0.1 : undefined,
+        fadePow: upstreamKillFx ? 1.0 : undefined,
         spin: -0.25,
         gravity: 0,
         flat: false,
@@ -940,7 +959,7 @@ export class FXSystem {
     this.bursts.push({
       kind: 'ring',
       x,
-      y: 0.06,
+      y: 0.05,
       z,
       vx: 0,
       vy: 0,
@@ -950,7 +969,9 @@ export class FXSystem {
       scale1: 2.0,
       color: cl,
       bornSec: nowSec,
-      lifeSec: 0.33,
+      lifeSec: upstreamKillFx ? 0.325 : 0.33,
+      expandSec: upstreamKillFx ? 0.25 : undefined,
+      fadePow: upstreamKillFx ? 1.5 : undefined,
       spin: 0,
       gravity: 0,
       alpha0: 0.85,
@@ -966,13 +987,16 @@ export class FXSystem {
     victimColor: string,
     killerColor: string,
     nowSec: number,
+    upstreamKillFx = false,
   ) {
     const ang = Math.atan2(dz, dx);
     const vc = new THREE.Color(victimColor);
     const kc = new THREE.Color(killerColor).lerp(this._white, 0.55);
-    const waistY = 0.38;
+    const groundCol = new THREE.Color(killerColor).lerp(this._white, 0.45);
+    const waistY = upstreamKillFx ? 0.36 : 0.38;
 
-    // Double-layered feathered slice streak (colored outer + razor-sharp white inner core, fx.py:277-279)
+    // Double-layered feathered slice streak (colored outer + razor-sharp white inner core, fx.py:275-279)
+    // In upstreamKillFx mode, expands to full 2.4m in 0.7 ticks (0.035s) and holds bright across the 0.6-tick hit-stop!
     this.bursts.push({
       kind: 'streak',
       x: x + dx * 0.25,
@@ -982,12 +1006,15 @@ export class FXSystem {
       vy: 0,
       vz: 0,
       rotY: -ang,
-      scale0: 0.55,
+      scale0: upstreamKillFx ? 0.5 : 0.55,
       scale1: 2.4,
       scaleZ: 0.2,
       color: kc,
       bornSec: nowSec,
-      lifeSec: 0.22,
+      lifeSec: upstreamKillFx ? 0.2 : 0.22,
+      expandSec: upstreamKillFx ? 0.035 : undefined,
+      holdSec: upstreamKillFx ? 0.07 : undefined,
+      fadePow: upstreamKillFx ? 1.0 : undefined,
       spin: 0,
       gravity: 0,
       alpha0: 0.92,
@@ -1002,12 +1029,15 @@ export class FXSystem {
         vy: 0,
         vz: 0,
         rotY: -ang,
-        scale0: 0.5,
-        scale1: 2.2,
-        scaleZ: 0.08,
+        scale0: upstreamKillFx ? 0.46 : 0.5,
+        scale1: upstreamKillFx ? 2.21 : 2.2,
+        scaleZ: upstreamKillFx ? 0.075 : 0.08,
         color: this._white.clone(),
         bornSec: nowSec,
         lifeSec: 0.2,
+        expandSec: upstreamKillFx ? 0.035 : undefined,
+        holdSec: upstreamKillFx ? 0.07 : undefined,
+        fadePow: upstreamKillFx ? 1.0 : undefined,
         spin: 0,
         gravity: 0,
         alpha0: 1.0,
@@ -1025,7 +1055,9 @@ export class FXSystem {
         scale1: 1.1,
         color: this._white.clone(),
         bornSec: nowSec,
-        lifeSec: 0.18,
+        lifeSec: upstreamKillFx ? 0.16 : 0.18,
+        expandSec: upstreamKillFx ? 0.11 : undefined,
+        fadePow: upstreamKillFx ? 1.4 : undefined,
         spin: 0,
         gravity: 0,
         alpha0: 0.72,
@@ -1034,22 +1066,35 @@ export class FXSystem {
     this.bursts.push({
       kind: 'ring',
       x,
-      y: 0.06,
+      y: 0.05,
       z,
       vx: 0,
       vy: 0,
       vz: 0,
       rotY: 0,
-      scale0: 0.45,
-      scale1: 1.95,
-      color: kc,
+      scale0: upstreamKillFx ? 0.5 : 0.45,
+      scale1: upstreamKillFx ? 2.0 : 1.95,
+      color: upstreamKillFx ? groundCol : kc,
       bornSec: nowSec,
-      lifeSec: 0.34,
+      lifeSec: upstreamKillFx ? 0.325 : 0.34,
+      expandSec: upstreamKillFx ? 0.25 : undefined,
+      fadePow: upstreamKillFx ? 1.5 : undefined,
       spin: 0,
       gravity: 0,
       alpha0: 0.85,
     });
-    this.spawnSparks(x, 0.55, z, 9, 5.2, kc, nowSec, 0.38, 0.17, this._white);
+    this.spawnSparks(
+      x,
+      upstreamKillFx ? 0.6 : 0.55,
+      z,
+      upstreamKillFx ? 8 : 9,
+      upstreamKillFx ? 5.0 : 5.2,
+      upstreamKillFx ? groundCol : kc,
+      nowSec,
+      upstreamKillFx ? 0.4 : 0.38,
+      0.17,
+      this._white,
+    );
 
     // Flying voxel cubes spraying along slice direction
     const pale = vc.clone().lerp(this._white, 0.68);
@@ -1074,7 +1119,7 @@ export class FXSystem {
         scale1: 0.08,
         color: i % 3 === 0 ? vc : pale,
         bornSec: nowSec,
-        lifeSec: 0.62,
+        lifeSec: 0.625,
         spin: 6 + r1 * 7,
         gravity: 9.2,
       });
@@ -1738,7 +1783,8 @@ export class FXSystem {
         continue;
       }
       const u = age / b.lifeSec;
-      const e = 1 - Math.pow(1 - u, 3);
+      const eExp = b.expandSec ? Math.min(1, age / b.expandSec) : u;
+      const e = 1 - Math.pow(1 - eExp, 3);
       const floorY = b.yFloor ?? 0.05;
       let x: number;
       let y: number;
@@ -1763,14 +1809,22 @@ export class FXSystem {
       }
       const sc = b.scale0 + (b.scale1 - b.scale0) * e;
       const baseAlpha = b.alpha0 ?? 1.0;
-      const op =
-        b.kind === 'ribbon'
-          ? Math.max(0, 1 - Math.pow(Math.max(0, (u - 0.65) / 0.35), 2))
-          : b.kind === 'slash' || b.kind === 'kick'
-            ? Math.min(1, u / 0.14) * Math.max(0, 1 - Math.max(0, (u - 0.3) / 0.7))
-            : b.kind === 'star'
-              ? Math.max(0, 1 - Math.pow(Math.max(0, (u - 0.35) / 0.65), 1.3))
-              : Math.max(0, 1 - u * u);
+      let op: number;
+      if (b.holdSec !== undefined) {
+        const fadeU =
+          age <= b.holdSec ? 0 : Math.min(1, (age - b.holdSec) / Math.max(0.001, b.lifeSec - b.holdSec));
+        op = Math.max(0, Math.pow(1 - fadeU, b.fadePow ?? 1.0));
+      } else if (b.fadePow !== undefined) {
+        op = Math.max(0, Math.pow(1 - u, b.fadePow));
+      } else if (b.kind === 'ribbon') {
+        op = Math.max(0, 1 - Math.pow(Math.max(0, (u - 0.65) / 0.35), 2));
+      } else if (b.kind === 'slash' || b.kind === 'kick') {
+        op = Math.min(1, u / 0.14) * Math.max(0, 1 - Math.max(0, (u - 0.3) / 0.7));
+      } else if (b.kind === 'star') {
+        op = Math.max(0, 1 - Math.pow(Math.max(0, (u - 0.35) / 0.65), 1.3));
+      } else {
+        op = Math.max(0, 1 - u * u);
+      }
 
       let m: THREE.Mesh | null = null;
       if (b.kind === 'ring') m = this.rings.take();

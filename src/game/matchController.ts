@@ -2,6 +2,7 @@ import { HumanInputController } from './humanInput';
 import { CinematicDirector, normalizeCinematicOptions } from './killCamDirector';
 import { CinematicOptions } from './settings';
 import {
+  CauseType,
   EngineMapData,
   LOGIC_DT_MS,
   LOGIC_HZ,
@@ -59,6 +60,7 @@ export class MatchController {
   private precomputedIndex = 0;
   private mapDataCache: EngineMapData | null = null;
   private cinematicDirector: CinematicDirector | null = null;
+  private killFxEnabled = false;
   private tickIntervalMs = LOGIC_DT_MS;
   private gameSpeed = 1.0;
   private speedOverride: number | null = null;
@@ -180,13 +182,19 @@ export class MatchController {
   }
 
   public setCinematicOptions(opts: boolean | Partial<CinematicOptions>): CinematicDirector | null {
+    const normalized = normalizeCinematicOptions(opts);
+    this.killFxEnabled = normalized.killFx;
     if (!this.precomputedTicks || !this.mapDataCache) return null;
     this.cinematicDirector = new CinematicDirector(
       this.precomputedTicks,
       this.mapDataCache,
-      normalizeCinematicOptions(opts),
+      normalized,
     );
     return this.cinematicDirector;
+  }
+
+  public setKillFxEnabled(enabled: boolean) {
+    this.killFxEnabled = enabled;
   }
 
   public setCliffGuard(enabled: boolean) {
@@ -323,9 +331,11 @@ export class MatchController {
 
     this.mapDataCache = mapData;
     const cinematicCfg = normalizeCinematicOptions(opts?.cinematic);
-    // Pure AI match needs accelerated pre-simulation only when pre-kill slow-mo (killCam or finisherCam) is enabled;
+    this.killFxEnabled = cinematicCfg.killFx;
+    // Pure AI match needs accelerated pre-simulation only when pre-kill slow-mo or killFx is enabled;
     // if only winnerCam is enabled, it runs live and glides to winner close-up on match end!
-    const useAcceleratedKillCam = this.humanSeat < 0 && (cinematicCfg.killCam || cinematicCfg.finisherCam);
+    const useAcceleratedKillCam =
+      this.humanSeat < 0 && (cinematicCfg.killCam || cinematicCfg.finisherCam || cinematicCfg.killFx);
 
     if (useAcceleratedKillCam) {
       // Pure AI spectator match with kill-cam enabled: accelerate full WASM simulation first
@@ -522,8 +532,10 @@ export class MatchController {
   }
 
   private getPrecomputedTickIntervalMs(tickIdx: number): number {
-    const scale = this.cinematicDirector?.getSpeedScaleAtSim(tickIdx * (LOGIC_DT_MS / 1000)) ?? 1.0;
-    return LOGIC_DT_MS / (this.gameSpeed * scale);
+    if (this.cinematicDirector) {
+      return (this.cinematicDirector.getTickRealDurationSec(tickIdx) * 1000) / this.gameSpeed;
+    }
+    return LOGIC_DT_MS / this.gameSpeed;
   }
 
   private executePrecomputedTick() {
@@ -632,9 +644,23 @@ export class MatchController {
         }
       }
 
+      // Live 4P post-death spectator hit-stop: when human is already eliminated and watching remaining AI,
+      // extend the tick after a dart/slash kill by 3 frames @ 30fps (100ms / speed) for the 0.6-tick freeze.
+      const spectatorHitStopMs =
+        this.killFxEnabled &&
+        this.humanSeat >= 0 &&
+        prevState.players[this.humanSeat]?.alive === 0 &&
+        !nextState.over &&
+        prevState.events.some(
+          (ev) => ev.name === 'DEATH' && (ev.b === CauseType.DART || ev.b === CauseType.SLASH),
+        )
+          ? (3 / 30) * 1000 / Math.max(0.1, this.getEffectiveSpeed())
+          : 0;
+      const stepDurationMs = this.tickIntervalMs + spectatorHitStopMs;
+
       this.currentState = nextState;
       this.recordedTicks.push(nextState);
-      this.callbacks.onTick(prevState, nextState, this.tickIntervalMs);
+      this.callbacks.onTick(prevState, nextState, stepDurationMs);
 
       if (nextState.over) {
         this.running = false;
@@ -647,10 +673,10 @@ export class MatchController {
       this.dispatchBots(nextObs);
 
       // Drift-corrected logic clock (resync cleanly if tab was backgrounded)
-      this.nextTickDeadline += this.tickIntervalMs;
-      const maxLag = Math.max(150, this.tickIntervalMs * 3);
+      this.nextTickDeadline += stepDurationMs;
+      const maxLag = Math.max(150, stepDurationMs * 3);
       if (tickNow - this.nextTickDeadline > maxLag) {
-        this.nextTickDeadline = tickNow + this.tickIntervalMs;
+        this.nextTickDeadline = tickNow + stepDurationMs;
       }
     } catch (err) {
       if (!this.stopped) {

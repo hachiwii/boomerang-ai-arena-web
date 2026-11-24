@@ -35,7 +35,7 @@ export class ReplayController {
 
   private bundle: MatchReplayBundle | null = null;
   private director: CinematicDirector | null = null;
-  private cinematicOpts: CinematicOptions = { killCam: true, finisherCam: true, winnerCam: true };
+  private cinematicOpts: CinematicOptions = { killCam: false, finisherCam: true, winnerCam: true, killFx: true };
   private tickIndex = 0;
   private speed = 1.0;
   private paused = false;
@@ -87,8 +87,10 @@ export class ReplayController {
   }
 
   private getTickIntervalMs(tickIdx = this.tickIndex): number {
-    const scale = this.director?.getSpeedScaleAtSim(tickIdx * (LOGIC_DT_MS / 1000)) ?? 1.0;
-    return LOGIC_DT_MS / (this.speed * scale);
+    if (this.director) {
+      return (this.director.getTickRealDurationSec(tickIdx) * 1000) / this.speed;
+    }
+    return LOGIC_DT_MS / this.speed;
   }
 
   private scanNewDeaths(ticks: TickSnapshot[]): number {

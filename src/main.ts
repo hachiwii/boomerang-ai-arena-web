@@ -17,6 +17,7 @@ import {
   getSlashJudgmentTicks,
   GraphicsQualityOption,
   isBoundToAction,
+  isKillFxEffective,
   matchesActionKeyEvent,
   SettingsStore,
 } from './game/settings';
@@ -130,6 +131,7 @@ async function bootstrap() {
 
   const input = new HumanInputController(canvas, settings);
   const renderer = new GameRenderer(canvas, sfx, undefined, undefined, settings.get().graphicsQuality);
+  renderer.setKillFxEnabled(isKillFxEffective(settings.get()));
   input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
   input.setTouchMode(platform.isMobile());
   renderer.setMobileView(platform.isMobile());
@@ -706,6 +708,8 @@ async function bootstrap() {
       renderer.setGraphicsQuality(s.graphicsQuality);
     }
     const cinematic = getCinematicOptions(s);
+    renderer.setKillFxEnabled(cinematic.killFx);
+    controller.setKillFxEnabled(cinematic.killFx);
     if (mode === 'replay') {
       replayController.setCinematicOptions(cinematic);
     } else if (mode === 'playing') {
@@ -716,8 +720,17 @@ async function bootstrap() {
       } else {
         const curSt = controller.getCurrentState();
         if (curSt?.over && activeMapData) {
+          const hSeat = controller.getHumanSeat();
+          const recorded = controller.getRecordedTicks();
+          const prevSt = recorded.length >= 2 ? recorded[recorded.length - 2] : null;
+          const spectatingFinal = hSeat < 0 || Boolean(prevSt && prevSt.players[hSeat]?.alive === 0);
           renderer.setCinematicDirector(
-            CinematicDirector.createWinnerCloseupOnly(curSt, activeMapData, s.winnerCam),
+            CinematicDirector.createWinnerCloseupOnly(
+              curSt,
+              activeMapData,
+              s.winnerCam,
+              spectatingFinal && cinematic.killFx,
+            ),
           );
         }
       }
@@ -965,12 +978,26 @@ async function bootstrap() {
         }
       }
       persistCurrentMatchHistory(eloResult, false);
-      // Live human matches (and live AI matches with only winnerCam) glide smoothly to the winner front close-up!
+      // Live human matches (and live AI matches with only winnerCam) glide smoothly to the winner front close-up;
+      // if already spectating (4P eliminated human), also run upstream final-kill hit-stop + punch when killFx is ON!
       let activeDirector = director ?? null;
-      if (!activeDirector && activeMapData && settings.get().winnerCam) {
-        activeDirector = CinematicDirector.createWinnerCloseupOnly(finalState, activeMapData, true);
-        if (activeDirector) {
-          renderer.setCinematicDirector(activeDirector);
+      if (!activeDirector && activeMapData) {
+        const curSettings = settings.get();
+        const hSeat = controller.getHumanSeat();
+        const recorded = controller.getRecordedTicks();
+        const prevSt = recorded.length >= 2 ? recorded[recorded.length - 2] : null;
+        const spectatingFinal = hSeat < 0 || Boolean(prevSt && prevSt.players[hSeat]?.alive === 0);
+        const wantFinalKillFx = spectatingFinal && isKillFxEffective(curSettings);
+        if (curSettings.winnerCam || wantFinalKillFx) {
+          activeDirector = CinematicDirector.createWinnerCloseupOnly(
+            finalState,
+            activeMapData,
+            curSettings.winnerCam,
+            wantFinalKillFx,
+          );
+          if (activeDirector) {
+            renderer.setCinematicDirector(activeDirector);
+          }
         }
       }
 

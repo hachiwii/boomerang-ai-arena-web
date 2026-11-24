@@ -23,6 +23,7 @@ export interface CinematicOptions {
   killCam: boolean; // Non-final kills (0.5x slow-mo + eye-level camera)
   finisherCam: boolean; // Final kill (0.25x slow-mo + eye-level camera)
   winnerCam: boolean; // Winner front close-up + periodic confetti shower
+  killFx: boolean; // Upstream hit-stop + camera impact punch/shake + peak-aligned kill VFX (high quality + !killCam only)
 }
 
 /** 'auto' follows the detected primary input device (touch → mobile); otherwise a manual override. */
@@ -136,6 +137,7 @@ export interface GameSettings {
   dashGuard: boolean; // Dash-tail 25% cliff save
   slashJudgment: SlashJudgmentOption; // 'normal' (5f) | 'strict' (3f) | 'ai' (windup + 1f)
   killCam: boolean; // Non-final kill slow-mo & eye-level camera (0.5x)
+  killFx: boolean; // Upstream hit-stop + impact punch/VFX in replay/spectator (only available when graphicsQuality==='high' && !killCam)
   finisherCam: boolean; // Final kill slow-mo & eye-level camera (0.25x)
   winnerCam: boolean; // Winner front close-up & periodic confetti shower
   exportResolution: ExportResolutionOption;
@@ -146,11 +148,20 @@ export interface GameSettings {
   keybindings: KeyBindings;
 }
 
+export function isKillFxAvailable(s: Pick<GameSettings, 'graphicsQuality' | 'killCam'>): boolean {
+  return s.graphicsQuality === 'high' && !s.killCam;
+}
+
+export function isKillFxEffective(s: Pick<GameSettings, 'graphicsQuality' | 'killCam' | 'killFx'>): boolean {
+  return isKillFxAvailable(s) && s.killFx;
+}
+
 export function getCinematicOptions(s: GameSettings): CinematicOptions {
   return {
     killCam: s.killCam,
     finisherCam: s.finisherCam,
     winnerCam: s.winnerCam,
+    killFx: isKillFxEffective(s),
   };
 }
 
@@ -280,7 +291,8 @@ export function defaultSettings(): GameSettings {
     cliffGuard: true,
     dashGuard: true,
     slashJudgment: 'normal',
-    killCam: true,
+    killCam: false,
+    killFx: true,
     finisherCam: true,
     winnerCam: true,
     exportResolution: '1080p',
@@ -296,6 +308,13 @@ const VALID_GRAPHICS_QUALITY = new Set<GraphicsQualityOption>(['low', 'high']);
 const VALID_SLASH_JUDGMENT = new Set<SlashJudgmentOption>(['normal', 'strict', 'ai']);
 const VALID_EXPORT_RES = new Set<ExportResolutionOption>(['480p', '720p', '1080p', '2k', '4k']);
 const STORAGE_KEY = 'boomerang_arena_settings_v1';
+const EXISTING_USER_STORAGE_KEYS = [
+  'boomerang_arena_leaderboard_v2',
+  'boomerang_arena_map_pools_v1',
+  'boomerang_arena_recent_maps_v1',
+  'boomerang_arena_cricket_v1',
+  'boomerang_arena_custom_bots_v1',
+];
 
 const MODIFIER_KEY_CODES = new Set<string>([
   'ShiftLeft',
@@ -463,7 +482,24 @@ export class SettingsStore {
     const def = defaultSettings();
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (!raw) return def;
+      if (!raw) {
+        // Distinguish returning players (who played previously without opening Settings) from brand-new users
+        const isExistingUser = EXISTING_USER_STORAGE_KEYS.some((k) => localStorage.getItem(k) !== null);
+        const initial: GameSettings = isExistingUser
+          ? {
+              ...def,
+              killCam: true,
+              killFx: false,
+              keybindings: { ...def.keybindings, dash: ['ShiftLeft', 'ShiftRight'] },
+            }
+          : def;
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(initial));
+        } catch {
+          // Ignore storage errors
+        }
+        return initial;
+      }
       const parsed = JSON.parse(raw) as Partial<GameSettings> & { fpsCap?: unknown };
       const soundEnabled = typeof parsed.soundEnabled === 'boolean' ? parsed.soundEnabled : def.soundEnabled;
       const volume =
@@ -499,8 +535,11 @@ export class SettingsStore {
         parsed.slashJudgment !== undefined && VALID_SLASH_JUDGMENT.has(parsed.slashJudgment)
           ? parsed.slashJudgment
           : def.slashJudgment;
+      // Existing saved configs keep legacy defaults (killCam: true if absent, killFx: false for existing users)
       const killCam =
-        typeof parsed.killCam === 'boolean' ? parsed.killCam : def.killCam;
+        typeof parsed.killCam === 'boolean' ? parsed.killCam : true;
+      const killFx =
+        typeof parsed.killFx === 'boolean' ? parsed.killFx : false;
       const finisherCam =
         typeof parsed.finisherCam === 'boolean'
           ? parsed.finisherCam
@@ -568,6 +607,7 @@ export class SettingsStore {
         dashGuard,
         slashJudgment,
         killCam,
+        killFx,
         finisherCam,
         winnerCam,
         exportResolution,
@@ -699,6 +739,12 @@ export class SettingsStore {
   public setKillCam(enabled: boolean) {
     if (this.settings.killCam === enabled) return;
     this.settings.killCam = enabled;
+    this.emit();
+  }
+
+  public setKillFx(enabled: boolean) {
+    if (this.settings.killFx === enabled) return;
+    this.settings.killFx = enabled;
     this.emit();
   }
 
