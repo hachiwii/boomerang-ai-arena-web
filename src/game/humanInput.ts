@@ -1,5 +1,5 @@
 import { applyCliffGuard } from './cliffGuard';
-import { applyMeleeAssist, applyMobileMeleeAssist } from './meleeAssist';
+import { applyMeleeAssist, applyMobileMeleeAssist, hasMobileMeleeHitOpportunity } from './meleeAssist';
 import { ActionBindKey, getSlashJudgmentTicks, isBoundToAction, SettingsStore } from './settings';
 import {
   ActType,
@@ -90,6 +90,7 @@ export class HumanInputController {
   private vMoveX = 0;
   private vMoveY = 0;
   private vAimHeld = false;
+  private vAiming = false;
   private touchPendingPresses: TouchPress[] = [];
   private touchLockedPreInput: TouchPress | null = null;
   private touchLastSampledLocked = false;
@@ -154,6 +155,7 @@ export class HumanInputController {
     this.vMoveX = 0;
     this.vMoveY = 0;
     this.vAimHeld = false;
+    this.vAiming = false;
     this.touchPendingPresses.length = 0;
     this.touchLockedPreInput = null;
     this.touchLastSampledLocked = false;
@@ -163,6 +165,11 @@ export class HumanInputController {
   public setVirtualMove(x: number, y: number) {
     this.vMoveX = Number.isFinite(x) ? Math.max(-1, Math.min(1, x)) : 0;
     this.vMoveY = Number.isFinite(y) ? Math.max(-1, Math.min(1, y)) : 0;
+  }
+
+  /** Right stick actively aiming a throw: caps walking movement speed to 50% (matching throw_move = 50%). */
+  public setVirtualAiming(aiming: boolean) {
+    this.vAiming = aiming;
   }
 
   /** Right stick held while the dart is NOT in hand → behaves like holding the Throw/Recall key. */
@@ -195,8 +202,8 @@ export class HumanInputController {
     this.touchPendingPresses.push({
       kind: 'melee',
       at: performance.now(),
-      dirX: len >= 0.2 ? this.vMoveX / len : 0,
-      dirY: len >= 0.2 ? this.vMoveY / len : 0,
+      dirX: len >= 0.06 ? this.vMoveX / len : 0,
+      dirY: len >= 0.06 ? this.vMoveY / len : 0,
     });
   }
 
@@ -207,8 +214,8 @@ export class HumanInputController {
     this.touchPendingPresses.push({
       kind: 'dash',
       at: performance.now(),
-      dirX: len >= 0.2 ? this.vMoveX / len : 0,
-      dirY: len >= 0.2 ? this.vMoveY / len : 0,
+      dirX: len >= 0.06 ? this.vMoveX / len : 0,
+      dirY: len >= 0.06 ? this.vMoveY / len : 0,
     });
   }
 
@@ -671,12 +678,12 @@ export class HumanInputController {
     return this.getVirtualMoveVector();
   }
 
-  /** Analog left stick → engine move vector (|v| ≥ 1000 = full speed, shorter = proportional walk). */
+  /** Left stick → engine move vector: 6% deadzone, instant full speed beyond (50% while aiming throw). */
   private getVirtualMoveVector(): [number, number] {
     const m = Math.hypot(this.vMoveX, this.vMoveY);
-    if (m < 0.1) return [0, 0];
-    const speed = Math.min(1, 0.35 + ((m - 0.1) / 0.45) * 0.65);
-    return [Math.round((this.vMoveX / m) * speed * 1000), Math.round((this.vMoveY / m) * speed * 1000)];
+    if (m < 0.06) return [0, 0];
+    const scale = this.vAiming ? 500 : 1000;
+    return [Math.round((this.vMoveX / m) * scale), Math.round((this.vMoveY / m) * scale)];
   }
 
   private tryBuildTouchAction(
@@ -754,7 +761,7 @@ export class HumanInputController {
     const faceY = Math.round(Math.sin(faceRad) * 1000);
     const stickLen = Math.hypot(this.vMoveX, this.vMoveY);
     const stickDir: [number, number] | null =
-      stickLen >= 0.2
+      stickLen >= 0.06
         ? [Math.round((this.vMoveX / stickLen) * 1000), Math.round((this.vMoveY / stickLen) * 1000)]
         : null;
 
@@ -765,6 +772,7 @@ export class HumanInputController {
     }
 
     const preInputEnabled = this.settings.get().dashInputBuffer;
+    const meleeAssistEnabled = this.settings.get().meleeAssist;
     if (!preInputEnabled) {
       this.touchLockedPreInput = null;
     }
@@ -780,12 +788,26 @@ export class HumanInputController {
           this.touchLockedPreInput = this.touchPendingPresses[this.touchPendingPresses.length - 1];
           this.touchPendingPresses.length = 0;
         }
-        // Mobile dash-slash / dash-kick ("冲刺斩/踢") immediately fires in moving ticks (timer 3..6)
+        // Mobile dash-slash / dash-kick ("冲刺斩/踢") in moving ticks (timer 3..6):
+        // When BOTH pre-input AND melee assist are enabled, auto-trigger on the FIRST moving tick
+        // that can hit an enemy or block an incoming dart; if no opportunity arises during the dash,
+        // keep dashing cleanly and fire on the first FREE tick after the dash finishes!
         if (canDashMelee && this.touchLockedPreInput && this.touchLockedPreInput.kind === 'melee') {
-          const cmd = this.touchLockedPreInput;
-          this.touchLockedPreInput = null;
-          const act = this.tryBuildTouchAction(cmd, state, seat, p, dart, mx, my, stickDir, faceX, faceY);
-          if (act) return act;
+          const smartWait =
+            meleeAssistEnabled &&
+            this.mapData !== null &&
+            !hasMobileMeleeHitOpportunity(
+              this.mapData,
+              state,
+              seat,
+              getSlashJudgmentTicks(this.settings.get().slashJudgment),
+            );
+          if (!smartWait) {
+            const cmd = this.touchLockedPreInput;
+            this.touchLockedPreInput = null;
+            const act = this.tryBuildTouchAction(cmd, state, seat, p, dart, mx, my, stickDir, faceX, faceY);
+            if (act) return act;
+          }
         }
       } else {
         const fresh = this.touchPendingPresses.filter((pr) => now - pr.at <= this.bufferMs);

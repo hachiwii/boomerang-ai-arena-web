@@ -1510,8 +1510,8 @@ export class FXSystem {
       (m.material as THREE.Material | undefined)?.dispose();
     }
     const startX = 0.42;
-    const headLen = Math.min(1.1, lengthM * 0.16);
-    const bodyEnd = Math.max(startX + 0.2, lengthM - headLen);
+    const headLen = Math.min(1.05, lengthM * 0.16);
+    const neckX = Math.max(startX + 0.3, lengthM - headLen);
     const hw = widthM * 0.5;
     const headHw = hw * 1.75;
 
@@ -1520,7 +1520,6 @@ export class FXSystem {
       '#6fb2ff': '#ff5a5a',
       '#cfe8ff': '#ffc2c2',
       '#f2f8ff': '#ffe2e2',
-      '#e2f1ff': '#ffd0d0',
     };
     const mkMat = (color: string, opacity: number) => {
       const mat = new THREE.MeshBasicMaterial({
@@ -1539,34 +1538,58 @@ export class FXSystem {
       return mat;
     };
 
-    // Translucent body with a brighter core lane
-    const body = new THREE.Mesh(new THREE.PlaneGeometry(bodyEnd - startX, widthM), mkMat('#6fb2ff', 0.34));
-    body.geometry.rotateX(-Math.PI / 2);
-    body.position.set((startX + bodyEnd) * 0.5, 0, 0);
-    const core = new THREE.Mesh(new THREE.PlaneGeometry(bodyEnd - startX, widthM * 0.28), mkMat('#cfe8ff', 0.3));
-    core.geometry.rotateX(-Math.PI / 2);
-    core.position.copy(body.position);
+    const makeArrowShape = (sx: number, nx: number, tipX: number, shw: number, hhw: number) => {
+      const s = new THREE.Shape();
+      s.moveTo(sx, -shw);
+      s.lineTo(nx, -shw);
+      s.lineTo(nx, -hhw);
+      s.lineTo(tipX, 0);
+      s.lineTo(nx, hhw);
+      s.lineTo(nx, shw);
+      s.lineTo(sx, shw);
+      s.closePath();
+      return s;
+    };
 
-    // Crisp side borders
-    const edgeW = Math.max(0.035, widthM * 0.07);
-    const edgeL = new THREE.Mesh(new THREE.PlaneGeometry(bodyEnd - startX, edgeW), mkMat('#f2f8ff', 0.95));
-    edgeL.geometry.rotateX(-Math.PI / 2);
-    edgeL.position.set((startX + bodyEnd) * 0.5, 0, hw - edgeW * 0.5);
-    const edgeR = edgeL.clone();
-    edgeR.position.z = -hw + edgeW * 0.5;
+    // 1. Unified seamless translucent body (shaft merges directly into arrowhead with zero gap or double-alpha seam)
+    const bodyGeo = new THREE.ShapeGeometry(makeArrowShape(startX, neckX, lengthM, hw, headHw));
+    bodyGeo.rotateX(Math.PI / 2);
+    const body = new THREE.Mesh(bodyGeo, mkMat('#6fb2ff', 0.36));
 
-    // Arrow head
-    const shape = new THREE.Shape();
-    shape.moveTo(bodyEnd, -headHw);
-    shape.lineTo(lengthM, 0);
-    shape.lineTo(bodyEnd, headHw);
-    shape.lineTo(bodyEnd + headLen * 0.22, 0);
-    shape.closePath();
-    const headGeo = new THREE.ShapeGeometry(shape);
-    headGeo.rotateX(Math.PI / 2);
-    const head = new THREE.Mesh(headGeo, mkMat('#e2f1ff', 0.92));
+    // 2. Unified bright center lane flowing seamlessly into the arrow tip
+    const coreHw = hw * 0.32;
+    const coreHeadHw = hw * 0.88;
+    const coreGeo = new THREE.ShapeGeometry(
+      makeArrowShape(startX + 0.08, neckX + 0.1, Math.max(neckX + 0.25, lengthM - 0.16), coreHw, coreHeadHw),
+    );
+    coreGeo.rotateX(Math.PI / 2);
+    const core = new THREE.Mesh(coreGeo, mkMat('#cfe8ff', 0.34));
 
-    for (const m of [body, core, edgeL, edgeR, head]) {
+    // 3. Crisp continuous perimeter border around the entire arrow (back cap, shaft, head flare & tip)
+    const b = Math.max(0.04, widthM * 0.072);
+    const tipTheta = Math.atan2(headHw, Math.max(0.1, lengthM - neckX));
+    const innerStartX = startX + b;
+    const innerNeckX = neckX + b;
+    const innerTipX = Math.max(innerNeckX + 0.08, lengthM - b / Math.sin(tipTheta));
+    const innerHw = Math.max(0.04, hw - b);
+    const innerHeadHw = Math.max(innerHw + 0.04, headHw - b * (1 / Math.cos(tipTheta) + Math.tan(tipTheta)));
+
+    const borderShape = makeArrowShape(startX, neckX, lengthM, hw, headHw);
+    const hole = new THREE.Path();
+    hole.moveTo(innerStartX, -innerHw);
+    hole.lineTo(innerNeckX, -innerHw);
+    hole.lineTo(innerNeckX, -innerHeadHw);
+    hole.lineTo(innerTipX, 0);
+    hole.lineTo(innerNeckX, innerHeadHw);
+    hole.lineTo(innerNeckX, innerHw);
+    hole.lineTo(innerStartX, innerHw);
+    hole.closePath();
+    borderShape.holes.push(hole);
+    const borderGeo = new THREE.ShapeGeometry(borderShape);
+    borderGeo.rotateX(Math.PI / 2);
+    const border = new THREE.Mesh(borderGeo, mkMat('#f2f8ff', 0.94));
+
+    for (const m of [body, core, border]) {
       m.renderOrder = 998;
       m.frustumCulled = false;
       this.skillshot.add(m);

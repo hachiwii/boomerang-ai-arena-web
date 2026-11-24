@@ -47,8 +47,16 @@ export function pxToSpot(px: SpotPx, w: number, h: number): MobileControlSpot {
   };
 }
 
+const CANCEL_ICON_SVG = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>`;
+
 function buildControlEl(key: MobileControlKey): HTMLDivElement {
   const el = document.createElement('div');
+  if (key === 'cancel') {
+    el.className = 'm-ctl m-cancel m-btn';
+    el.dataset.ctl = key;
+    el.innerHTML = `${CANCEL_ICON_SVG}<span>取消</span>`;
+    return el;
+  }
   el.className = `m-ctl m-${key} ${key === 'move' || key === 'aim' ? 'm-stick' : 'm-btn'}`;
   el.dataset.ctl = key;
   if (key === 'move') {
@@ -86,21 +94,26 @@ export interface MobileControlsCallbacks {
 }
 
 type AimPhase = 'idle' | 'pending' | 'aiming' | 'recall';
+type LiveControlKey = 'move' | 'aim' | 'slash' | 'dash';
 
 const AIM_DEADZONE = 0.22;
+const MOVE_MAX_R_RATIO = 0.48; // Compact steering radius for snappy mobile direction reversals
+const AIM_SLOWMO_DELAY_MS = 70; // Avoid brief slow-mo flicker on quick flick throws
+const LIFTOFF_LOOKBACK_MS = 25; // Stabilize aim direction against capacitive lift-off drift
+const LIFTOFF_MAX_AGE_MS = 95;
 
 /**
  * Mobile touch controls for live matches:
- * - Left stick: analog movement (floating: a touch anywhere in its half re-centers the stick there).
- * - Right stick: dart in hand → hold to aim at 0.1x slow-mo with a skillshot indicator, release to throw;
- *   dart away → hold to recall (inner disc fills outward with the channel progress).
- *   Pressing it mid-dash waits for the dash to end before entering slow-mo aim.
- * - Slash & Dash buttons around the aim stick (icons follow the current function, dash shows cooldown).
+ * - Left stick: touch-down-as-center + dynamic follow-center beyond maxR (MOBA-style instant reversals),
+ *   6% deadzone with instant 100% speed beyond (capped to 50% while actively aiming a throw).
+ * - Right stick: touch-down-as-center, lift-off drift stabilization, live indicator even in pending/locked
+ *   states, seamless transition from in-flight dart into aiming, delayed 0.1x slow-mo, editable cancel target.
+ * - Slash & Dash buttons around the aim stick (icons follow current function; dash shows cooldown).
  */
 export class MobileControls {
   private readonly layer: HTMLDivElement;
   private readonly moveZone: HTMLDivElement;
-  private readonly els: Record<MobileControlKey, HTMLDivElement>;
+  private readonly els: Record<LiveControlKey, HTMLDivElement>;
   private readonly moveKnob: HTMLElement;
   private readonly aimKnob: HTMLElement;
   private readonly aimFill: HTMLElement;
@@ -125,6 +138,7 @@ export class MobileControls {
     aim: { cx: 0, cy: 0, d: 0 },
     slash: { cx: 0, cy: 0, d: 0 },
     dash: { cx: 0, cy: 0, d: 0 },
+    cancel: { cx: 0, cy: 0, d: 0 },
   };
 
   private movePointer: number | null = null;
@@ -133,9 +147,13 @@ export class MobileControls {
 
   private aimPointer: number | null = null;
   private aimPhase: AimPhase = 'idle';
+  private aimDownX = 0;
+  private aimDownY = 0;
   private aimVecX = 0;
   private aimVecY = 0;
+  private aimHistory: { t: number; x: number; y: number }[] = [];
   private slowmoOn = false;
+  private slowmoTimer: number | null = null;
 
   private aimIconKey = '';
   private slashIconKey = '';
@@ -162,11 +180,12 @@ export class MobileControls {
       slash: buildControlEl('slash'),
       dash: buildControlEl('dash'),
     };
-    for (const k of MOBILE_CONTROL_KEYS) this.layer.appendChild(this.els[k]);
-    // Red "cancel throw" target that appears next to the aim stick while aiming
+    for (const k of ['move', 'aim', 'slash', 'dash'] as const) this.layer.appendChild(this.els[k]);
+
+    // Red "cancel throw" target (editable position & size in Layout Editor, defaults to top-right below Settings/Exit)
     this.aimCancel = document.createElement('div');
     this.aimCancel.className = 'm-aim-cancel hidden';
-    this.aimCancel.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><span>取消</span>`;
+    this.aimCancel.innerHTML = `${CANCEL_ICON_SVG}<span>取消</span>`;
     this.layer.appendChild(this.aimCancel);
     parent.insertBefore(this.layer, parent.firstChild);
 
@@ -237,26 +256,14 @@ export class MobileControls {
     const layout = this.settings.get().mobileLayout;
     for (const k of MOBILE_CONTROL_KEYS) {
       this.px[k] = spotToPx(layout[k], w, h);
+    }
+    for (const k of ['move', 'aim', 'slash', 'dash'] as const) {
       placeControl(this.els[k], this.px[k]);
     }
+    this.cancelPx = this.px.cancel;
+    placeControl(this.aimCancel, this.cancelPx);
     const mv = layout.move;
     this.moveZone.classList.toggle('is-right', mv.side === 'r');
-    this.placeCancelZone(w, h, layout.aim.side);
-  }
-
-  /** Cancel target sits off the aim stick's upper outer corner (mirrored if the stick is on the left). */
-  private placeCancelZone(w: number, h: number, side: 'l' | 'r') {
-    const a = this.px.aim;
-    const r = a.d / 2;
-    const d = Math.max(48, Math.min(74, a.d * 0.4));
-    const cr = d / 2;
-    const dist = r + 12 + cr;
-    const ang = (35 * Math.PI) / 180;
-    const sgn = side === 'r' ? 1 : -1;
-    const cx = Math.max(cr + 6, Math.min(w - cr - 6, a.cx + sgn * Math.cos(ang) * dist));
-    const cy = Math.max(cr + 6, Math.min(h - cr - 6, a.cy - Math.sin(ang) * dist));
-    this.cancelPx = { cx, cy, d };
-    placeControl(this.aimCancel, this.cancelPx);
   }
 
   private setCancelVisible(visible: boolean) {
@@ -269,7 +276,7 @@ export class MobileControls {
     this.cancelHot = hot;
     this.aimCancel.classList.toggle('is-hot', hot);
     this.els.aim.classList.toggle('is-cancelling', hot);
-    if (this.aimPhase === 'aiming') this.pushIndicator();
+    if (this.aimPhase === 'aiming' || this.aimPhase === 'pending') this.pushIndicator();
   }
 
   // ---------- Per-tick state → icons, recall fill, cooldown ----------
@@ -293,10 +300,18 @@ export class MobileControls {
     if (this.aimPhase === 'pending' && this.input.getInputMode() === 'active') {
       if (dart.st === DState.HAND && me.st === PState.FREE) {
         this.beginAiming();
-      } else if (dart.st !== DState.HAND && (me.st === PState.FREE || me.st === PState.RECALL)) {
+      } else if (
+        (dart.st === DState.GROUND || dart.st === DState.RISE) &&
+        (me.st === PState.FREE || me.st === PState.RECALL) &&
+        !this.stickAimDir()
+      ) {
+        // Dart dropped to ground while finger held near center without aiming → transition cleanly to recall
         this.aimPhase = 'recall';
         this.setCancelVisible(false);
+        this.callbacks.onAimIndicator(null);
         this.input.setVirtualRecallHeld(true);
+      } else {
+        this.pushIndicator();
       }
     } else if (this.aimPhase === 'aiming' && (dart.st !== DState.HAND || this.input.getInputMode() !== 'active')) {
       this.endAim(false);
@@ -343,7 +358,16 @@ export class MobileControls {
     this.dashCdText.textContent = ready ? '' : (cd / 20).toFixed(1);
   }
 
-  // ---------- Move stick ----------
+  // ---------- Move stick (touch-down-as-center + dynamic follow-center) ----------
+
+  private clampMoveCenter(cx: number, cy: number, r: number): [number, number] {
+    const w = this.layer.clientWidth || getLogicalViewport().width;
+    const h = this.layer.clientHeight || getLogicalViewport().height;
+    const isRight = this.settings.get().mobileLayout.move.side === 'r';
+    const minX = isRight ? Math.min(w - r, w * 0.45 + r) : r;
+    const maxX = isRight ? w - r : Math.max(r, w * 0.55 - r);
+    return [Math.max(minX, Math.min(maxX, cx)), Math.max(r, Math.min(h - r, cy))];
+  }
 
   private bindMove() {
     const start = (e: PointerEvent) => {
@@ -351,21 +375,16 @@ export class MobileControls {
       e.preventDefault();
       this.movePointer = e.pointerId;
       safeCapture(e.currentTarget as HTMLElement, e.pointerId);
-      const base = this.px.move;
+      const r = this.px.move.d / 2;
       const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
-      const r = base.d / 2;
-      if (Math.hypot(lx - base.cx, ly - base.cy) <= r * 1.1) {
-        this.moveCenterX = base.cx;
-        this.moveCenterY = base.cy;
-      } else {
-        // Floating: re-center the stick under the thumb (kept fully on screen)
-        this.moveCenterX = Math.max(r, Math.min(this.layer.clientWidth - r, lx));
-        this.moveCenterY = Math.max(r, Math.min(this.layer.clientHeight - r, ly));
-        const el = this.els.move;
-        el.style.left = `${(this.moveCenterX - r).toFixed(1)}px`;
-        el.style.top = `${(this.moveCenterY - r).toFixed(1)}px`;
-      }
-      this.els.move.classList.add('is-active');
+      // Always center the joystick on the initial touch point so thumb starts neutral with zero drift
+      const [cx, cy] = this.clampMoveCenter(lx, ly, r);
+      this.moveCenterX = cx;
+      this.moveCenterY = cy;
+      const el = this.els.move;
+      el.style.left = `${(cx - r).toFixed(1)}px`;
+      el.style.top = `${(cy - r).toFixed(1)}px`;
+      el.classList.add('is-active');
       this.updateMove(lx, ly);
     };
     const move = (e: PointerEvent) => {
@@ -391,13 +410,26 @@ export class MobileControls {
 
   private updateMove(lx: number, ly: number) {
     const r = this.px.move.d / 2;
-    const maxR = r * 0.62;
+    const maxR = Math.max(18, r * MOVE_MAX_R_RATIO);
     let dx = lx - this.moveCenterX;
     let dy = ly - this.moveCenterY;
     const len = Math.hypot(dx, dy);
     if (len > maxR) {
-      dx = (dx / len) * maxR;
-      dy = (dy / len) * maxR;
+      // Dynamic follow-center: pull the stick center along behind the thumb so reversing only crosses 1×maxR!
+      const ux = dx / len;
+      const uy = dy / len;
+      const [nextCx, nextCy] = this.clampMoveCenter(lx - ux * maxR, ly - uy * maxR, r);
+      this.moveCenterX = nextCx;
+      this.moveCenterY = nextCy;
+      this.els.move.style.left = `${(nextCx - r).toFixed(1)}px`;
+      this.els.move.style.top = `${(nextCy - r).toFixed(1)}px`;
+      dx = lx - nextCx;
+      dy = ly - nextCy;
+      const cl = Math.hypot(dx, dy);
+      if (cl > maxR) {
+        dx = (dx / cl) * maxR;
+        dy = (dy / cl) * maxR;
+      }
     }
     this.moveKnob.style.transform = `translate(calc(-50% + ${dx.toFixed(1)}px), calc(-50% + ${dy.toFixed(1)}px))`;
     this.input.setVirtualMove(dx / maxR, dy / maxR);
@@ -419,9 +451,15 @@ export class MobileControls {
       this.aimPointer = e.pointerId;
       safeCapture(el, e.pointerId);
       el.classList.add('is-pressed');
+      const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
+      // Touch-down-as-center: dragging direction is always measured relative to the initial thumb landing spot
+      this.aimDownX = lx;
+      this.aimDownY = ly;
       this.aimVecX = 0;
       this.aimVecY = 0;
+      this.aimHistory.length = 0;
       this.updateAimKnob();
+
       const st = this.lastState;
       const me = st && this.humanSeat >= 0 ? st.players[this.humanSeat] : null;
       const dart = st && this.humanSeat >= 0 ? st.darts[this.humanSeat] : null;
@@ -429,31 +467,37 @@ export class MobileControls {
         this.aimPhase = 'idle';
         return;
       }
-      if (dart.st === DState.HAND) {
-        if (this.input.getInputMode() !== 'active' || (me.st !== PState.FREE && me.st !== PState.RECALL)) {
-          // Countdown / any locked action state: wait to enter slow-mo aim once free, or pre-input throw on release
-          this.aimPhase = 'pending';
-          this.setCancelVisible(true);
-        } else {
-          this.beginAiming();
-        }
-      } else {
+
+      const canRecallNow = dart.st === DState.GROUND || dart.st === DState.RISE;
+      if (canRecallNow) {
         this.aimPhase = 'recall';
         this.input.setVirtualRecallHeld(true);
+      } else if (dart.st === DState.HAND && this.input.getInputMode() === 'active' && me.st === PState.FREE) {
+        this.beginAiming();
+      } else {
+        // Countdown, any locked action state, or dart in flight (returning/outbound):
+        // show live preview indicator immediately and seamlessly enter aiming once dart is in hand & free!
+        this.aimPhase = 'pending';
+        this.setCancelVisible(true);
+        this.pushIndicator();
       }
     });
+
     el.addEventListener('pointermove', (e) => {
       if (e.pointerId !== this.aimPointer) return;
       e.preventDefault();
       const c = this.px.aim;
-      const maxR = (c.d / 2) * 0.7;
+      const maxR = Math.max(20, (c.d / 2) * 0.7);
       const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
       if (this.aimPhase === 'aiming' || this.aimPhase === 'pending') {
         const cz = this.cancelPx;
-        this.setCancelHot(Math.hypot(lx - cz.cx, ly - cz.cy) <= (cz.d / 2) * 1.3);
+        const dist = Math.hypot(lx - cz.cx, ly - cz.cy);
+        const enterR = (cz.d / 2) * 1.18;
+        const exitR = (cz.d / 2) * 1.36;
+        this.setCancelHot(this.cancelHot ? dist <= exitR : dist <= enterR);
       }
-      let dx = lx - c.cx;
-      let dy = ly - c.cy;
+      let dx = lx - this.aimDownX;
+      let dy = ly - this.aimDownY;
       const len = Math.hypot(dx, dy);
       if (len > maxR) {
         dx = (dx / len) * maxR;
@@ -461,9 +505,20 @@ export class MobileControls {
       }
       this.aimVecX = dx / maxR;
       this.aimVecY = dy / maxR;
+
+      // Record stabilized aim samples for lift-off drift protection
+      const now = performance.now();
+      if (Math.hypot(this.aimVecX, this.aimVecY) >= AIM_DEADZONE) {
+        this.aimHistory.push({ t: now, x: this.aimVecX, y: this.aimVecY });
+        while (this.aimHistory.length > 1 && now - this.aimHistory[0].t > 140) {
+          this.aimHistory.shift();
+        }
+      }
+
       this.updateAimKnob();
-      if (this.aimPhase === 'aiming') this.pushIndicator();
+      if (this.aimPhase === 'aiming' || this.aimPhase === 'pending') this.pushIndicator();
     });
+
     const release = (e: PointerEvent, cancelled: boolean) => {
       if (e.pointerId !== this.aimPointer) return;
       this.aimPointer = null;
@@ -481,19 +536,57 @@ export class MobileControls {
     return len >= AIM_DEADZONE ? [this.aimVecX / len, this.aimVecY / len] : null;
   }
 
+  /**
+   * Resolves the throw direction on finger lift-off: looks back ~25ms into recent aim history
+   * to ignore last-instant thumb roll/drift on capacitive touchscreens, falling back to live vector for fast flicks.
+   */
+  private commitAimDir(): [number, number] | null {
+    const live = this.stickAimDir();
+    if (!live) return null;
+    const now = performance.now();
+    const targetT = now - LIFTOFF_LOOKBACK_MS;
+    for (let i = this.aimHistory.length - 1; i >= 0; i--) {
+      const s = this.aimHistory[i];
+      if (s.t <= targetT) {
+        if (now - s.t <= LIFTOFF_MAX_AGE_MS) {
+          const len = Math.hypot(s.x, s.y);
+          if (len >= AIM_DEADZONE) return [s.x / len, s.y / len];
+        }
+        break;
+      }
+    }
+    return live;
+  }
+
   private faceDir(): [number, number] {
     const me = this.lastState && this.humanSeat >= 0 ? this.lastState.players[this.humanSeat] : null;
     const rad = ((me?.face ?? 0) / 100) * (Math.PI / 180);
     return [Math.cos(rad), Math.sin(rad)];
   }
 
+  private clearSlowmoTimer() {
+    if (this.slowmoTimer !== null) {
+      window.clearTimeout(this.slowmoTimer);
+      this.slowmoTimer = null;
+    }
+  }
+
   private beginAiming() {
     this.aimPhase = 'aiming';
     this.els.aim.classList.add('is-aiming');
     this.setCancelVisible(true);
+    // Restrict movement speed to 50% immediately while aiming a throw
+    this.input.setVirtualAiming(true);
+    // Delay 0.1x slow-mo slightly so quick flick throws never flicker slow-mo
+    this.clearSlowmoTimer();
     if (!this.slowmoOn) {
-      this.slowmoOn = true;
-      this.callbacks.onAimSlowmo(true);
+      this.slowmoTimer = window.setTimeout(() => {
+        this.slowmoTimer = null;
+        if (this.aimPhase === 'aiming' && !this.slowmoOn) {
+          this.slowmoOn = true;
+          this.callbacks.onAimSlowmo(true);
+        }
+      }, AIM_SLOWMO_DELAY_MS);
     }
     this.pushIndicator();
   }
@@ -502,20 +595,21 @@ export class MobileControls {
     this.callbacks.onAimIndicator(this.stickAimDir() ?? this.faceDir(), this.cancelHot);
   }
 
-  /** Ends whatever the right stick was doing; `commit` = finger lifted normally (throw if aiming). */
+  /** Ends whatever the right stick was doing; `commit` = finger lifted normally (throw if aiming/pending). */
   private endAim(commit: boolean) {
     const phase = this.aimPhase;
+    const dir = commit ? this.commitAimDir() : null;
     this.aimPhase = 'idle';
     if (this.aimPointer !== null && !commit) {
       this.aimPointer = null;
     }
+    this.clearSlowmoTimer();
+    this.input.setVirtualAiming(false);
     this.els.aim.classList.remove('is-aiming', 'is-pressed');
     this.setCancelVisible(false);
     if (phase === 'aiming' && commit) {
-      const dir = this.stickAimDir();
       this.input.queueVirtualThrow(dir ? dir[0] : 0, dir ? dir[1] : 0, false);
     } else if (phase === 'pending' && commit) {
-      const dir = this.stickAimDir();
       this.input.queueVirtualThrow(dir ? dir[0] : 0, dir ? dir[1] : 0, true);
     }
     if (phase === 'recall' || !commit) {
@@ -528,6 +622,7 @@ export class MobileControls {
     }
     this.aimVecX = 0;
     this.aimVecY = 0;
+    this.aimHistory.length = 0;
     this.updateAimKnob();
   }
 
@@ -590,10 +685,8 @@ export class MobileLayoutEditor {
         <div class="m-editor-mock-actions"><span>${ICON_RESTART}</span><span>${ICON_SETTINGS}</span><span>${ICON_EXIT}</span></div>
       </div>
       <div class="m-editor-stage"></div>
-      <div class="m-editor-corner m-editor-corner-left">
+      <div class="m-editor-actions">
         <button type="button" class="m-editor-btn" data-editor-act="reset">重置键位</button>
-      </div>
-      <div class="m-editor-corner m-editor-corner-right">
         <button type="button" class="m-editor-btn" data-editor-act="cancel">取消</button>
         <button type="button" class="m-editor-btn is-primary" data-editor-act="save">保存</button>
       </div>
@@ -604,6 +697,7 @@ export class MobileLayoutEditor {
       aim: buildControlEl('aim'),
       slash: buildControlEl('slash'),
       dash: buildControlEl('dash'),
+      cancel: buildControlEl('cancel'),
     };
     for (const k of MOBILE_CONTROL_KEYS) {
       const el = this.els[k];

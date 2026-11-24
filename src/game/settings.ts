@@ -28,7 +28,7 @@ export interface CinematicOptions {
 /** 'auto' follows the detected primary input device (touch → mobile); otherwise a manual override. */
 export type PlatformPref = 'auto' | 'mobile' | 'desktop';
 
-export type MobileControlKey = 'move' | 'aim' | 'slash' | 'dash';
+export type MobileControlKey = 'move' | 'aim' | 'slash' | 'dash' | 'cancel';
 
 /**
  * One on-screen touch control, anchored to the left or right edge of the landscape viewport.
@@ -46,13 +46,14 @@ export interface MobileControlSpot {
 
 export type MobileLayout = Record<MobileControlKey, MobileControlSpot>;
 
-export const MOBILE_CONTROL_KEYS: MobileControlKey[] = ['move', 'aim', 'slash', 'dash'];
+export const MOBILE_CONTROL_KEYS: MobileControlKey[] = ['move', 'aim', 'slash', 'dash', 'cancel'];
 
 export const MOBILE_CONTROL_LABELS: Record<MobileControlKey, string> = {
   move: '移动',
   aim: '瞄准 / 召回',
   slash: '挥砍',
   dash: '冲刺',
+  cancel: '取消扔镖',
 };
 
 export const MOBILE_CONTROL_SIZE_LIMITS: Record<MobileControlKey, [number, number]> = {
@@ -60,6 +61,7 @@ export const MOBILE_CONTROL_SIZE_LIMITS: Record<MobileControlKey, [number, numbe
   aim: [0.2, 0.56],
   slash: [0.1, 0.32],
   dash: [0.1, 0.32],
+  cancel: [0.1, 0.28],
 };
 
 export function cloneDefaultMobileLayout(): MobileLayout {
@@ -68,6 +70,8 @@ export function cloneDefaultMobileLayout(): MobileLayout {
     aim: { side: 'r', x: 0.24, y: 0.3, s: 0.36 },
     slash: { side: 'r', x: 0.2, y: 0.63, s: 0.17 },
     dash: { side: 'r', x: 0.57, y: 0.26, s: 0.17 },
+    // Top-right directly below the Settings / Exit HUD buttons (never collides with upper-right aim drags)
+    cancel: { side: 'r', x: 0.11, y: 0.78, s: 0.13 },
   };
 }
 
@@ -78,6 +82,7 @@ const LEGACY_DEFAULT_MOBILE_LAYOUTS: MobileLayout[] = [
     aim: { side: 'r', x: 0.3, y: 0.3, s: 0.36 },
     slash: { side: 'r', x: 0.35, y: 0.63, s: 0.17 },
     dash: { side: 'r', x: 0.63, y: 0.26, s: 0.17 },
+    cancel: { side: 'r', x: 0.11, y: 0.78, s: 0.13 },
   },
 ];
 

@@ -1875,7 +1875,7 @@ export class GameRenderer {
       }
       vnx = p1.vx + dvx;
       vny = p1.vy + dvy;
-      const lead = Math.min(1.5, rawAlpha);
+      const lead = Math.min(1.0, rawAlpha);
       let ex = vnx * lead;
       let ey = vny * lead;
       const sp = Math.hypot(vnx, vny);
@@ -1896,9 +1896,11 @@ export class GameRenderer {
       baseY = p0.y + (p1.y - p0.y) * alpha;
     }
 
-    // Fold discontinuities (new tick, mode switch, stick change) into an easing offset
-    const intentChanged = Math.abs(intent[0] - this.predLastIntentX) + Math.abs(intent[1] - this.predLastIntentY) > 1;
-    const discontinuity = curr !== this.predLastTickRef || predicting !== this.predLastMode || intentChanged;
+    // Fold only genuine tick/mode discontinuities or sudden large jumps — avoid adding damping lag on smooth stick turns!
+    const jumpDist = Number.isFinite(this.predLastDispX)
+      ? Math.hypot(this.predLastDispX - baseX, this.predLastDispY - baseY)
+      : 0;
+    const discontinuity = curr !== this.predLastTickRef || predicting !== this.predLastMode || jumpDist > 45;
     if (discontinuity && Number.isFinite(this.predLastDispX)) {
       this.predErrX = this.predLastDispX - baseX;
       this.predErrY = this.predLastDispY - baseY;
@@ -1911,7 +1913,7 @@ export class GameRenderer {
     this.predLastMode = predicting;
     this.predLastIntentX = intent[0];
     this.predLastIntentY = intent[1];
-    const decay = Math.exp(-frameDt / 0.05);
+    const decay = Math.exp(-frameDt / 0.022);
     this.predErrX *= decay;
     this.predErrY *= decay;
 
@@ -1926,8 +1928,11 @@ export class GameRenderer {
     if (predicting) {
       currP.vx = vnx;
       currP.vy = vny;
-      if (Math.hypot(vnx, vny) >= 20) {
-        const faceDeg = (Math.atan2(vny, vnx) * 180) / Math.PI;
+      // Visually face the live stick intent right away (even during a 1-tick 180° reversal!)
+      const fx = Math.hypot(intent[0], intent[1]) >= 20 ? intent[0] : vnx;
+      const fy = Math.hypot(intent[0], intent[1]) >= 20 ? intent[1] : vny;
+      if (Math.hypot(fx, fy) >= 20) {
+        const faceDeg = (Math.atan2(fy, fx) * 180) / Math.PI;
         const face = Math.round((((faceDeg % 360) + 360) % 360) * 100);
         prevP.face = face;
         currP.face = face;

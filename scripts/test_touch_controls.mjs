@@ -100,20 +100,28 @@ function setup(rows = openRows, opts = {}) {
 
 const ev = (st, name) => st.events.find((e) => e.name === name);
 
-// ---------- 1. Analog left stick → proportional walk, full deflection = full speed ----------
+// ---------- 1. Left stick: 6% deadzone, instant 100% full speed beyond, 50% speed cap while aiming ----------
 {
   const h = setup();
   h.input.setVirtualMove(1, 0);
   let { act } = h.step();
   assert.equal(act.mx, 1000);
   assert.equal(act.my, 0);
-  h.input.setVirtualMove(0.25, 0);
+  // Just past 6% deadzone → instant full speed (1000)
+  h.input.setVirtualMove(0.08, 0);
   ({ act } = h.step());
-  assert.ok(act.mx > 0 && act.mx < 1000, `partial deflection walks slower (mx=${act.mx})`);
+  assert.equal(act.mx, 1000, `past 6% deadzone must immediately reach full speed (mx=${act.mx})`);
+  // Aiming throw → capped to 50% speed (500)
+  h.input.setVirtualAiming(true);
+  h.input.setVirtualMove(1, 0);
+  ({ act } = h.step());
+  assert.equal(act.mx, 500, `while aiming throw, movement speed must be capped at 50% (mx=${act.mx})`);
+  h.input.setVirtualAiming(false);
+  // Inside 6% deadzone → stop
   h.input.setVirtualMove(0.05, 0);
   ({ act } = h.step());
-  assert.equal(act.mx, 0, 'inside dead zone → stop');
-  console.log('  [TEST 1 PASS] analog stick: full / proportional / dead zone');
+  assert.equal(act.mx, 0, 'inside 6% dead zone → stop');
+  console.log('  [TEST 1 PASS] left stick: 6% deadzone / instant full speed / 50% aiming speed cap');
 }
 
 // ---------- 2. Dash button toward held stick direction ----------
@@ -178,15 +186,15 @@ for (const afterDash of [true, false]) {
   console.log(`  [TEST 4 PASS] throw pre-input during dash (afterDash=${afterDash}) fires right after the dash`);
 }
 
-// ---------- 5. Mobile dash-slash & dash-kick ("冲刺斩/踢") + recovery pre-input ----------
+// ---------- 5. Mobile dash-slash/kick (manual & smart auto-trigger with preInput + meleeAssist) ----------
 {
-  // 5a. Slash pressed during dash moving phase (tick 3, timer=5) → immediately cuts dash into SLASH toward stick
-  const h = setup();
+  // 5a. Manual dash-slash (meleeAssist OFF): pressing melee on moving tick 3 immediately cuts dash into SLASH
+  const h = setup(openRows, { meleeAssist: false });
   const y0 = h.st.players[0].y;
   h.input.setVirtualMove(0, 1);
   h.at(10);
   h.input.queueVirtualDash();
-  h.step(); // tick 0: DASH starts (timer=7)
+  h.step(); // dash tick 0 (timer=7)
   let slashOffset = -1;
   let slashEv = null;
   for (let i = 1; i <= 10; i++) {
@@ -202,40 +210,21 @@ for (const afterDash of [true, false]) {
       slashEv = s;
     }
   }
-  assert.equal(slashOffset, 3, `Mobile dash-slash must fire immediately on moving tick 3, got ${slashOffset}`);
+  assert.equal(slashOffset, 3, `Manual mobile dash-slash must fire immediately on moving tick 3, got ${slashOffset}`);
   assert.ok(slashEv.b < -700, `dash-slash aimed left, got (${slashEv.b}, ${slashEv.c})`);
-  assert.ok(h.st.players[0].y - y0 < 2600, `dash cut short by mobile dash-slash (dy=${h.st.players[0].y - y0})`);
+  assert.ok(h.st.players[0].y - y0 < 2600, `dash cut short by manual mobile dash-slash (dy=${h.st.players[0].y - y0})`);
 
-  // 5b. Slash pressed during dash windup (tick 1, timer=7) → pre-input fires dash-slash on first moving tick 2 (timer=6)
-  const hWind = setup();
-  hWind.input.setVirtualMove(0, 1);
-  hWind.at(10);
-  hWind.input.queueVirtualDash();
-  hWind.step(); // dash tick 0 (timer=7)
-  let windSlashOffset = -1;
-  for (let i = 1; i <= 10; i++) {
-    if (i === 1) {
-      hWind.at(20);
-      hWind.input.setVirtualMove(-1, 0);
-      hWind.input.queueVirtualMelee();
-    }
-    const { st } = hWind.step();
-    if (ev(st, 'SLASH') && windSlashOffset < 0) windSlashOffset = i;
-  }
-  assert.equal(windSlashOffset, 2, `Melee pressed during dash windup fires dash-slash on first moving tick 2, got ${windSlashOffset}`);
-
-  // 5c. Empty-handed mobile dash-kick during dash moving phase → immediately fires KICK!
-  const hKick = setup(wallRows);
+  // 5b. Manual dash-kick (meleeAssist OFF, empty-handed): immediately fires KICK on moving tick 3
+  const hKick = setup(wallRows, { meleeAssist: false });
   hKick.at(5);
   hKick.input.queueVirtualThrow(1, 0, false);
-  // Wait for throw to finish & dart to fly out (st === 0, dart.st !== 0)
   for (let i = 0; i < 8; i++) hKick.step();
   assert.equal(hKick.st.players[0].st, 0, 'player free after throw');
   assert.notEqual(hKick.st.darts[0].st, 0, 'player empty-handed');
   hKick.input.setVirtualMove(0, 1);
   hKick.at(100);
   hKick.input.queueVirtualDash();
-  hKick.step(); // dash tick 0
+  hKick.step();
   let kickOffset = -1;
   for (let i = 1; i <= 10; i++) {
     if (i === 3) {
@@ -246,30 +235,77 @@ for (const afterDash of [true, false]) {
     const { st } = hKick.step();
     if (ev(st, 'KICK') && kickOffset < 0) kickOffset = i;
   }
-  assert.equal(kickOffset, 3, `Mobile dash-kick must fire immediately on moving tick 3, got ${kickOffset}`);
+  assert.equal(kickOffset, 3, `Manual mobile dash-kick must fire immediately on moving tick 3, got ${kickOffset}`);
 
-  // 5d. Slash pressed during dash recovery (tick 6, timer=2) → fires on first FREE tick after dash
-  const hRec = setup();
-  const yRec0 = hRec.st.players[0].y;
-  hRec.input.setVirtualMove(0, 1);
-  hRec.at(10);
-  hRec.input.queueVirtualDash();
-  hRec.step();
-  let recSlashTick = -1;
-  let firstFree = -1;
+  // 5c. Smart dash-melee (preInput ON + meleeAssist ON) with NO enemy/dart in reach:
+  // completes FULL 3000mm dash and fires SLASH on the first FREE tick after dash!
+  const hNoTarget = setup(openRows, { meleeAssist: true });
+  const yNT0 = hNoTarget.st.players[0].y;
+  hNoTarget.input.setVirtualMove(0, 1);
+  hNoTarget.at(10);
+  hNoTarget.input.queueVirtualDash();
+  hNoTarget.step();
+  let ntSlashTick = -1;
+  let ntFirstFree = -1;
   for (let i = 1; i <= 12; i++) {
-    if (i === 6) {
-      hRec.at(20);
-      hRec.input.setVirtualMove(-1, 0);
-      hRec.input.queueVirtualMelee();
+    if (i === 2) {
+      hNoTarget.at(20);
+      hNoTarget.input.setVirtualMove(-1, 0);
+      hNoTarget.input.queueVirtualMelee();
     }
-    const { st } = hRec.step();
-    if (firstFree < 0 && st.players[0].st !== 7) firstFree = hRec.tick;
-    if (ev(st, 'SLASH') && recSlashTick < 0) recSlashTick = hRec.tick;
+    const { st } = hNoTarget.step();
+    if (ntFirstFree < 0 && st.players[0].st !== 7) ntFirstFree = hNoTarget.tick;
+    if (ev(st, 'SLASH') && ntSlashTick < 0) ntSlashTick = hNoTarget.tick;
   }
-  assert.equal(recSlashTick, firstFree + 1, `Recovery pre-input SLASH fires on first free tick (free@${firstFree}, slash@${recSlashTick})`);
-  assert.ok(hRec.st.players[0].y - yRec0 >= 2900, 'full dash completed before recovery slash');
-  console.log('  [TEST 5 PASS] mobile dash-slash (moving & windup), dash-kick, and dash-recovery pre-input all work');
+  assert.equal(ntSlashTick, ntFirstFree + 1, `Smart dash-melee with no target fires right after dash (free@${ntFirstFree}, slash@${ntSlashTick})`);
+  assert.ok(hNoTarget.st.players[0].y - yNT0 >= 2900, 'full 3000mm dash completed when no hit opportunity arose');
+
+  // 5d. Smart dash-melee (preInput ON + meleeAssist ON) when enemy enters reach mid-dash:
+  // P0 at (3.0, 5.0), P1 at (5.0, 5.0) = 2000mm ahead -> dash right + tap melee early -> auto-cuts on tick 3 (dist=1250mm) & kills P1!
+  const hHit = setup(openRows, { meleeAssist: true, spawn: '3 5 5 5' });
+  hHit.input.setVirtualMove(1, 0); // dash right toward P1
+  hHit.at(10);
+  hHit.input.queueVirtualDash();
+  hHit.step(); // dash tick 0 (timer=7, x=3000)
+  let hitSlashOffset = -1;
+  let killedP1 = false;
+  for (let i = 1; i <= 10; i++) {
+    if (i === 1) {
+      hHit.at(20);
+      hHit.input.setVirtualMove(0, -1); // stick points UP (away from P1) to also verify 360° assist snap!
+      hHit.input.queueVirtualMelee();
+    }
+    const { st } = hHit.step();
+    if (ev(st, 'SLASH') && hitSlashOffset < 0) hitSlashOffset = i;
+    if (st.players[1].alive === 0) killedP1 = true;
+  }
+  assert.equal(hitSlashOffset, 3, `Smart dash-melee must auto-trigger on exact first tick enemy enters reach (offset 3), got ${hitSlashOffset}`);
+  assert.ok(killedP1, 'Smart dash-melee must kill P1 cleanly');
+
+  // 5e. Smart dash-melee (preInput ON + meleeAssist ON) auto-triggers to BLOCK an incoming enemy dart mid-dash!
+  const hBlk = setup(openRows, { meleeAssist: true, spawn: '3 5 8 5' });
+  // P1 throws left toward P0 on tick 0; P0 waits 2 ticks then dashes UP while tapping melee
+  hBlk.step('0 0 1 -1000 0 0');
+  hBlk.step('0 0 0 0 0 0');
+  hBlk.input.setVirtualMove(0, 1);
+  hBlk.at(10);
+  hBlk.input.queueVirtualDash();
+  hBlk.step('0 0 0 0 0 0'); // dash starts while dart is still ~5m away
+  let blkOffset = -1;
+  let dartBlocked = false;
+  for (let i = 1; i <= 12; i++) {
+    if (i === 1) {
+      hBlk.at(20);
+      hBlk.input.queueVirtualMelee();
+    }
+    const { st } = hBlk.step('0 0 0 0 0 0');
+    if (ev(st, 'SLASH') && blkOffset < 0) blkOffset = i;
+    if (ev(st, 'BLOCK')) dartBlocked = true;
+  }
+  assert.ok(blkOffset >= 2 && blkOffset <= 5, `Smart dash-melee should trigger mid-dash when dart enters window, got offset ${blkOffset}`);
+  assert.ok(dartBlocked, 'Smart dash-melee auto-trigger must block the incoming dart');
+
+  console.log('  [TEST 5 PASS] mobile dash-slash/kick (manual) + smart dash-melee (auto-hit enemy, auto-block dart, full-dash fallback)');
 }
 
 // ---------- 6. Hold right stick with dart on the ground → recall channel → CALL ----------

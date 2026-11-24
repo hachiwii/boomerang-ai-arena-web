@@ -444,3 +444,47 @@ export function applyMobileMeleeAssist(
   }
   return scaleToUnit(target.dx, target.dy) ?? [aimX, aimY];
 }
+
+/**
+ * Returns true if issuing a mobile melee swing (with 360° melee assist enabled) on this tick
+ * can immediately hit a visible, unobstructed enemy player OR (when holding the dart) block an
+ * incoming enemy dart within the slash judgment window.
+ */
+export function hasMobileMeleeHitOpportunity(
+  map: EngineMapData,
+  state: TickSnapshot,
+  seat: number,
+  slashTicks: number,
+): boolean {
+  const me = state.players[seat];
+  const myDart = state.darts[seat];
+  if (!me || !me.alive || !myDart) return false;
+
+  const isSlash = myDart.st === DState.HAND;
+  const reach = map.slashReach > 0 ? map.slashReach : 1500;
+  const reachSq = reach * reach;
+  const t = state.t;
+
+  // 1. Any reachable visible enemy player (excluding kick-protected targets when empty-handed)
+  for (let q = 0; q < state.players.length; q++) {
+    if (q === seat) continue;
+    const target = state.players[q];
+    if (!target || !target.alive) continue;
+    if (typeof target.visMask === 'number' && ((target.visMask >> seat) & 1) === 0) continue;
+    if (!isSlash && (target.st === PState.STUN || (target.st === PState.FREE && target.timer > 0))) {
+      continue;
+    }
+    const dx = target.x - me.x;
+    const dy = target.y - me.y;
+    if (dx * dx + dy * dy > reachSq) continue;
+    if (wallBetween(map, t, me.x, me.y, target.x, target.y)) continue;
+    return true;
+  }
+
+  // 2. When holding dart: any incoming enemy flying dart inside the slash judgment window
+  if (isSlash && findIncomingDartTarget(map, state, seat, slashTicks) !== null) {
+    return true;
+  }
+
+  return false;
+}

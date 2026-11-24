@@ -6316,20 +6316,14 @@ body.m-layout-editing .icp-footer {
   inset: -12px;
 }
 
-.m-editor-corner {
+.m-editor-actions {
   position: absolute;
-  top: calc(max(6px, var(--sa-top)) + 48px);
+  top: calc(max(6px, var(--sa-top)) + 44px);
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   gap: 8px;
   z-index: 6;
-}
-
-.m-editor-corner-left {
-  left: max(10px, var(--sa-left));
-}
-
-.m-editor-corner-right {
-  right: max(10px, var(--sa-right));
 }
 
 .m-editor-btn {
@@ -6758,8 +6752,9 @@ body.is-mobile .map-grid {
   grid-template-columns: repeat(5, 1fr);
 }
 
-/* ---------- Cancel-throw target next to the aim stick ---------- */
-.m-aim-cancel {
+/* ---------- Cancel-throw target (editable in Layout Editor, defaults to top-right below Settings/Exit) ---------- */
+.m-aim-cancel,
+.m-ctl.m-cancel {
   position: absolute;
   display: flex;
   flex-direction: column;
@@ -6767,25 +6762,32 @@ body.is-mobile .map-grid {
   justify-content: center;
   gap: 1px;
   border-radius: 50%;
-  background: rgba(150, 26, 26, 0.6);
-  border: 2px solid rgba(255, 130, 130, 0.9);
+  background: rgba(150, 26, 26, 0.68);
+  border: 2px solid rgba(255, 130, 130, 0.92);
   color: #fff;
   box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+}
+
+.m-aim-cancel {
   pointer-events: none;
   transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
   animation: mCancelIn 0.14s ease-out;
 }
 
-.m-aim-cancel svg {
+.m-aim-cancel svg,
+.m-ctl.m-cancel svg {
   width: 40%;
   height: 40%;
+  pointer-events: none;
 }
 
-.m-aim-cancel span {
+.m-aim-cancel span,
+.m-ctl.m-cancel > span:not(.m-editor-label) {
   font-size: 10px;
   font-weight: 900;
   line-height: 1;
   letter-spacing: 0.5px;
+  pointer-events: none;
 }
 
 .m-aim-cancel.is-hot {
