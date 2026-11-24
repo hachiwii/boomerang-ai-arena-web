@@ -436,9 +436,9 @@ export class LobbyUI {
         type="button"
         class="lobby-platform-btn ${st.mobile ? 'is-mobile' : 'is-desktop'}"
         id="btn-toggle-platform"
-        title="${st.mobile ? '当前：移动端（触屏操作）· 点击切换到 PC 端' : '当前：PC 端（键鼠操作）· 点击切换到移动端'}"
-        aria-label="${st.mobile ? '切换到 PC 端' : '切换到移动端'}"
-      >${st.mobile ? ICON_PHONE : ICON_DESKTOP}<span>${st.mobile ? '移动端' : 'PC 端'}</span></button>`;
+        title="${st.mobile ? '当前：移动端（触屏操作）· 点击切换到桌面端' : '当前：桌面端（键鼠操作）· 点击切换到移动端'}"
+        aria-label="${st.mobile ? '切换到桌面端' : '切换到移动端'}"
+      >${st.mobile ? ICON_DESKTOP : ICON_PHONE}<span>${st.mobile ? '桌面端' : '移动端'}</span></button>`;
     const fsBtn = st.mobile
       ? `<button
           type="button"
@@ -451,14 +451,12 @@ export class LobbyUI {
     return platformBtn + fsBtn;
   }
 
-  /** Re-render header buttons after a PC/mobile or fullscreen change. */
+  /** Re-render header buttons after a desktop/mobile or fullscreen change. */
   public refreshPlatformButtons() {
     if (this.container.classList.contains('hidden')) return;
-    const holder = this.container.querySelector<HTMLElement>('.lobby-nav-actions');
+    const holder = this.container.querySelector<HTMLElement>('.lobby-header-platform');
     if (!holder) return;
-    holder.querySelector('#btn-toggle-platform')?.remove();
-    holder.querySelector('#btn-toggle-fullscreen')?.remove();
-    holder.insertAdjacentHTML('afterbegin', this.renderPlatformButtonsHtml());
+    holder.innerHTML = this.renderPlatformButtonsHtml();
     holder.querySelector('#btn-toggle-platform')?.addEventListener('click', () => {
       this.closeDropdown();
       this.callbacks.onTogglePlatform?.();
@@ -1626,7 +1624,6 @@ export class LobbyUI {
               <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">🎛️ 自定义对局</button>
             </div>
             <div class="lobby-nav-actions">
-              ${this.renderPlatformButtonsHtml()}
               <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）">📜 对局历史</button>
               <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置">⚙️ 设置</button>
               <button
@@ -1654,6 +1651,9 @@ export class LobbyUI {
                 </svg>
               </a>
             </div>
+          </div>
+          <div class="lobby-header-platform">
+            ${this.renderPlatformButtonsHtml()}
           </div>
         </header>
 

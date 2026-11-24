@@ -194,7 +194,7 @@ html, body, #app {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  gap: 14px 20px;
+  gap: 14px 8px;
   flex-wrap: wrap;
   padding-bottom: 16px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
@@ -203,6 +203,50 @@ html, body, #app {
 
 .lobby-title-group {
   flex-shrink: 0;
+  margin-right: 12px;
+}
+
+.lobby-header-platform {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.lobby-header-platform:empty {
+  display: none;
+}
+
+body:not(.is-mobile) .lobby-card-ranked .lobby-title-group {
+  order: 1;
+  margin-right: 0;
+}
+
+body:not(.is-mobile) .lobby-card-ranked .lobby-header-platform {
+  order: 2;
+  margin-left: auto;
+}
+
+body:not(.is-mobile) .lobby-card-ranked .lobby-nav-row {
+  order: 3;
+  flex: 1 0 100%;
+}
+
+@media (max-width: 1040px) {
+  body:not(.is-mobile) .lobby-title-group {
+    order: 1;
+    margin-right: 0;
+  }
+
+  body:not(.is-mobile) .lobby-header-platform {
+    order: 2;
+    margin-left: auto;
+  }
+
+  body:not(.is-mobile) .lobby-nav-row {
+    order: 3;
+    flex: 1 0 100%;
+  }
 }
 
 .lobby-badge {
@@ -5847,11 +5891,18 @@ body.is-mobile .cd-sub {
   font-size: 12px;
 }
 
+/* No dim layer on mobile: only the card itself catches touches, so the top-right
+   restart / settings / exit icons stay usable while the result card is up. */
 body.is-mobile .result-overlay {
   padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right)) max(8px, env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+  background: transparent;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  pointer-events: none;
 }
 
 body.is-mobile .result-card {
+  pointer-events: auto;
   max-height: 100%;
   overflow-y: auto;
   overscroll-behavior: contain;
@@ -6177,9 +6228,16 @@ body.m-layout-editing .icp-footer {
   cursor: grab;
 }
 
+.m-editor-frame {
+  position: absolute;
+  border: 2px dashed #ffd36b;
+  border-radius: 10px;
+  pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.25);
+}
+
 .m-ctl.is-editing.is-selected {
-  outline: 2px dashed #ffd36b;
-  outline-offset: 5px;
+  box-shadow: 0 0 0 3px rgba(255, 211, 107, 0.35), 0 0 18px rgba(255, 211, 107, 0.35);
 }
 
 .m-ctl.is-editing.m-aim,
@@ -6208,24 +6266,33 @@ body.m-layout-editing .icp-footer {
 
 .m-editor-handle {
   position: absolute;
-  width: 30px;
-  height: 30px;
-  margin: -15px 0 0 -15px;
-  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin: -16px 0 0 -16px;
+  border-radius: 9px;
   background: #ffd36b;
-  border: 3px solid #fff;
+  border: 2px solid #ffffff;
+  color: #3d2a00;
   box-shadow: 0 2px 10px rgba(0, 0, 0, 0.5);
+  cursor: nwse-resize;
   pointer-events: auto;
   touch-action: none;
   z-index: 5;
 }
 
-.m-editor-handle::after {
+.m-editor-handle svg {
+  width: 20px;
+  height: 20px;
+  pointer-events: none;
+}
+
+/* Larger invisible grab area for fingers */
+.m-editor-handle::before {
   content: '';
   position: absolute;
-  inset: 6px;
-  background:
-    linear-gradient(135deg, transparent 44%, #6a4a00 44%, #6a4a00 56%, transparent 56%);
+  inset: -12px;
 }
 
 .m-editor-corner {
@@ -6534,9 +6601,17 @@ body.is-mobile .lobby-card {
 
 body.is-mobile .lobby-header {
   flex-wrap: nowrap;
-  gap: 10px;
+  gap: 6px;
   padding-bottom: 8px;
   margin-bottom: 10px;
+}
+
+body.is-mobile .lobby-title-group {
+  margin-right: 4px;
+}
+
+body.is-mobile .lobby-header-platform {
+  gap: 6px;
 }
 
 body.is-mobile .lobby-header h1 {
@@ -6658,4 +6733,51 @@ body.is-mobile .lobby-grid {
 
 body.is-mobile .map-grid {
   grid-template-columns: repeat(5, 1fr);
+}
+
+/* ---------- Cancel-throw target next to the aim stick ---------- */
+.m-aim-cancel {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  border-radius: 50%;
+  background: rgba(150, 26, 26, 0.6);
+  border: 2px solid rgba(255, 130, 130, 0.9);
+  color: #fff;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+  transition: transform 0.12s ease, background 0.12s ease, box-shadow 0.12s ease;
+  animation: mCancelIn 0.14s ease-out;
+}
+
+.m-aim-cancel svg {
+  width: 40%;
+  height: 40%;
+}
+
+.m-aim-cancel span {
+  font-size: 10px;
+  font-weight: 900;
+  line-height: 1;
+  letter-spacing: 0.5px;
+}
+
+.m-aim-cancel.is-hot {
+  transform: scale(1.18);
+  background: rgba(232, 44, 44, 0.92);
+  border-color: #ffffff;
+  box-shadow: 0 0 0 4px rgba(255, 80, 80, 0.35), 0 0 22px rgba(255, 60, 60, 0.7);
+}
+
+.m-aim.is-cancelling {
+  border-color: #ff7b7b;
+  box-shadow: 0 0 0 4px rgba(255, 90, 90, 0.3);
+}
+
+@keyframes mCancelIn {
+  from { opacity: 0; transform: scale(0.6); }
+  to { opacity: 1; transform: scale(1); }
 }

@@ -782,8 +782,8 @@ async function bootstrap() {
       renderer.setPlaybackSpeed(eff);
       document.body.classList.toggle('m-aim-slowmo', active);
     },
-    onAimIndicator: (dir) => {
-      renderer.setAimIndicator(dir);
+    onAimIndicator: (dir, cancel) => {
+      renderer.setAimIndicator(dir, Boolean(cancel));
     },
   });
 
@@ -1063,7 +1063,7 @@ async function bootstrap() {
     lobbyUI.refreshPlatformButtons();
     syncPortrait();
     if (mode === 'lobby') {
-      showPlatformToast(isMobile ? '已切换到移动端 · 触屏操作 · 横屏全屏' : '已切换到 PC 端 · 键鼠操作');
+      showPlatformToast(isMobile ? '已切换到移动端 · 触屏操作 · 横屏全屏' : '已切换到桌面端 · 键鼠操作');
     }
   });
   document.addEventListener('fullscreenchange', () => lobbyUI.refreshPlatformButtons());
