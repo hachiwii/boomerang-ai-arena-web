@@ -23,6 +23,7 @@ export interface HudCallbacks {
   onReplayRestart?: () => void;
   onReplaySeek?: (tickIndex: number) => void;
   onReplaySpeed?: (speed: number) => void;
+  onReplayToggleFavorite?: (bundle: MatchReplayBundle, nextFavorite: boolean) => Promise<void> | void;
   onReplayExportMp4?: (
     bundle: MatchReplayBundle,
     signal: AbortSignal,
@@ -58,6 +59,13 @@ function dartBadge(st: number): { text: string; cls: string } {
     default:
       return { text: '无镖', cls: 'st-gone' };
   }
+}
+
+function renderReplayFavoriteStarSvg(filled: boolean): string {
+  if (filled) {
+    return `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2.5 15.09 8.76 22 9.77 17 14.64 18.18 21.52 12 18.27 5.82 21.52 7 14.64 2 9.77 8.91 8.76 12 2.5"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2.5 15.09 8.76 22 9.77 17 14.64 18.18 21.52 12 18.27 5.82 21.52 7 14.64 2 9.77 8.91 8.76 12 2.5"/></svg>`;
 }
 
 export class HudUI {
@@ -107,6 +115,7 @@ export class HudUI {
   private replayTimeEl: HTMLElement | null = null;
   private replayBannerEl: HTMLElement | null = null;
   private replaySpeedBtns: HTMLButtonElement[] = [];
+  private replayFavBtn: HTMLButtonElement | null = null;
   private replayExportBtn: HTMLButtonElement | null = null;
   private replayGifBtn: HTMLButtonElement | null = null;
   private replayExportStatusEl: HTMLElement | null = null;
@@ -278,6 +287,7 @@ export class HudUI {
     this.replayTimeEl = null;
     this.replayBannerEl = null;
     this.replaySpeedBtns = [];
+    this.replayFavBtn = null;
     this.replayExportBtn = null;
     this.replayGifBtn = null;
     this.replayExportStatusEl = null;
@@ -322,6 +332,17 @@ export class HudUI {
     return formatExportPresetLabel(this.settings.get());
   }
 
+  private syncReplayFavoriteBtn(isFav: boolean) {
+    if (!this.replayFavBtn) return;
+    this.replayFavBtn.classList.toggle('is-fav', isFav);
+    this.replayFavBtn.setAttribute('aria-pressed', String(isFav));
+    this.replayFavBtn.setAttribute('aria-label', isFav ? '取消收藏此对局' : '收藏此对局');
+    this.replayFavBtn.title = isFav
+      ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）'
+      : '收藏此对局（永久保留，不受每模式 50 场上限控制）';
+    this.replayFavBtn.innerHTML = `${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span>`;
+  }
+
   public showReplay(
     bundle: MatchReplayBundle,
     playback: ReplayPlaybackState,
@@ -359,6 +380,7 @@ export class HudUI {
         : '🤖 AI 观战'
       : '🎬 观战回放';
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
+    const isFav = Boolean(summary.favorite);
 
     this.topBar.innerHTML = `
       <div class="hud-players">
@@ -393,6 +415,14 @@ export class HudUI {
               ? `<button class="hud-btn" id="hud-ai-restart" title="${isCricket ? `按当前规则重新抽图和选手 (${rstKey})` : `使用当前配置重新开局 (${rstKey})`}">${isCricket ? `🎲 重抽 (${rstKey})` : `↺ 重开 (${rstKey})`}</button>`
               : ''
           }
+          <button
+            type="button"
+            class="hud-btn hud-fav-btn ${isFav ? 'is-fav' : ''}"
+            id="hud-replay-fav"
+            aria-pressed="${isFav}"
+            aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}"
+            title="${isFav ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）' : '收藏此对局（永久保留，不受每模式 50 场上限控制）'}"
+          >${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span></button>
           <button class="hud-btn" id="hud-replay-history" title="返回对局历史列表">📜 对局历史</button>
           <button class="hud-btn" id="hud-settings" title="音效、特写镜头与导出设置">⚙️ 设置</button>
           <button class="hud-btn hud-exit" id="hud-exit">${this.replayIsLiveAi ? '主界面 (ESC)' : '退出回放 (ESC)'}</button>
@@ -404,6 +434,7 @@ export class HudUI {
     this.timerEl = this.topBar.querySelector('#hud-timer');
     this.collapseEl = this.topBar.querySelector('#hud-collapse');
     this.perfEl = this.topBar.querySelector('#hud-perf');
+    this.replayFavBtn = this.topBar.querySelector('#hud-replay-fav');
     this.cardEls = summary.slots.map((_, i) => ({
       card: this.topBar.querySelector(`[data-pcard="${i}"]`)!,
       kills: this.topBar.querySelector(`[data-pkills="${i}"]`)!,
@@ -418,6 +449,21 @@ export class HudUI {
     this.topBar.querySelector('#hud-ai-restart')?.addEventListener('click', () => {
       this.clearTimers();
       this.callbacks.onRestartMatch();
+    });
+    this.replayFavBtn?.addEventListener('click', () => {
+      if (!this.isReplayMode || !this.replayBundle || !this.callbacks.onReplayToggleFavorite) return;
+      const targetBundle = this.replayBundle;
+      const nextFav = !Boolean(targetBundle.summary.favorite);
+      targetBundle.summary.favorite = nextFav;
+      this.syncReplayFavoriteBtn(nextFav);
+      void Promise.resolve(this.callbacks.onReplayToggleFavorite(targetBundle, nextFav)).catch((err) => {
+        console.error('Failed to toggle replay favorite:', err);
+        if (this.isReplayMode && this.replayBundle === targetBundle) {
+          targetBundle.summary.favorite = !nextFav;
+          this.syncReplayFavoriteBtn(!nextFav);
+        }
+        this.showReplayExportResultBanner('收藏状态更新失败，请稍后重试', false);
+      });
     });
     this.topBar.querySelector('#hud-replay-history')?.addEventListener('click', () => {
       this.clearTimers();
@@ -722,6 +768,7 @@ export class HudUI {
   public updateReplayTimeline(bundle: MatchReplayBundle, playback: ReplayPlaybackState) {
     if (!this.isReplayMode) return;
     this.replayBundle = bundle;
+    this.syncReplayFavoriteBtn(Boolean(bundle.summary.favorite));
     const wasComputing = this.replayComputing;
     this.replayComputing = Boolean(playback.computing);
 

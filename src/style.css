@@ -803,6 +803,49 @@ kbd {
   border-color: #ff7a7a;
 }
 
+.hud-btn.hud-fav-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: all 0.14s ease;
+}
+
+.hud-btn.hud-fav-btn svg {
+  flex-shrink: 0;
+  color: rgba(255, 212, 108, 0.85);
+  transition: color 0.14s ease, transform 0.14s ease;
+}
+
+.hud-btn.hud-fav-btn:hover {
+  background: rgba(54, 42, 18, 0.86);
+  border-color: rgba(255, 212, 108, 0.65);
+  color: #fff6dc;
+}
+
+.hud-btn.hud-fav-btn:hover svg {
+  color: #ffd86b;
+  transform: scale(1.08);
+}
+
+.hud-btn.hud-fav-btn.is-fav {
+  background: linear-gradient(135deg, rgba(92, 64, 14, 0.88) 0%, rgba(62, 42, 10, 0.9) 100%);
+  border-color: rgba(255, 212, 102, 0.82);
+  color: #ffe8a3;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35), 0 0 12px rgba(245, 179, 36, 0.25);
+}
+
+.hud-btn.hud-fav-btn.is-fav svg {
+  color: #ffd44d;
+}
+
+.hud-btn.hud-fav-btn.is-fav:hover {
+  background: linear-gradient(135deg, rgba(114, 78, 16, 0.92) 0%, rgba(78, 52, 12, 0.94) 100%);
+  border-color: rgba(255, 226, 138, 0.92);
+  color: #fff6d6;
+}
+
 .hud-bottom {
   display: flex;
   justify-content: center;

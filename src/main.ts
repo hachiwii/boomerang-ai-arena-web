@@ -197,6 +197,19 @@ async function bootstrap() {
     },
   });
 
+  let pendingHistorySave: Promise<void> | null = null;
+  let favoriteWriteQueue: Promise<void> = Promise.resolve();
+
+  const enqueueHistorySave = (bundle: MatchReplayBundle) => {
+    const p = matchHistory.saveBundle(bundle).catch((err) => {
+      console.error('Failed to save match history bundle:', err);
+    });
+    pendingHistorySave = p;
+    void p.finally(() => {
+      if (pendingHistorySave === p) pendingHistorySave = null;
+    });
+  };
+
   const persistCurrentMatchHistory = (eloResult: EloUpdateResult | null, earlyExit: boolean) => {
     if (historyRecorded || !activeConfig || !activeMapData) return;
     const ticks = controller.getRecordedTicks().slice();
@@ -204,7 +217,7 @@ async function bootstrap() {
     historyRecorded = true;
     const bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, eloResult, earlyExit);
     lastFinishedBundle = bundle;
-    void matchHistory.saveBundle(bundle);
+    enqueueHistorySave(bundle);
   };
 
   const returnToLobby = (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => {
@@ -269,7 +282,7 @@ async function bootstrap() {
           })),
         );
       }
-      void matchHistory.saveBundle(liveBundle);
+      enqueueHistorySave(liveBundle);
     };
 
     lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
@@ -305,6 +318,7 @@ async function bootstrap() {
             ...rebuilt.summary,
             id: liveBundle.summary.id,
             playedAt: liveBundle.summary.playedAt,
+            favorite: liveBundle.summary.favorite,
           };
           persistCompleteBundle();
         } else {
@@ -614,6 +628,20 @@ async function bootstrap() {
     },
     onReplaySpeed: (spd) => {
       replayController.setSpeed(spd);
+    },
+    onReplayToggleFavorite: (bundle, nextFavorite) => {
+      bundle.summary.favorite = nextFavorite;
+      const task = favoriteWriteQueue.then(async () => {
+        if (pendingHistorySave) {
+          await pendingHistorySave;
+        }
+        const updated = await matchHistory.setFavorite(bundle.summary.id, nextFavorite);
+        if (!updated && !replayController.getState().computing && bundle.replay.ticks.length > 0) {
+          await matchHistory.saveBundle(bundle);
+        }
+      });
+      favoriteWriteQueue = task.catch(() => undefined);
+      return task;
     },
     onReplayExportMp4: async (bundle, signal, onProgress) => {
       const s = settings.get();
