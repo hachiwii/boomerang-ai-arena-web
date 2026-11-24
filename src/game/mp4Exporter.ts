@@ -220,8 +220,47 @@ function scheduleOfflineBgmTracks(
       src.stop(tStop + 0.02);
     } else {
       src.loop = false;
+      const naturalEnd = tStart + buf.duration;
       src.start(tStart, 0);
-      src.stop(Math.min(tStart + buf.duration, tStop + 0.02));
+      src.stop(Math.min(naturalEnd, tStop + 0.02));
+
+      // If a non-looping special track finishes before this segment ends, fade back into default looping BGM
+      const mainBuf = buffers.get('main');
+      if (mainBuf && naturalEnd < tStop - 0.05) {
+        const fbStart = naturalEnd;
+        const fbFadeIn = Math.min(BGM_FADE_SEC, Math.max(0.05, (tStop - fbStart) * 0.35));
+        const fbFadeOut = seg.isFinal
+          ? Math.min(seg.fadeOutSec, Math.max(0.05, (tStop - fbStart) * 0.35))
+          : Math.min(BGM_FADE_SEC, Math.max(0.05, tStop - seg.switchOutSec));
+        const fbOutStart = seg.isFinal ? Math.max(fbStart, tStop - fbFadeOut) : Math.max(fbStart, seg.switchOutSec);
+        const fbInEnd = Math.min(fbOutStart, fbStart + fbFadeIn);
+        const fbPeak = fbFadeIn > 0.001 ? Math.max(0, Math.min(1, (fbInEnd - fbStart) / fbFadeIn)) : 1;
+
+        const fbSrc = ctx.createBufferSource();
+        fbSrc.buffer = mainBuf;
+        fbSrc.loop = true;
+        fbSrc.loopStart = MAIN_LOOP_PAD_SEC;
+        fbSrc.loopEnd = Math.min(mainBuf.duration - 0.05, MAIN_LOOP_PAD_SEC + MAIN_LOOP_PERIOD_SEC);
+
+        const fbGain = ctx.createGain();
+        fbGain.gain.setValueAtTime(0, fbStart);
+        if (fbInEnd > fbStart + 0.001) {
+          fbGain.gain.linearRampToValueAtTime(fbPeak, fbInEnd);
+        } else {
+          fbGain.gain.setValueAtTime(fbPeak, fbStart);
+        }
+        if (fbOutStart > fbInEnd + 0.001) {
+          fbGain.gain.setValueAtTime(fbPeak, fbOutStart);
+        }
+        if (tStop > fbOutStart + 0.001) {
+          fbGain.gain.linearRampToValueAtTime(0, tStop);
+        }
+
+        fbSrc.connect(fbGain);
+        fbGain.connect(masterGain);
+        fbSrc.start(fbStart, MAIN_LOOP_PAD_SEC);
+        fbSrc.stop(tStop + 0.02);
+      }
     }
 
     scheduledAny = true;
@@ -776,7 +815,11 @@ export async function exportReplayToMp4(
           bossMusicEnabled,
         )
       : [];
-  const neededBgmTracks = Array.from(new Set(bgmSegments.map((seg) => seg.trackId)));
+  const neededTrackSet = new Set<BgmTrackId>(bgmSegments.map((seg) => seg.trackId));
+  if (bgmSegments.some((seg) => seg.trackId !== 'main')) {
+    neededTrackSet.add('main'); // Keep main BGM available if a non-looping special track finishes early
+  }
+  const neededBgmTracks = Array.from(neededTrackSet);
 
   const offRenderer = new GameRenderer(
     webglCanvas,

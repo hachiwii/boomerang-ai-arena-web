@@ -473,13 +473,13 @@ export class BgmManager {
   }
 
   public getDebugState() {
-    const desiredTrack = this.rules.getDesiredTrack(this.bossMusicEnabled);
+    const effective = this.resolveEffectiveTarget();
     return {
       bgmEnabled: this.bgmEnabled,
       volumePct: this.volumePct,
       bossMusicEnabled: this.bossMusicEnabled,
       mode: this.rules.mode,
-      desiredTrack,
+      desiredTrack: effective.trackId,
       activeTrack: this.activeVoice?.trackId ?? null,
       audioState: this.ctx?.state ?? 'uninitialized',
       unlocked: this.unlocked,
@@ -636,23 +636,24 @@ export class BgmManager {
     this.fadeOutVoice(cur, fadeSec);
   }
 
+  private resolveEffectiveTarget(): { trackId: BgmTrackId; sessionId: number } {
+    const rawDesired = this.rules.getDesiredTrack(this.bossMusicEnabled);
+    if (rawDesired !== 'main') {
+      const endedKey = `${this.matchSessionId}:${rawDesired}`;
+      // Once a non-looping special track plays to natural completion, fall back to looping main BGM.
+      if (this.endedTrackKeys.has(endedKey)) {
+        return { trackId: 'main', sessionId: 0 };
+      }
+      return { trackId: rawDesired, sessionId: this.matchSessionId };
+    }
+    return { trackId: 'main', sessionId: 0 };
+  }
+
   private syncPlayback() {
     if (!this.bgmEnabled) return;
 
-    const desired = this.rules.getDesiredTrack(this.bossMusicEnabled);
-    const desiredSessionId = desired === 'main' ? 0 : this.matchSessionId;
-    const endedKey = `${desiredSessionId}:${desired}`;
-
-    // If a non-looping special track already played all the way to natural EOF in this match session,
-    // stay quiet until lobby / next match / different track.
-    if (desired !== 'main' && this.endedTrackKeys.has(endedKey)) {
-      this.pendingTrackKey = null;
-      if (this.activeVoice && (this.activeVoice.trackId !== desired || this.activeVoice.sessionId !== desiredSessionId)) {
-        this.transitionSeq++;
-        this.fadeOutActiveVoice(BGM_FADE_SEC);
-      }
-      return;
-    }
+    const { trackId: desired, sessionId: desiredSessionId } = this.resolveEffectiveTarget();
+    const targetKey = `${desiredSessionId}:${desired}`;
 
     // Already playing the exact desired track (and session for special tracks) -> keep going uninterrupted!
     if (
@@ -679,11 +680,11 @@ export class BgmManager {
     }
 
     // Already loading/transitioning to this exact desired (session, track) -> avoid churning at 20Hz
-    if (this.pendingTrackKey === endedKey) {
+    if (this.pendingTrackKey === targetKey) {
       return;
     }
 
-    this.pendingTrackKey = endedKey;
+    this.pendingTrackKey = targetKey;
     const seq = ++this.transitionSeq;
     void this.loadBuffer(desired).then((buffer) => {
       if (seq !== this.transitionSeq) return;
@@ -691,10 +692,8 @@ export class BgmManager {
       if (!buffer) return;
       if (!this.bgmEnabled || !this.ctx || !this.masterGain || this.ctx.state !== 'running') return;
 
-      const latestDesired = this.rules.getDesiredTrack(this.bossMusicEnabled);
-      const latestSessionId = latestDesired === 'main' ? 0 : this.matchSessionId;
-      if (latestDesired !== desired || latestSessionId !== desiredSessionId) return;
-      if (desired !== 'main' && this.endedTrackKeys.has(`${desiredSessionId}:${desired}`)) return;
+      const latest = this.resolveEffectiveTarget();
+      if (latest.trackId !== desired || latest.sessionId !== desiredSessionId) return;
 
       this.startCrossfadeVoice(desired, desiredSessionId, buffer, BGM_FADE_SEC);
     });
@@ -747,6 +746,8 @@ export class BgmManager {
         this.activeVoice = null;
         if (trackId !== 'main') {
           this.endedTrackKeys.add(`${sessionId}:${trackId}`);
+          // Automatically transition back to the looping default BGM (0.5s fade-in).
+          this.syncPlayback();
         }
       }
     };
