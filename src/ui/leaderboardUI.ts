@@ -22,6 +22,13 @@ export class LeaderboardPanel {
   private readonly store: LeaderboardStore;
   private readonly tooltip: HTMLDivElement;
   private activeContainer: HTMLElement | null = null;
+  private tooltipVisible = false;
+  private tooltipRowKey: string | null = null;
+  private tooltipWidth = 244;
+  private tooltipHeight = 160;
+  private suppressTooltipUntil = 0;
+  private lastPointerX = -1;
+  private lastPointerY = -1;
   private mode: RankedMode = 'solo';
   private sortBy: SortField = 'rating';
   private confirmReset = false;
@@ -46,7 +53,7 @@ export class LeaderboardPanel {
     this.onClose = callbacks.onClose;
 
     this.tooltip = document.createElement('div');
-    this.tooltip.className = 'lb-tooltip hidden';
+    this.tooltip.className = 'lb-tooltip';
     document.body.appendChild(this.tooltip);
   }
 
@@ -55,60 +62,72 @@ export class LeaderboardPanel {
   }
 
   public hideTooltip() {
-    this.tooltip.classList.add('hidden');
+    if (!this.tooltipVisible) return;
+    this.tooltipVisible = false;
+    this.tooltip.classList.remove('is-visible');
   }
 
   private showTooltip(row: LeaderboardRow, clientX: number, clientY: number) {
     const s = row.stats;
-    const modeLabel = this.mode === 'solo' ? 'SOLO' : '四人混战';
-    const refLine = row.isHuman
-      ? `<div class="lb-tt-ref">${modeLabel} 排位分 · 初始 500 / 下限 0</div>`
-      : `<div class="lb-tt-ref">${modeLabel} 基准分 · 固定不变</div>`;
+    const key = `${this.mode}:${row.id}:${s.games}:${s.dartKills}:${s.meleeKills}:${s.terrainKills}:${s.cliffFalls}`;
+    if (this.tooltipRowKey !== key) {
+      this.tooltipRowKey = key;
+      const modeLabel = this.mode === 'solo' ? 'SOLO' : '四人混战';
+      const refLine = row.isHuman
+        ? `<div class="lb-tt-ref">${modeLabel} 排位分 · 初始 500 / 下限 0</div>`
+        : `<div class="lb-tt-ref">${modeLabel} 基准分 · 固定不变</div>`;
 
-    this.tooltip.innerHTML = `
-      <div class="lb-tt-head">
-        <img class="lb-tt-av" src="${row.avatar || ''}" alt="" />
-        <div>
-          <div class="lb-tt-name">${row.name}</div>
-          ${refLine}
+      this.tooltip.innerHTML = `
+        <div class="lb-tt-head">
+          <img class="lb-tt-av" src="${row.avatar || ''}" alt="" />
+          <div>
+            <div class="lb-tt-name">${row.name}</div>
+            ${refLine}
+          </div>
         </div>
-      </div>
-      <div class="lb-tt-grid">
-        <div class="lb-tt-item">
-          <span class="lb-tt-label">飞镖击杀</span>
-          <strong class="lb-tt-val">${s.dartKills}</strong>
+        <div class="lb-tt-grid">
+          <div class="lb-tt-item">
+            <span class="lb-tt-label">飞镖击杀</span>
+            <strong class="lb-tt-val">${s.dartKills}</strong>
+          </div>
+          <div class="lb-tt-item">
+            <span class="lb-tt-label">近战击杀</span>
+            <strong class="lb-tt-val">${s.meleeKills}</strong>
+          </div>
+          <div class="lb-tt-item">
+            <span class="lb-tt-label">地形击杀</span>
+            <strong class="lb-tt-val">${s.terrainKills}</strong>
+          </div>
+          <div class="lb-tt-item">
+            <span class="lb-tt-label">坠崖次数</span>
+            <strong class="lb-tt-val lb-tt-fall">${s.cliffFalls}</strong>
+          </div>
         </div>
-        <div class="lb-tt-item">
-          <span class="lb-tt-label">近战击杀</span>
-          <strong class="lb-tt-val">${s.meleeKills}</strong>
+        <div class="lb-tt-foot">
+          ${modeLabel} 累计 ${s.games} 场
         </div>
-        <div class="lb-tt-item">
-          <span class="lb-tt-label">地形击杀</span>
-          <strong class="lb-tt-val">${s.terrainKills}</strong>
-        </div>
-        <div class="lb-tt-item">
-          <span class="lb-tt-label">坠崖次数</span>
-          <strong class="lb-tt-val lb-tt-fall">${s.cliffFalls}</strong>
-        </div>
-      </div>
-      <div class="lb-tt-foot">
-        ${modeLabel} 累计 ${s.games} 场
-      </div>
-    `;
-    this.tooltip.classList.remove('hidden');
+      `;
+      this.tooltipWidth = this.tooltip.offsetWidth || 244;
+      this.tooltipHeight = this.tooltip.offsetHeight || 160;
+    }
     this.positionTooltip(clientX, clientY);
+    if (!this.tooltipVisible) {
+      this.tooltipVisible = true;
+      this.tooltip.classList.add('is-visible');
+    }
   }
 
   private positionTooltip(clientX: number, clientY: number) {
     const pad = 14;
-    const rect = this.tooltip.getBoundingClientRect();
+    const w = this.tooltipWidth;
+    const h = this.tooltipHeight;
     let left = clientX + 16;
     let top = clientY + 14;
-    if (left + rect.width > window.innerWidth - pad) {
-      left = Math.max(pad, clientX - rect.width - 16);
+    if (left + w > window.innerWidth - pad) {
+      left = Math.max(pad, clientX - w - 16);
     }
-    if (top + rect.height > window.innerHeight - pad) {
-      top = Math.max(pad, clientY - rect.height - 14);
+    if (top + h > window.innerHeight - pad) {
+      top = Math.max(pad, clientY - h - 14);
     }
     this.tooltip.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;
   }
@@ -264,21 +283,37 @@ export class LeaderboardPanel {
       }
     });
 
-    container.querySelectorAll<HTMLTableRowElement>('tr.lb-row').forEach((tr) => {
-      const id = tr.dataset.rowId!;
-      const row = rowById.get(id);
-      if (!row) return;
-      tr.addEventListener('mouseenter', (ev) => {
-        this.showTooltip(row, ev.clientX, ev.clientY);
-      });
-      tr.addEventListener('mousemove', (ev) => {
-        if (!this.tooltip.classList.contains('hidden')) {
-          this.positionTooltip(ev.clientX, ev.clientY);
+    const suppressForScroll = () => {
+      this.suppressTooltipUntil = performance.now() + 180;
+      this.hideTooltip();
+    };
+    scrollEl?.addEventListener('wheel', suppressForScroll, { passive: true });
+    scrollEl?.addEventListener('scroll', suppressForScroll, { passive: true });
+
+    const tbody = container.querySelector<HTMLElement>('.lb-table tbody');
+    if (tbody) {
+      tbody.addEventListener('mousemove', (ev) => {
+        const moved = Math.abs(ev.clientX - this.lastPointerX) + Math.abs(ev.clientY - this.lastPointerY);
+        this.lastPointerX = ev.clientX;
+        this.lastPointerY = ev.clientY;
+        if (performance.now() < this.suppressTooltipUntil) return;
+        const tr = (ev.target as Element | null)?.closest<HTMLTableRowElement>('tr.lb-row');
+        if (!tr || !tr.dataset.rowId) {
+          this.hideTooltip();
+          return;
+        }
+        const row = rowById.get(tr.dataset.rowId);
+        if (!row) {
+          this.hideTooltip();
+          return;
+        }
+        if (this.tooltipVisible || moved > 0) {
+          this.showTooltip(row, ev.clientX, ev.clientY);
         }
       });
-      tr.addEventListener('mouseleave', () => {
+      tbody.addEventListener('mouseleave', () => {
         this.hideTooltip();
       });
-    });
+    }
   }
 }
