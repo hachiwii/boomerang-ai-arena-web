@@ -68,6 +68,8 @@ export interface IArenaMap {
     blend: number,
     dt: number,
   ): void;
+  /** Show / hide decorative background floating islands (mobile matches hide them to declutter). */
+  setBackdropVisible?(visible: boolean): void;
   dispose(): void;
 }
 
@@ -424,6 +426,7 @@ export class HqArenaMap3D implements IArenaMap {
 
   private cloudMesh!: THREE.InstancedMesh;
   private cloudData: CloudInfo[] = [];
+  private readonly backdropGroups: THREE.Object3D[] = [];
   private ambientMesh: THREE.InstancedMesh | null = null;
   private ambientData: AmbientBit[] = [];
   private waterfallGroup: THREE.Group | null = null;
@@ -1772,6 +1775,7 @@ export class HqArenaMap3D implements IArenaMap {
       const grp = new THREE.Group();
       for (const m of meshes) grp.add(m);
       this.root.add(grp);
+      this.backdropGroups.push(grp);
       const occ = this.registerOccluder(meshes, -1, false, true);
       if (si === 0 && sl.nm === 'm06') {
         m06Occluder = occ;
@@ -1841,6 +1845,7 @@ export class HqArenaMap3D implements IArenaMap {
 
       this.waterfallGroup = wf;
       this.root.add(wf);
+      this.backdropGroups.push(wf);
       // Hide the waterfall together with `m06` if `m06` blocks a close-up camera!
       if (m06Occluder) {
         const occ = m06Occluder as OccluderEntry;
@@ -2223,6 +2228,10 @@ export class HqArenaMap3D implements IArenaMap {
     dt: number,
   ) {
     applyCloseupOcclusionStep(this.occluders, camPos, focusPos, blend, dt, this._dirScratch);
+  }
+
+  public setBackdropVisible(visible: boolean) {
+    for (const g of this.backdropGroups) g.visible = visible;
   }
 
   public dispose() {

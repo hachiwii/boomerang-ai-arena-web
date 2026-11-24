@@ -9,6 +9,7 @@ import { CountdownStage, MatchController } from './game/matchController';
 import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
+import { PlatformManager } from './game/platform';
 import { ReplayController } from './game/replayController';
 import {
   formatPrimaryBind,
@@ -23,7 +24,9 @@ import { CellType, EngineMapData, isRankedMatchMode, MapMeta, MatchConfig, Ranke
 import { GameRenderer } from './render/renderer';
 import { HistoryModal } from './ui/historyUI';
 import { HudUI } from './ui/hudUI';
+import { ICON_ROTATE } from './ui/icons';
 import { LobbyUI, makeHoodieAvatarDataUrl } from './ui/lobbyUI';
+import { MobileControls, MobileLayoutEditor } from './ui/mobileControls';
 import { SettingsModal } from './ui/settingsUI';
 
 function parseQuickPreviewMap(map: MapMeta): EngineMapData {
@@ -76,6 +79,7 @@ async function bootstrap() {
   const roster = (await rosterResp.json()) as RosterEntry[];
 
   const settings = new SettingsStore();
+  const platform = new PlatformManager(settings);
   const sfx = new SoundFX();
   sfx.applySettings(settings.get().soundEnabled, settings.get().volume);
   const bgm = new BgmManager();
@@ -98,6 +102,8 @@ async function bootstrap() {
   const input = new HumanInputController(canvas, settings);
   const renderer = new GameRenderer(canvas, sfx, undefined, undefined, settings.get().graphicsQuality);
   input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
+  input.setTouchMode(platform.isMobile());
+  renderer.setMobileView(platform.isMobile());
   const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
   const cricketStore = new CricketStore(maps, roster);
   const matchHistory = new MatchHistoryStore();
@@ -146,7 +152,7 @@ async function bootstrap() {
     clearMatchOverTimer();
     matchOverCallback = cb;
     matchOverRemainingMs = Math.max(0, delayMs);
-    if (settingsModal.isOpen()) return;
+    if (externalPaused) return;
     matchOverDeadlineMs = performance.now() + matchOverRemainingMs;
     matchOverTimer = window.setTimeout(() => {
       const fn = matchOverCallback;
@@ -174,18 +180,39 @@ async function bootstrap() {
     }
   };
 
+  // External pause reasons: Settings modal open, or a mobile device held in portrait
+  let settingsOpen = false;
+  let portraitBlocked = false;
+  let externalPaused = false;
+  const syncExternalPause = () => {
+    const want = settingsOpen || portraitBlocked;
+    if (want === externalPaused) return;
+    externalPaused = want;
+    input.setPaused(want);
+    renderer.setCursorSuppressed(want);
+    if (want) mobileControls?.cancelAll();
+    if (mode === 'playing') {
+      controller.setPaused(want);
+      renderer.setPlaybackPaused(want);
+      if (want) pauseMatchOverTimer();
+      else resumeMatchOverTimer();
+    } else if (mode === 'replay') {
+      replayController.setExternalPaused(want);
+    }
+  };
+
+  let mobileControls: MobileControls | null = null;
+  const layoutEditor = new MobileLayoutEditor(settings);
+
   const settingsModal = new SettingsModal(settings, {
     onOpenChange: (open) => {
-      input.setPaused(open);
-      renderer.setCursorSuppressed(open);
-      if (mode === 'playing') {
-        controller.setPaused(open);
-        renderer.setPlaybackPaused(open);
-        if (open) pauseMatchOverTimer();
-        else resumeMatchOverTimer();
-      } else if (mode === 'replay') {
-        replayController.setExternalPaused(open);
-      }
+      settingsOpen = open;
+      if (!open && layoutEditor.isOpen()) layoutEditor.close(false);
+      syncExternalPause();
+    },
+    isMobile: () => platform.isMobile(),
+    onEditMobileLayout: () => {
+      layoutEditor.open();
     },
     onTestSound: () => {
       sfx.playCatch();
@@ -287,6 +314,7 @@ async function bootstrap() {
     controller.stop();
     replayController.stop();
     input.setEnabled(false);
+    mobileControls?.hide();
     hudUI.hide();
     mode = 'lobby';
     activeConfig = null;
@@ -312,6 +340,7 @@ async function bootstrap() {
     replayController.stop();
     renderer.resetCameraToOverview();
     input.setEnabled(false);
+    mobileControls?.hide();
     historyModal.close();
     activeConfig = cfg;
     activeMapData = null;
@@ -403,6 +432,7 @@ async function bootstrap() {
     replayController.stop();
     renderer.resetCameraToOverview();
     input.setEnabled(false);
+    mobileControls?.hide();
     activeConfig = null;
     activeMapData = null;
     replayMapData = bundle.replay.mapData;
@@ -454,6 +484,7 @@ async function bootstrap() {
     if (!activeConfig || restarting) return;
     restarting = true;
     clearMatchOverTimer();
+    mobileControls?.hide();
 
     if (activeConfig.matchMode === 'cricket') {
       const freshCfg = lobbyUI.createCricketMatchConfig();
@@ -562,6 +593,7 @@ async function bootstrap() {
   const startRenderLoop = () => {
     stopRenderLoop();
     const tickRender = () => {
+      platform.setAutoSwitchAllowed(mode === 'lobby' && !settingsOpen);
       renderer.renderFrame(input);
       const now = performance.now();
       if (mode === 'playing' && now - lastTelemetryUpdateMs >= 200) {
@@ -655,6 +687,7 @@ async function bootstrap() {
   hudUI = new HudUI(uiRoot, settings, {
     onReturnToLobby: returnToLobby,
     onRestartMatch: restartCurrentMatch,
+    canQuickRestart: () => canQuickRestart(),
     onWatchCurrentReplay: () => {
       let bundle = lastFinishedBundle;
       if (!bundle && activeConfig && activeMapData) {
@@ -739,6 +772,20 @@ async function bootstrap() {
     },
   });
   renderer.setNameplateLayer(hudUI.nameplateLayer);
+  hudUI.setMobile(platform.isMobile());
+
+  mobileControls = new MobileControls(uiRoot, input, settings, {
+    onAimSlowmo: (active) => {
+      if (mode !== 'playing') return;
+      // Aim slow-mo pins the live clock to 0.1x regardless of the configured match speed
+      const eff = controller.setSpeedOverride(active ? 0.1 : null);
+      renderer.setPlaybackSpeed(eff);
+      document.body.classList.toggle('m-aim-slowmo', active);
+    },
+    onAimIndicator: (dir) => {
+      renderer.setAimIndicator(dir);
+    },
+  });
 
   const handleCountdown = (stage: CountdownStage) => {
     hudUI.setCountdown(stage);
@@ -837,13 +884,23 @@ async function bootstrap() {
       bgm.beginMatch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots }, initialState);
       hudUI.showMatch(cfg, hSeat);
       hudUI.updateTick(initialState, mapData.colStart, mapData.colEvery);
+      document.body.classList.remove('m-aim-slowmo');
+      if (platform.isMobile() && hSeat >= 0) {
+        mobileControls?.show(hSeat, mapData);
+        mobileControls?.onTick(initialState, controller.getTickIntervalMs());
+      } else {
+        mobileControls?.hide();
+      }
     },
     onTick: (prev, next, tickDurationMs) => {
       renderer.pushTick(prev, next, tickDurationMs);
       bgm.updateMatchTick(next);
       hudUI.updateTick(next, activeMapData?.colStart, activeMapData?.colEvery);
+      mobileControls?.onTick(next, tickDurationMs);
     },
     onMatchOver: (finalState, director) => {
+      mobileControls?.hide();
+      document.body.classList.remove('m-aim-slowmo');
       bgm.updateMatchTick(finalState);
       hudUI.updateTick(finalState, activeMapData?.colStart, activeMapData?.colEvery);
       let eloResult: EloUpdateResult | null = null;
@@ -946,7 +1003,81 @@ async function bootstrap() {
     onOpenSettings: () => {
       settingsModal.open();
     },
+    getPlatformState: () => ({
+      mobile: platform.isMobile(),
+      fullscreen: platform.isFullscreen(),
+      fullscreenSupported: platform.isFullscreenSupported(),
+    }),
+    onTogglePlatform: () => {
+      platform.toggle();
+    },
+    onToggleFullscreen: () => {
+      if (platform.isFullscreen() && !platform.isStandaloneApp()) {
+        void platform.exitImmersive().finally(() => lobbyUI.refreshPlatformButtons());
+      } else if (!platform.isFullscreenSupported()) {
+        showPlatformToast('当前浏览器不支持网页全屏 · 请使用「分享 → 添加到主屏幕」以全屏横屏启动');
+      } else {
+        void platform.enterImmersive().finally(() => lobbyUI.refreshPlatformButtons());
+      }
+    },
   });
+
+  // ---------- PC / mobile presentation switching ----------
+  const platformToast = document.createElement('div');
+  platformToast.className = 'ui-hidden-toast platform-toast';
+  platformToast.setAttribute('role', 'status');
+  document.body.appendChild(platformToast);
+  let platformToastTimer: number | null = null;
+  const showPlatformToast = (text: string) => {
+    platformToast.textContent = text;
+    platformToast.classList.add('is-visible');
+    if (platformToastTimer !== null) window.clearTimeout(platformToastTimer);
+    platformToastTimer = window.setTimeout(() => {
+      platformToastTimer = null;
+      platformToast.classList.remove('is-visible');
+    }, 2600);
+  };
+
+  const rotateHint = document.createElement('div');
+  rotateHint.className = 'rotate-hint';
+  rotateHint.innerHTML = `<div class="rotate-hint-card">${ICON_ROTATE}<div class="rotate-hint-title">请将设备横屏</div><div class="rotate-hint-sub">移动端固定横屏游玩 · 对局中会自动暂停</div></div>`;
+  document.body.appendChild(rotateHint);
+
+  const syncPortrait = () => {
+    const blocked = platform.isMobile() && platform.isPortrait();
+    document.body.classList.toggle('is-portrait-blocked', blocked);
+    if (blocked !== portraitBlocked) {
+      portraitBlocked = blocked;
+      syncExternalPause();
+    }
+  };
+  window.addEventListener('resize', syncPortrait);
+  window.addEventListener('orientationchange', syncPortrait);
+  syncPortrait();
+
+  platform.onChange((isMobile) => {
+    input.setTouchMode(isMobile);
+    renderer.setMobileView(isMobile);
+    hudUI.setMobile(isMobile);
+    if (!isMobile) layoutEditor.close(false);
+    lobbyUI.refreshPlatformButtons();
+    syncPortrait();
+    if (mode === 'lobby') {
+      showPlatformToast(isMobile ? '已切换到移动端 · 触屏操作 · 横屏全屏' : '已切换到 PC 端 · 键鼠操作');
+    }
+  });
+  document.addEventListener('fullscreenchange', () => lobbyUI.refreshPlatformButtons());
+  document.addEventListener('webkitfullscreenchange', () => lobbyUI.refreshPlatformButtons());
+
+  // Mobile browsers: block pinch-zoom / double-tap zoom gestures over the game
+  document.addEventListener('gesturestart', (e) => e.preventDefault());
+  document.addEventListener(
+    'dblclick',
+    (e) => {
+      if (platform.isMobile()) e.preventDefault();
+    },
+    { passive: false },
+  );
 
   // Disable native browser right-click context menu everywhere inside the page
   window.addEventListener('contextmenu', (e) => {

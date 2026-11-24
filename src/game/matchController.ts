@@ -61,6 +61,7 @@ export class MatchController {
   private cinematicDirector: CinematicDirector | null = null;
   private tickIntervalMs = LOGIC_DT_MS;
   private gameSpeed = 1.0;
+  private speedOverride: number | null = null;
   private nextTickDeadline = 0;
   private pausedTickRemainingMs = 0;
   private timerHandle: number | null = null;
@@ -131,6 +132,47 @@ export class MatchController {
         this.scheduleNextTick();
       }
     }
+  }
+
+  public getGameSpeed(): number {
+    return this.gameSpeed;
+  }
+
+  public getTickIntervalMs(): number {
+    return this.tickIntervalMs;
+  }
+
+  /**
+   * Temporarily overrides the live logic clock speed (e.g. mobile aim slow-mo pins it to 0.1x
+   * regardless of the configured match speed). `null` restores the configured speed.
+   * The pending tick wait is rescaled in place so the change takes effect immediately.
+   * Returns the effective speed now in force.
+   */
+  public setSpeedOverride(speed: number | null): number {
+    if (this.precomputedTicks) return this.gameSpeed;
+    this.speedOverride = speed !== null && Number.isFinite(speed) ? Math.max(0.05, Math.min(2.0, speed)) : null;
+    const effective = this.speedOverride ?? this.gameSpeed;
+    const nextInterval = LOGIC_DT_MS / effective;
+    const prevInterval = this.tickIntervalMs;
+    if (Math.abs(nextInterval - prevInterval) < 0.01) return effective;
+    this.tickIntervalMs = nextInterval;
+    this.input.setTickIntervalMs(nextInterval);
+    this.tickTimes = [];
+    if (this.timerHandle !== null && !this.paused) {
+      const now = performance.now();
+      const remaining = Math.max(0, this.nextTickDeadline - now);
+      this.nextTickDeadline = now + remaining * (nextInterval / prevInterval);
+      window.clearTimeout(this.timerHandle);
+      this.timerHandle = null;
+      this.scheduleNextTick();
+    } else if (this.paused) {
+      this.pausedTickRemainingMs *= nextInterval / prevInterval;
+    }
+    return effective;
+  }
+
+  public getEffectiveSpeed(): number {
+    return this.speedOverride ?? this.gameSpeed;
   }
 
   public getCinematicDirector(): CinematicDirector | null {
@@ -209,6 +251,7 @@ export class MatchController {
     this.stopped = false;
     this.config = config;
     this.gameSpeed = Math.max(0.1, Math.min(2.0, config.speed || 1.0));
+    this.speedOverride = null;
     this.tickIntervalMs = LOGIC_DT_MS / this.gameSpeed;
     this.tickTimes = [];
     this.actualLogicHz = LOGIC_HZ * this.gameSpeed;
@@ -578,7 +621,7 @@ export class MatchController {
       const nextObs = stepRes.obs as Record<number, string>;
 
       // Update measured logic tick Hz (adaptive rolling window ~1s across 0.1x..2.0x)
-      const maxWin = Math.max(4, Math.min(25, Math.round(LOGIC_HZ * this.gameSpeed) + 1));
+      const maxWin = Math.max(4, Math.min(25, Math.round(LOGIC_HZ * this.getEffectiveSpeed()) + 1));
       this.tickTimes.push(tickNow);
       while (this.tickTimes.length > maxWin) this.tickTimes.shift();
       if (this.tickTimes.length >= 2) {
@@ -787,6 +830,7 @@ export class MatchController {
     this.paused = false;
     this.pausedTickRemainingMs = 0;
     this.stepping = false;
+    this.speedOverride = null;
     this.clearCountdownTimers();
     this.callbacks.onCountdown?.(null);
     this.input.setInputMode('off');

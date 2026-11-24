@@ -4,6 +4,7 @@ import { LeaderboardStore } from '../game/leaderboard';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore } from '../game/settings';
 import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { getTheme } from '../render/themes';
+import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_PHONE } from './icons';
 import { LeaderboardPanel } from './leaderboardUI';
 
 const DUP_RING_ACCENTS = ['#FF4D6D', '#2EC4B6', '#FFB703', '#8338EC'];
@@ -20,6 +21,10 @@ export interface LobbyCallbacks {
   onStartMatch: (config: MatchConfig) => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
+  /** PC / mobile presentation state for the header toggle + fullscreen buttons. */
+  getPlatformState?: () => { mobile: boolean; fullscreen: boolean; fullscreenSupported: boolean };
+  onTogglePlatform?: () => void;
+  onToggleFullscreen?: () => void;
 }
 
 export type LobbyTab = 'ranked' | 'cricket' | 'custom';
@@ -423,6 +428,47 @@ export class LobbyUI {
     }
   }
 
+  private renderPlatformButtonsHtml(): string {
+    const st = this.callbacks.getPlatformState?.();
+    if (!st) return '';
+    const platformBtn = `
+      <button
+        type="button"
+        class="lobby-platform-btn ${st.mobile ? 'is-mobile' : 'is-desktop'}"
+        id="btn-toggle-platform"
+        title="${st.mobile ? '当前：移动端（触屏操作）· 点击切换到 PC 端' : '当前：PC 端（键鼠操作）· 点击切换到移动端'}"
+        aria-label="${st.mobile ? '切换到 PC 端' : '切换到移动端'}"
+      >${st.mobile ? ICON_PHONE : ICON_DESKTOP}<span>${st.mobile ? '移动端' : 'PC 端'}</span></button>`;
+    const fsBtn = st.mobile
+      ? `<button
+          type="button"
+          class="lobby-fullscreen-btn"
+          id="btn-toggle-fullscreen"
+          title="${st.fullscreen ? '退出全屏' : st.fullscreenSupported ? '全屏横屏游玩' : '浏览器不支持网页全屏：请用「分享 → 添加到主屏幕」以全屏启动'}"
+          aria-label="${st.fullscreen ? '退出全屏' : '进入全屏'}"
+        >${st.fullscreen ? ICON_FULLSCREEN_EXIT : ICON_FULLSCREEN}</button>`
+      : '';
+    return platformBtn + fsBtn;
+  }
+
+  /** Re-render header buttons after a PC/mobile or fullscreen change. */
+  public refreshPlatformButtons() {
+    if (this.container.classList.contains('hidden')) return;
+    const holder = this.container.querySelector<HTMLElement>('.lobby-nav-actions');
+    if (!holder) return;
+    holder.querySelector('#btn-toggle-platform')?.remove();
+    holder.querySelector('#btn-toggle-fullscreen')?.remove();
+    holder.insertAdjacentHTML('afterbegin', this.renderPlatformButtonsHtml());
+    holder.querySelector('#btn-toggle-platform')?.addEventListener('click', () => {
+      this.closeDropdown();
+      this.callbacks.onTogglePlatform?.();
+    });
+    holder.querySelector('#btn-toggle-fullscreen')?.addEventListener('click', () => {
+      this.callbacks.onToggleFullscreen?.();
+    });
+    this.syncKeyHintsInPlace();
+  }
+
   public getSelectedMap(): MapMeta {
     return this.maps.find((m) => m.id === this.selectedMapId) || this.maps[0];
   }
@@ -596,20 +642,33 @@ export class LobbyUI {
     }
   }
 
-  private syncKeyHintsInPlace() {
+  private controlsLegendInnerHtml(): string {
+    if (this.callbacks.getPlatformState?.().mobile) {
+      return `
+        <div><kbd>左摇杆</kbd> 移动</div>
+        <div><kbd>按住右摇杆</kbd> 0.1x 瞄准 · 松手扔镖</div>
+        <div><kbd>长按右摇杆</kbd> 召回 · <kbd>挥砍键</kbd> 挥砍 / 踢人</div>
+        <div><kbd>冲刺键</kbd> 冲刺越坑</div>
+      `;
+    }
     const kb = this.settings.get().keybindings;
-    const legendEl = this.container.querySelector<HTMLElement>('.controls-legend');
-    if (legendEl) {
-      const mv = formatMoveSummary(kb);
-      const thr = formatPrimaryBind(kb.throwRecall);
-      const mel = formatPrimaryBind(kb.melee);
-      const dsh = formatDashSummary(kb);
-      legendEl.innerHTML = `
+    const mv = formatMoveSummary(kb);
+    const thr = formatPrimaryBind(kb.throwRecall);
+    const mel = formatPrimaryBind(kb.melee);
+    const dsh = formatDashSummary(kb);
+    return `
         <div><kbd>${mv}</kbd> 移动</div>
         <div><kbd>${thr}</kbd> 扔镖 / <kbd>长按</kbd> 召回</div>
         <div><kbd>${mel}</kbd> 挥砍 / 空手踢人</div>
         <div><kbd>${dsh}</kbd> 冲刺越坑</div>
       `;
+  }
+
+  private syncKeyHintsInPlace() {
+    const kb = this.settings.get().keybindings;
+    const legendEl = this.container.querySelector<HTMLElement>('.controls-legend');
+    if (legendEl) {
+      legendEl.innerHTML = this.controlsLegendInnerHtml();
     }
     const rstEl = this.container.querySelector<HTMLElement>('#cricket-rst-kbd');
     if (rstEl) {
@@ -984,18 +1043,8 @@ export class LobbyUI {
   }
 
   private renderControlsLegend(extraClass = ''): string {
-    const kb = this.settings.get().keybindings;
-    const mv = formatMoveSummary(kb);
-    const thr = formatPrimaryBind(kb.throwRecall);
-    const mel = formatPrimaryBind(kb.melee);
-    const dsh = formatDashSummary(kb);
     return `
-      <div class="controls-legend ${extraClass}">
-        <div><kbd>${mv}</kbd> 移动</div>
-        <div><kbd>${thr}</kbd> 扔镖 / <kbd>长按</kbd> 召回</div>
-        <div><kbd>${mel}</kbd> 挥砍 / 空手踢人</div>
-        <div><kbd>${dsh}</kbd> 冲刺越坑</div>
-      </div>
+      <div class="controls-legend ${extraClass}">${this.controlsLegendInnerHtml()}</div>
     `;
   }
 
@@ -1577,6 +1626,7 @@ export class LobbyUI {
               <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom">🎛️ 自定义对局</button>
             </div>
             <div class="lobby-nav-actions">
+              ${this.renderPlatformButtonsHtml()}
               <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）">📜 对局历史</button>
               <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置">⚙️ 设置</button>
               <button
@@ -1616,6 +1666,15 @@ export class LobbyUI {
     if (lobbyCardEl && prevScrollTop > 0) {
       lobbyCardEl.scrollTop = prevScrollTop;
     }
+
+    // PC / mobile toggle & fullscreen
+    this.container.querySelector('#btn-toggle-platform')?.addEventListener('click', () => {
+      this.closeDropdown();
+      this.callbacks.onTogglePlatform?.();
+    });
+    this.container.querySelector('#btn-toggle-fullscreen')?.addEventListener('click', () => {
+      this.callbacks.onToggleFullscreen?.();
+    });
 
     // Bind top tabs, history & settings buttons
     this.container.querySelector('#btn-open-history')?.addEventListener('click', () => {

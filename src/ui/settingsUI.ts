@@ -49,6 +49,8 @@ export class SettingsModal {
   private onTestSound?: () => void;
   private onResetConfig?: () => void;
   private onResetRanked?: () => void;
+  private isMobile?: () => boolean;
+  private onEditMobileLayout?: () => void;
   private suppressClickUntil = 0;
 
   private readonly handleCaptureKeyDown: (e: KeyboardEvent) => void;
@@ -63,9 +65,13 @@ export class SettingsModal {
       onTestSound?: () => void;
       onResetConfig?: () => void;
       onResetRanked?: () => void;
+      isMobile?: () => boolean;
+      onEditMobileLayout?: () => void;
     } = {},
   ) {
     this.store = store;
+    this.isMobile = callbacks.isMobile;
+    this.onEditMobileLayout = callbacks.onEditMobileLayout;
     this.onOpenChange = callbacks.onOpenChange;
     this.onTestSound = callbacks.onTestSound;
     this.onResetConfig = callbacks.onResetConfig;
@@ -486,6 +492,22 @@ export class SettingsModal {
         </div>`;
     };
 
+    const mobile = Boolean(this.isMobile?.());
+    const mobileKbHtml = mobile
+      ? `
+          <!-- Mobile touch-control layout Section -->
+          <section class="settings-section">
+            <div class="settings-sec-head">
+              <span class="settings-sec-title">🎮 触屏键位</span>
+              <span class="settings-sec-hint">左摇杆移动 · 右摇杆瞄准（按住 0.1x 慢放）/ 长按召回</span>
+            </div>
+            ${this.noticeText ? `<div class="settings-notice">${this.noticeText}</div>` : ''}
+            <div class="settings-mobile-kb-row">
+              <button type="button" class="settings-mobile-kb-btn is-primary" id="settings-edit-mobile-layout">✥ 调整键位</button>
+              <button type="button" class="settings-mobile-kb-btn" id="settings-reset-mobile-layout">↺ 重置键位</button>
+            </div>
+          </section>`
+      : '';
     const prevScrollTop = this.body.scrollTop;
     this.body.innerHTML = `
           <!-- Audio Section -->
@@ -836,8 +858,9 @@ export class SettingsModal {
             </div>
           </section>
 
+          ${mobileKbHtml}
           <!-- Keybindings Section -->
-          <section class="settings-section">
+          <section class="settings-section ${mobile ? 'hidden' : ''}">
             <div class="settings-sec-head">
               <span class="settings-sec-title">⌨️ 键位设置</span>
               <div class="settings-kb-tools">
@@ -1048,6 +1071,16 @@ export class SettingsModal {
         this.store.setBinding(action, slotIndex, null);
         this.render();
       });
+    });
+
+    // Mobile touch layout: open editor / reset
+    this.body.querySelector('#settings-edit-mobile-layout')?.addEventListener('click', () => {
+      this.onEditMobileLayout?.();
+    });
+    this.body.querySelector('#settings-reset-mobile-layout')?.addEventListener('click', () => {
+      this.store.resetMobileLayout();
+      this.showNotice('已恢复默认触屏键位');
+      this.render();
     });
 
     // Reset default keybindings

@@ -56,10 +56,26 @@ aliyun ossutil cp -f dist/index.html "oss://${BUCKET}/index.html" \
   --content-type "text/html; charset=utf-8" \
   --cache-control "no-cache"
 
+if [[ -f "dist/manifest.webmanifest" ]]; then
+  echo "==> Uploading dist/manifest.webmanifest..."
+  aliyun ossutil cp -f dist/manifest.webmanifest "oss://${BUCKET}/manifest.webmanifest" \
+    --region "$REGION" \
+    --content-type "application/manifest+json; charset=utf-8" \
+    --cache-control "no-cache"
+fi
+
+if [[ -f "dist/icon.svg" ]]; then
+  echo "==> Uploading dist/icon.svg..."
+  aliyun ossutil cp -f dist/icon.svg "oss://${BUCKET}/icon.svg" \
+    --region "$REGION" \
+    --content-type "image/svg+xml" \
+    --cache-control "public, max-age=86400"
+fi
+
 if [[ "$REFRESH_CDN" == "1" && -n "$DOMAIN" ]]; then
-  echo "==> Refreshing CDN cache for https://${DOMAIN}/ and /index.html..."
+  echo "==> Refreshing CDN cache for https://${DOMAIN}/, /index.html, /manifest.webmanifest, /icon.svg..."
   aliyun cdn RefreshObjectCaches \
-    --ObjectPath "$(printf 'https://%s/\nhttps://%s/index.html' "$DOMAIN" "$DOMAIN")" \
+    --ObjectPath "$(printf 'https://%s/\nhttps://%s/index.html\nhttps://%s/manifest.webmanifest\nhttps://%s/icon.svg' "$DOMAIN" "$DOMAIN" "$DOMAIN" "$DOMAIN")" \
     --ObjectType File >/dev/null
   echo "    CDN refresh submitted."
 fi

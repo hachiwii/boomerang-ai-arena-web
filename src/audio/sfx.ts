@@ -137,6 +137,101 @@ export class SoundFX {
     this.tone(440, 980, 0.18, 'sine', 0.1);
   }
 
+  // ---------- Recall channel: continuous charge hum → release cue ----------
+  private charge: {
+    ctx: BaseAudioContext;
+    oscA: OscillatorNode;
+    oscB: OscillatorNode;
+    lfo: OscillatorNode;
+    lfoDepth: GainNode;
+    filter: BiquadFilterNode;
+    gain: GainNode;
+  } | null = null;
+
+  /** Starts a rising "charging" hum while the human player channels a recall (live play only). */
+  public startRecallCharge() {
+    this.stopRecallCharge(true);
+    if (this.offlineCtx) return;
+    const ctx = this.ensure();
+    if (!ctx) return;
+    const t0 = ctx.currentTime;
+    const oscA = ctx.createOscillator();
+    const oscB = ctx.createOscillator();
+    const lfo = ctx.createOscillator();
+    const lfoDepth = ctx.createGain();
+    const filter = ctx.createBiquadFilter();
+    const trem = ctx.createGain();
+    const gain = ctx.createGain();
+    oscA.type = 'sine';
+    oscB.type = 'triangle';
+    oscA.frequency.setValueAtTime(190, t0);
+    oscB.frequency.setValueAtTime(285, t0);
+    lfo.type = 'sine';
+    lfo.frequency.setValueAtTime(7, t0);
+    lfoDepth.gain.setValueAtTime(0.35, t0);
+    trem.gain.setValueAtTime(0.65, t0);
+    filter.type = 'lowpass';
+    filter.frequency.setValueAtTime(900, t0);
+    filter.Q.value = 2.2;
+    gain.gain.setValueAtTime(0.0001, t0);
+    gain.gain.linearRampToValueAtTime(Math.max(0.0002, 0.055 * this.volume), t0 + 0.06);
+    const bGain = ctx.createGain();
+    bGain.gain.value = 0.45;
+    oscA.connect(filter);
+    oscB.connect(bGain).connect(filter);
+    filter.connect(trem).connect(gain).connect(ctx.destination);
+    lfo.connect(lfoDepth).connect(trem.gain);
+    oscA.start(t0);
+    oscB.start(t0);
+    lfo.start(t0);
+    this.charge = { ctx, oscA, oscB, lfo, lfoDepth, filter, gain };
+  }
+
+  /** progress 0..1 → pitch climbs two octaves, tremolo speeds up, brightness & level swell. */
+  public updateRecallCharge(progress: number) {
+    const c = this.charge;
+    if (!c) return;
+    const p = Math.max(0, Math.min(1, progress));
+    const t = c.ctx.currentTime;
+    const f = 190 * Math.pow(2, p * 2);
+    c.oscA.frequency.setTargetAtTime(f, t, 0.03);
+    c.oscB.frequency.setTargetAtTime(f * 1.5, t, 0.03);
+    c.lfo.frequency.setTargetAtTime(7 + p * 17, t, 0.05);
+    c.filter.frequency.setTargetAtTime(900 + p * 3600, t, 0.04);
+    c.gain.gain.setTargetAtTime(Math.max(0.0002, (0.055 + p * 0.05) * this.volume), t, 0.05);
+  }
+
+  /** Fades the charge hum out (fast when it resolves into the release cue, softer on cancel). */
+  public stopRecallCharge(released = false) {
+    const c = this.charge;
+    if (!c) return;
+    this.charge = null;
+    const t = c.ctx.currentTime;
+    const fade = released ? 0.02 : 0.07;
+    try {
+      c.gain.gain.cancelScheduledValues(t);
+      c.gain.gain.setValueAtTime(Math.max(0.0001, c.gain.gain.value), t);
+      c.gain.gain.exponentialRampToValueAtTime(0.0001, t + fade);
+      if (!released) {
+        c.oscA.frequency.setTargetAtTime(120, t, 0.04);
+      }
+      const stopAt = t + fade + 0.03;
+      c.oscA.stop(stopAt);
+      c.oscB.stop(stopAt);
+      c.lfo.stop(stopAt);
+    } catch {
+      // already stopped
+    }
+  }
+
+  /** Recall channel completed: bright whoosh-snap as the dart flies back. */
+  public playRecallRelease() {
+    this.tone(140, 58, 0.13, 'sine', 0.13);
+    this.tone(660, 1980, 0.16, 'triangle', 0.12);
+    this.tone(1320, 2640, 0.12, 'sine', 0.07, 0.025);
+    this.noise(0.2, 0.11, 2600, 0.9, 0.01);
+  }
+
   public playHitKill() {
     this.tone(320, 95, 0.22, 'sawtooth', 0.15);
     this.tone(880, 1320, 0.12, 'triangle', 0.11, 0.02);

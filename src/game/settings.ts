@@ -25,7 +25,75 @@ export interface CinematicOptions {
   winnerCam: boolean; // Winner front close-up + periodic confetti shower
 }
 
+/** 'auto' follows the detected primary input device (touch → mobile); otherwise a manual override. */
+export type PlatformPref = 'auto' | 'mobile' | 'desktop';
+
+export type MobileControlKey = 'move' | 'aim' | 'slash' | 'dash';
+
+/**
+ * One on-screen touch control, anchored to the left or right edge of the landscape viewport.
+ * All values are in units of viewport HEIGHT so the cluster keeps its shape across aspect ratios:
+ * - x: distance from the anchored side edge to the control center
+ * - y: distance from the bottom edge to the control center
+ * - s: control diameter
+ */
+export interface MobileControlSpot {
+  side: 'l' | 'r';
+  x: number;
+  y: number;
+  s: number;
+}
+
+export type MobileLayout = Record<MobileControlKey, MobileControlSpot>;
+
+export const MOBILE_CONTROL_KEYS: MobileControlKey[] = ['move', 'aim', 'slash', 'dash'];
+
+export const MOBILE_CONTROL_LABELS: Record<MobileControlKey, string> = {
+  move: '移动',
+  aim: '瞄准 / 召回',
+  slash: '挥砍',
+  dash: '冲刺',
+};
+
+export const MOBILE_CONTROL_SIZE_LIMITS: Record<MobileControlKey, [number, number]> = {
+  move: [0.22, 0.62],
+  aim: [0.2, 0.56],
+  slash: [0.1, 0.32],
+  dash: [0.1, 0.32],
+};
+
+export function cloneDefaultMobileLayout(): MobileLayout {
+  return {
+    move: { side: 'l', x: 0.3, y: 0.3, s: 0.4 },
+    aim: { side: 'r', x: 0.3, y: 0.3, s: 0.36 },
+    slash: { side: 'r', x: 0.35, y: 0.63, s: 0.17 },
+    dash: { side: 'r', x: 0.63, y: 0.26, s: 0.17 },
+  };
+}
+
+function sanitizeMobileLayout(raw: unknown): MobileLayout {
+  const def = cloneDefaultMobileLayout();
+  if (!raw || typeof raw !== 'object') return def;
+  const src = raw as Record<string, unknown>;
+  for (const key of MOBILE_CONTROL_KEYS) {
+    const e = src[key] as Partial<MobileControlSpot> | undefined;
+    if (!e || typeof e !== 'object') continue;
+    const [sMin, sMax] = MOBILE_CONTROL_SIZE_LIMITS[key];
+    const num = (v: unknown, lo: number, hi: number, fb: number) =>
+      typeof v === 'number' && Number.isFinite(v) ? Math.max(lo, Math.min(hi, v)) : fb;
+    def[key] = {
+      side: e.side === 'l' || e.side === 'r' ? e.side : def[key].side,
+      x: num(e.x, 0, 3, def[key].x),
+      y: num(e.y, 0, 1, def[key].y),
+      s: num(e.s, sMin, sMax, def[key].s),
+    };
+  }
+  return def;
+}
+
 export interface GameSettings {
+  platformMode: PlatformPref;
+  mobileLayout: MobileLayout;
   soundEnabled: boolean;
   volume: number; // 0..100
   bgmEnabled: boolean;
@@ -169,6 +237,8 @@ export function cloneDefaultKeybindings(): KeyBindings {
 
 export function defaultSettings(): GameSettings {
   return {
+    platformMode: 'auto',
+    mobileLayout: cloneDefaultMobileLayout(),
     soundEnabled: true,
     volume: 100,
     bgmEnabled: true,
@@ -444,7 +514,14 @@ export class SettingsStore {
           }
         }
       }
+      const platformMode: PlatformPref =
+        parsed.platformMode === 'mobile' || parsed.platformMode === 'desktop' || parsed.platformMode === 'auto'
+          ? parsed.platformMode
+          : def.platformMode;
+      const mobileLayout = sanitizeMobileLayout(parsed.mobileLayout);
       return {
+        platformMode,
+        mobileLayout,
         soundEnabled,
         volume,
         bgmEnabled,
@@ -494,6 +571,22 @@ export class SettingsStore {
   public onChange(fn: SettingsListener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  public setPlatformMode(mode: PlatformPref) {
+    if (this.settings.platformMode === mode) return;
+    this.settings.platformMode = mode;
+    this.emit();
+  }
+
+  public setMobileLayout(layout: MobileLayout) {
+    this.settings.mobileLayout = sanitizeMobileLayout(layout);
+    this.emit();
+  }
+
+  public resetMobileLayout() {
+    this.settings.mobileLayout = cloneDefaultMobileLayout();
+    this.emit();
   }
 
   public setSoundEnabled(enabled: boolean) {

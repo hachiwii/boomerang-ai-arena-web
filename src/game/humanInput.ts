@@ -1,7 +1,16 @@
 import { applyCliffGuard } from './cliffGuard';
 import { applyMeleeAssist } from './meleeAssist';
 import { ActionBindKey, isBoundToAction, SettingsStore } from './settings';
-import { ActType, DState, EngineMapData, HumanAction, PState, TickSnapshot } from './types';
+import {
+  ActType,
+  DartSnapshot,
+  DState,
+  EngineMapData,
+  HumanAction,
+  PlayerSnapshot,
+  PState,
+  TickSnapshot,
+} from './types';
 
 /**
  * Human input controller driven by user-editable dual keybindings (keyboard & mouse buttons):
@@ -52,6 +61,22 @@ export class HumanInputController {
   private canvas: HTMLCanvasElement;
   private settings: SettingsStore;
 
+  // ---------- Mobile virtual controls (touch mode) ----------
+  // Screen axes map 1:1 onto world axes (camera never yaws in live matches): +x right, +y down/toward camera.
+  private touchMode = false;
+  private vMoveX = 0;
+  private vMoveY = 0;
+  private vAimHeld = false;
+  private vThrowAt = -1;
+  private vThrowDirX = 0;
+  private vThrowDirY = 0;
+  private vThrowAfterDash = false;
+  private vMeleeAt = -1;
+  private vMeleeDirX = 0;
+  private vMeleeDirY = 0;
+  private vMeleeAfterDash = false;
+  private vDashAt = -1;
+
   constructor(canvas: HTMLCanvasElement, settings: SettingsStore) {
     this.canvas = canvas;
     this.settings = settings;
@@ -90,7 +115,84 @@ export class HumanInputController {
       this.queuedDashToMouseAt = -1;
       this.queuedDashHasTarget = false;
       this.dashBufferedThrowAt = -1;
+      this.resetVirtual();
     }
+  }
+
+  // ---------- Mobile virtual control API ----------
+
+  public setTouchMode(on: boolean) {
+    if (this.touchMode === on) return;
+    this.touchMode = on;
+    this.resetVirtual();
+    if (on) this.hasMouse = false;
+  }
+
+  public isTouchMode(): boolean {
+    return this.touchMode;
+  }
+
+  public getInputMode(): InputMode {
+    return this.inputMode;
+  }
+
+  private resetVirtual() {
+    this.vMoveX = 0;
+    this.vMoveY = 0;
+    this.vAimHeld = false;
+    this.vThrowAt = -1;
+    this.vThrowAfterDash = false;
+    this.vMeleeAt = -1;
+    this.vMeleeAfterDash = false;
+    this.vDashAt = -1;
+  }
+
+  /** Left stick: analog vector in screen space, magnitude 0..1. */
+  public setVirtualMove(x: number, y: number) {
+    this.vMoveX = Number.isFinite(x) ? Math.max(-1, Math.min(1, x)) : 0;
+    this.vMoveY = Number.isFinite(y) ? Math.max(-1, Math.min(1, y)) : 0;
+  }
+
+  /** Right stick held while the dart is NOT in hand → behaves like holding the Throw/Recall key. */
+  public setVirtualRecallHeld(held: boolean) {
+    if (held && !this.vAimHeld) this.throwConsumed = false;
+    this.vAimHeld = held;
+    if (!held && !this.isThrowRecallHeld()) this.throwConsumed = false;
+  }
+
+  /**
+   * Right stick released after aiming: throw toward (dirX, dirY) (screen space, any length;
+   * zero = current facing). `afterDash` keeps the throw buffered through a dash so it fires on the
+   * first free tick after the dash ends.
+   */
+  public queueVirtualThrow(dirX: number, dirY: number, afterDash = false) {
+    if (this.inputMode !== 'active' || this.paused) return;
+    const len = Math.hypot(dirX, dirY);
+    this.vThrowDirX = len > 1e-4 ? dirX / len : 0;
+    this.vThrowDirY = len > 1e-4 ? dirY / len : 0;
+    this.vThrowAt = performance.now();
+    this.vThrowAfterDash = afterDash;
+  }
+
+  /** Slash button: melee toward the move-stick direction when held, else current facing. */
+  public queueVirtualMelee() {
+    if (this.inputMode !== 'active' || this.paused) return;
+    this.vMeleeAt = performance.now();
+    this.vMeleeAfterDash = false;
+    const len = Math.hypot(this.vMoveX, this.vMoveY);
+    if (len >= 0.2) {
+      this.vMeleeDirX = this.vMoveX / len;
+      this.vMeleeDirY = this.vMoveY / len;
+    } else {
+      this.vMeleeDirX = 0;
+      this.vMeleeDirY = 0;
+    }
+  }
+
+  /** Dash button: dash toward the move-stick direction when held, else current facing. */
+  public queueVirtualDash() {
+    if (this.inputMode !== 'active' || this.paused) return;
+    this.vDashAt = performance.now();
   }
 
   public setAimProjector(fn: ((clientX: number, clientY: number) => [number, number] | null) | null) {
@@ -138,6 +240,7 @@ export class HumanInputController {
     this.queuedDashToMouseAt = -1;
     this.queuedDashHasTarget = false;
     this.dashBufferedThrowAt = -1;
+    this.resetVirtual();
   }
 
   private isActionHeld(action: ActionBindKey): boolean {
@@ -149,7 +252,7 @@ export class HumanInputController {
   }
 
   public isThrowRecallHeld(): boolean {
-    return this.isActionHeld('throwRecall');
+    return this.isActionHeld('throwRecall') || (this.touchMode && this.vAimHeld);
   }
 
   private bindEvents() {
@@ -217,6 +320,8 @@ export class HumanInputController {
     });
 
     const onRawPointer = (e: PointerEvent) => {
+      // Fingers never drive the PC aim cursor (touch controls have their own sticks)
+      if (e.pointerType === 'touch' || this.touchMode) return;
       this.mouseX = e.clientX;
       this.mouseY = e.clientY;
       this.hasMouse = true;
@@ -227,6 +332,7 @@ export class HumanInputController {
     window.addEventListener('pointermove', onRawPointer, { passive: true });
 
     this.canvas.addEventListener('mousedown', (e) => {
+      if (this.touchMode) return;
       this.mouseX = e.clientX;
       this.mouseY = e.clientY;
       this.hasMouse = true;
@@ -327,7 +433,12 @@ export class HumanInputController {
     const dart = state.darts[seat];
     if (!me || !me.alive) {
       this.dashBufferedThrowAt = -1;
+      this.resetVirtualActions();
       return { mx: 0, my: 0, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
+    }
+
+    if (this.touchMode) {
+      return this.sampleTouchAction(state, seat, me, dart);
     }
 
     const now = performance.now();
@@ -495,6 +606,147 @@ export class HumanInputController {
 
     if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.bufferMs) {
       this.queuedThrowAt = -1;
+    }
+
+    return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
+  }
+
+  private resetVirtualActions() {
+    this.vThrowAt = -1;
+    this.vThrowAfterDash = false;
+    this.vMeleeAt = -1;
+    this.vMeleeAfterDash = false;
+    this.vDashAt = -1;
+  }
+
+  /** Analog left stick → engine move vector (|v| ≥ 1000 = full speed, shorter = proportional walk). */
+  private getVirtualMoveVector(): [number, number] {
+    const m = Math.hypot(this.vMoveX, this.vMoveY);
+    if (m < 0.1) return [0, 0];
+    const speed = Math.min(1, 0.35 + ((m - 0.1) / 0.45) * 0.65);
+    return [Math.round((this.vMoveX / m) * speed * 1000), Math.round((this.vMoveY / m) * speed * 1000)];
+  }
+
+  /**
+   * Touch-control sampling with explicit dash pre-input:
+   * - Slash pressed during a dash → buffered (dash is never cut short) and fired on the first free tick
+   *   after it, toward the live move-stick direction (falls back to the stick at press time, then facing).
+   * - Throw released while dashing → buffered and fired on the first free tick after the dash.
+   * - Otherwise one-shot presses live for `bufferMs`, earliest press executes first.
+   */
+  private sampleTouchAction(state: TickSnapshot, seat: number, p: PlayerSnapshot, dart: DartSnapshot): HumanAction {
+    const now = performance.now();
+    const [mx, my] = this.getVirtualMoveVector();
+    const faceRad = (p.face / 100) * (Math.PI / 180);
+    const faceX = Math.round(Math.cos(faceRad) * 1000);
+    const faceY = Math.round(Math.sin(faceRad) * 1000);
+    const stickLen = Math.hypot(this.vMoveX, this.vMoveY);
+    const stickDir: [number, number] | null =
+      stickLen >= 0.2
+        ? [Math.round((this.vMoveX / stickLen) * 1000), Math.round((this.vMoveY / stickLen) * 1000)]
+        : null;
+
+    if (dart.st === DState.GROUND) {
+      if (this.groundSinceMs < 0) this.groundSinceMs = now;
+    } else if (dart.st !== DState.RISE) {
+      this.groundSinceMs = -1;
+    }
+
+    const meleeDir = (): [number, number] => {
+      if (stickDir) return stickDir;
+      if (this.vMeleeDirX !== 0 || this.vMeleeDirY !== 0) {
+        return [Math.round(this.vMeleeDirX * 1000), Math.round(this.vMeleeDirY * 1000)];
+      }
+      return [faceX, faceY];
+    };
+    const makeMelee = (): HumanAction => {
+      let [ax, ay] = meleeDir();
+      if (this.settings.get().meleeAssist && this.mapData) {
+        [ax, ay] = applyMeleeAssist(this.mapData, state, seat, ax, ay);
+      }
+      this.vMeleeAt = -1;
+      this.vMeleeAfterDash = false;
+      return { mx, my, act: ActType.MELEE, ax, ay, msg: 0 };
+    };
+    const expired = (at: number, sticky: boolean) => at > 0 && !sticky && now - at > this.bufferMs;
+
+    // A. During DASH: never interrupt it — slash / throw pressed now are held for the first free tick
+    if (p.st === PState.DASH) {
+      if (this.vMeleeAt > 0) this.vMeleeAfterDash = true;
+      if (this.vThrowAt > 0) this.vThrowAfterDash = true;
+      if (expired(this.vDashAt, false)) this.vDashAt = -1;
+      return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
+    }
+
+    const canStartNew = p.st === PState.FREE || p.st === PState.RECALL;
+    // Got hit (stunned / slashed / kicked) before the buffered follow-up could land → drop it
+    const interrupted = p.st === PState.STUN || p.st === PState.SLASHED || p.st === PState.KICKED;
+    if (interrupted) {
+      if (this.vMeleeAfterDash) {
+        this.vMeleeAt = -1;
+        this.vMeleeAfterDash = false;
+      }
+      if (this.vThrowAfterDash) {
+        this.vThrowAt = -1;
+        this.vThrowAfterDash = false;
+      }
+    }
+    if (expired(this.vMeleeAt, this.vMeleeAfterDash)) this.vMeleeAt = -1;
+    if (expired(this.vThrowAt, this.vThrowAfterDash)) {
+      this.vThrowAt = -1;
+    }
+    if (expired(this.vDashAt, false)) this.vDashAt = -1;
+
+    if (canStartNew) {
+      type Cand = { at: number; run: () => HumanAction | null };
+      const cands: Cand[] = [];
+      if (this.vMeleeAt > 0) cands.push({ at: this.vMeleeAt, run: makeMelee });
+      if (this.vDashAt > 0 && p.cd === 0) {
+        cands.push({
+          at: this.vDashAt,
+          run: () => {
+            this.vDashAt = -1;
+            const [dx, dy] = stickDir ?? [faceX, faceY];
+            return { mx, my, act: ActType.DASH, ax: dx, ay: dy, msg: 0 };
+          },
+        });
+      }
+      if (this.vThrowAt > 0) {
+        cands.push({
+          at: this.vThrowAt,
+          run: () => {
+            const hasDir = this.vThrowDirX !== 0 || this.vThrowDirY !== 0;
+            this.vThrowAt = -1;
+            this.vThrowAfterDash = false;
+            if (dart.st !== DState.HAND || p.st !== PState.FREE) return null;
+            this.throwConsumed = true;
+            const ax = hasDir ? Math.round(this.vThrowDirX * 1000) : faceX;
+            const ay = hasDir ? Math.round(this.vThrowDirY * 1000) : faceY;
+            return { mx, my, act: ActType.THROW, ax, ay, msg: 0 };
+          },
+        });
+      }
+      cands.sort((a, b) => a.at - b.at);
+      for (const c of cands) {
+        const act = c.run();
+        if (act) return act;
+      }
+    }
+
+    // Hold right stick (dart not in hand) → recall, identical rules to holding the Throw/Recall key
+    const recallHeld = this.isThrowRecallHeld();
+    const wantsRecall =
+      recallHeld &&
+      (dart.st === DState.RISE ||
+        (dart.st === DState.GROUND &&
+          (!this.throwConsumed || (this.groundSinceMs > 0 && now - this.groundSinceMs >= this.recallHoldDelayMs))));
+
+    if (wantsRecall && canStartNew) {
+      return { mx: 0, my: 0, act: ActType.RECALL, ax: 0, ay: 0, msg: 0 };
+    }
+    if (!wantsRecall && p.st === PState.RECALL) {
+      const cancelMx = mx !== 0 || my !== 0 ? mx : 1;
+      return { mx: cancelMx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
 
     return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };

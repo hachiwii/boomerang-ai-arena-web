@@ -1,0 +1,14 @@
+{
+  "name": "回旋镖大作战 · Boomerang AI Arena",
+  "short_name": "回旋镖大作战",
+  "start_url": "/",
+  "scope": "/",
+  "display": "fullscreen",
+  "display_override": ["fullscreen", "standalone"],
+  "orientation": "landscape",
+  "background_color": "#0d1322",
+  "theme_color": "#0d1322",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}

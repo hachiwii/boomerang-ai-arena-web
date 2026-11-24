@@ -11,6 +11,7 @@ import {
   EngineMapData,
   GameEvent,
   LOGIC_DT_MS,
+  PState,
   SlotConfig,
   TickSnapshot,
 } from '../game/types';
@@ -141,6 +142,17 @@ export class GameRenderer {
   private readonly _moversScratch: ArenaMover[] = [];
   private cursorSuppressed = false;
   private activeCursorKey = 'default';
+
+  // Mobile presentation: island fills the screen, background islands hidden, skillshot indicator
+  private mobileView = false;
+  private readonly _fitCam = new THREE.PerspectiveCamera(CAM_FOV, 1, 0.5, 260);
+  private readonly _fitVec = new THREE.Vector3();
+  private aimIndicatorActive = false;
+  private aimIndicatorX = 1;
+  private aimIndicatorY = 0;
+
+  // Human recall channel charge → release audio cue
+  private recallChargeActive = false;
 
   // Floating nameplate DOM elements (positioned via CSS transform3d for 240Hz smoothness!)
   private nameplateLayer: HTMLDivElement | null = null;
@@ -274,6 +286,33 @@ export class GameRenderer {
     this.nameplateLayer = el;
   }
 
+  /**
+   * Mobile presentation for live matches & replays: the main island is framed to fill the screen
+   * and decorative background floating islands are hidden. The lobby preview is unaffected.
+   */
+  public setMobileView(on: boolean) {
+    if (this.mobileView === on) return;
+    this.mobileView = on;
+    if (this.arena && !this.previewMode) {
+      this.arena.setBackdropVisible?.(!on);
+      this.recomputeCameraFit();
+    }
+  }
+
+  /** Mobile aim slow-mo skillshot indicator direction (screen/world axes), or null to hide. */
+  public setAimIndicator(dir: [number, number] | null) {
+    if (!dir) {
+      this.aimIndicatorActive = false;
+      return;
+    }
+    const len = Math.hypot(dir[0], dir[1]);
+    this.aimIndicatorActive = true;
+    if (len > 1e-4) {
+      this.aimIndicatorX = dir[0] / len;
+      this.aimIndicatorY = dir[1] / len;
+    }
+  }
+
   private handleResize() {
     const w = window.innerWidth;
     const h = window.innerHeight;
@@ -375,6 +414,7 @@ export class GameRenderer {
       this.applyThemeLighting(this.activeThemeName);
       this.arena = this.createArenaInstance(this.activeMapData, this.activeThemeName);
       this.scene.add(this.arena.root);
+      if (!this.previewMode && this.mobileView) this.arena.setBackdropVisible?.(false);
       this.positionSunForArena();
       if (this.currState) {
         this.arena.update(this.currState.t, this.elapsedSec, {
@@ -444,6 +484,7 @@ export class GameRenderer {
     this.applyThemeLighting(themeName);
     this.arena = this.createArenaInstance(mapData, themeName);
     this.scene.add(this.arena.root);
+    if (this.mobileView) this.arena.setBackdropVisible?.(false);
 
     this.positionSunForArena();
 
@@ -628,7 +669,75 @@ export class GameRenderer {
     else eyeEl.innerHTML = '';
   }
 
+  /**
+   * Mobile fill-screen framing: binary-searches the camera distance (and recenters the look-at
+   * depth) so the island's projected footprint — plus character heads on the far row — just fits
+   * the viewport with a hair of margin, instead of the desktop framing that reserves HUD room.
+   */
+  private computeMobileFillFit(widthM: number, heightM: number): { dist: number; targetZ: number } {
+    const { width: vw, height: vh } = this.getViewportSize();
+    const cam = this._fitCam;
+    cam.fov = CAM_FOV;
+    cam.aspect = vw / Math.max(1, vh);
+    cam.updateProjectionMatrix();
+    const cx = widthM * 0.5;
+    const marginX = 0.015;
+    const marginTop = 0.03;
+    const marginBottom = 0.015;
+    const pts: [number, number, number][] = [
+      [0, 0, 0],
+      [widthM, 0, 0],
+      [0, 0, heightM],
+      [widthM, 0, heightM],
+      [0, 1.7, 0],
+      [widthM, 1.7, 0],
+      [cx, 1.7, 0],
+    ];
+    const project = (dist: number, tz: number) => {
+      cam.position.set(cx, dist * Math.sin(PITCH_RAD), tz + dist * Math.cos(PITCH_RAD) - 0.35);
+      cam.lookAt(cx, 0, tz - 0.35);
+      cam.updateMatrixWorld();
+      let maxAbsX = 0;
+      let top = -Infinity;
+      let bottom = Infinity;
+      for (const [x, y, z] of pts) {
+        this._fitVec.set(x, y, z).project(cam);
+        maxAbsX = Math.max(maxAbsX, Math.abs(this._fitVec.x));
+        top = Math.max(top, this._fitVec.y);
+        bottom = Math.min(bottom, this._fitVec.y);
+      }
+      return { maxAbsX, top, bottom };
+    };
+    let tz = heightM * 0.5;
+    let dist = 20;
+    for (let iter = 0; iter < 4; iter++) {
+      let lo = 3;
+      let hi = 160;
+      for (let i = 0; i < 28; i++) {
+        const mid = (lo + hi) * 0.5;
+        const r = project(mid, tz);
+        const fits = r.maxAbsX <= 1 - marginX && r.top <= 1 - marginTop && r.bottom >= -1 + marginBottom;
+        if (fits) hi = mid;
+        else lo = mid;
+      }
+      dist = hi;
+      const r = project(dist, tz);
+      const centerOffset = (r.top + r.bottom) * 0.5 - (marginBottom - marginTop) * 0.5;
+      if (Math.abs(centerOffset) < 0.004) break;
+      // Positive offset → island sits too high on screen → look further toward the far (−z) edge
+      const worldPerNdc = (dist * Math.tan((CAM_FOV * Math.PI) / 360)) / Math.sin(PITCH_RAD);
+      tz -= centerOffset * worldPerNdc;
+    }
+    return { dist, targetZ: tz };
+  }
+
   private recomputeCameraFitForSize(widthM: number, heightM: number) {
+    if (this.mobileView && !this.previewMode && !this.fixedSize) {
+      const fit = this.computeMobileFillFit(widthM, heightM);
+      this.camDist = fit.dist;
+      this.camTargetZ = fit.targetZ;
+      return;
+    }
     const { width: vw, height: vh } = this.getViewportSize();
     const w = widthM + 2.2;
     const h = heightM + 2.4;
@@ -645,6 +754,7 @@ export class GameRenderer {
 
   private recomputeCameraFit() {
     if (!this.arena) return;
+    this.camTargetZ = this.arena.heightM * 0.5;
     this.recomputeCameraFitForSize(this.arena.widthM, this.arena.heightM);
   }
 
@@ -958,7 +1068,14 @@ export class GameRenderer {
           if (this.graphicsQuality === 'high') {
             this.fx.spawnTurn(ev.b / 1000, ev.c / 1000, this.slots[ev.a]?.color || '#ffffff', nowSec);
           }
-          this.sfx.playRecallCall();
+          if (this.humanSeat >= 0 && ev.a === this.humanSeat) {
+            // Human recall channel completed: cut the charge hum into a punchy release cue
+            this.recallChargeActive = false;
+            this.sfx.stopRecallCharge(true);
+            this.sfx.playRecallRelease();
+          } else {
+            this.sfx.playRecallCall();
+          }
           break;
         }
         case 'COLLAPSE': {
@@ -1094,14 +1211,27 @@ export class GameRenderer {
     return { landUpper, landLower };
   }
 
-  private collectArenaMovers(prev: TickSnapshot, curr: TickSnapshot, alpha: number): ArenaMover[] {
+  private isPlayerHiddenFromHuman(snap: TickSnapshot, seat: number): boolean {
+    if (this.humanSeat < 0 || seat === this.humanSeat) return false;
+    const me = snap.players[this.humanSeat];
+    const target = snap.players[seat];
+    if (!me || me.alive !== 1 || !target || target.alive !== 1) return false;
+    return ((target.visMask >> this.humanSeat) & 1) === 0;
+  }
+
+  private collectArenaMovers(
+    prev: TickSnapshot,
+    curr: TickSnapshot,
+    alpha: number,
+    respectHumanFog = false,
+  ): ArenaMover[] {
     const out = this._moversScratch;
     out.length = 0;
     if (this.graphicsQuality !== 'high') return out;
     for (let k = 0; k < curr.n; k++) {
       const p0 = prev.players[k];
       const p1 = curr.players[k];
-      if (p1 && p1.alive === 1) {
+      if (p1 && p1.alive === 1 && !(respectHumanFog && this.isPlayerHiddenFromHuman(curr, k))) {
         const px = (p0.x + (p1.x - p0.x) * alpha) / 1000;
         const pz = (p0.y + (p1.y - p0.y) * alpha) / 1000;
         const speed = curr.over ? 0 : Math.hypot(p1.vx, p1.vy) / 1000;
@@ -1389,6 +1519,8 @@ export class GameRenderer {
         this.applyCanvasCursor('default');
       }
 
+      this.updateRecallChargeAudio(alpha);
+
       // Update mouse raycast into arena ground plane (in mm)
       let aimX = this.camTargetX;
       let aimZ = this.camTargetZ;
@@ -1407,7 +1539,7 @@ export class GameRenderer {
       }
 
       // Update arena collapsing tiles, grass sway & mover brush-parting, clouds (freeze collapse once match is over!)
-      const movers = this.collectArenaMovers(this.prevState, this.currState, alpha);
+      const movers = this.collectArenaMovers(this.prevState, this.currState, alpha, true);
       const liveFx = this.fx;
       const liveElapsed = this.elapsedSec;
       if (
@@ -1466,11 +1598,7 @@ export class GameRenderer {
         const currD = this.currState.darts[k];
 
         // Visibility rule: if Human is playing & alive, hide enemies that Human cannot see in grass!
-        const hiddenFromHuman =
-          humanAlive &&
-          k !== this.humanSeat &&
-          currP.alive === 1 &&
-          ((currP.visMask >> this.humanSeat) & 1) === 0;
+        const hiddenFromHuman = this.isPlayerHiddenFromHuman(this.currState, k);
 
         // Eye indicator above opponent AI heads when human is standing in grass!
         let eyeState: 'none' | 'closed' | 'open' = 'none';
@@ -1547,6 +1675,14 @@ export class GameRenderer {
 
       // Update pooled FX + human aim reticle + grass stealth ring
       if (this.fx) {
+        const md = this.activeMapData;
+        this.fx.setSkillshot(
+          this.aimIndicatorActive && this.humanSeat >= 0,
+          this.aimIndicatorX,
+          this.aimIndicatorY,
+          (md?.range ?? 7200) / 1000,
+          ((md?.dartR ?? 320) * 2) / 1000,
+        );
         this.fx.update(
           this.elapsedSec,
           this.prevState,
@@ -1613,6 +1749,34 @@ export class GameRenderer {
       this.avgFrameWorkMs = this.workMsAccum / this.workMsSamples;
       this.workMsAccum = 0;
       this.workMsSamples = 0;
+    }
+  }
+
+  /** Rising "charge" hum while the live human channels a recall; stops (or releases on CALL). */
+  private updateRecallChargeAudio(alpha: number) {
+    const st = this.currState;
+    const seat = this.humanSeat;
+    const me = st && seat >= 0 ? st.players[seat] : null;
+    const dart = st && seat >= 0 ? st.darts[seat] : null;
+    const charging =
+      !this.playbackPaused &&
+      !!st &&
+      !st.over &&
+      !!me &&
+      me.alive === 1 &&
+      me.st === PState.RECALL &&
+      dart?.st === DState.RISE;
+    if (charging && me) {
+      const recallPre = Math.max(1, this.arena?.mapData.recallPre || 12);
+      const prog = Math.max(0, Math.min(1, (recallPre - Math.max(0, me.timer) + alpha) / recallPre));
+      if (!this.recallChargeActive) {
+        this.recallChargeActive = true;
+        this.sfx.startRecallCharge();
+      }
+      this.sfx.updateRecallCharge(prog);
+    } else if (this.recallChargeActive) {
+      this.recallChargeActive = false;
+      this.sfx.stopRecallCharge(false);
     }
   }
 
@@ -1690,7 +1854,7 @@ export class GameRenderer {
 
     const cinePose = this.applyCameraWithOptionalCinematic(gt * 0.05, frameDt, opts?.cameraPose);
 
-    const movers = this.collectArenaMovers(prev, curr, alpha);
+    const movers = this.collectArenaMovers(prev, curr, alpha, false);
     const offFx = this.fx;
     if (
       this.arena.update(gt, elapsedSec, {
@@ -1802,6 +1966,11 @@ export class GameRenderer {
 
   public clearMatchObjects() {
     this.applyCanvasCursor('default');
+    this.aimIndicatorActive = false;
+    if (this.recallChargeActive) {
+      this.recallChargeActive = false;
+      this.sfx.stopRecallCharge(false);
+    }
     if (this.arena) {
       this.scene.remove(this.arena.root);
       this.arena.dispose();

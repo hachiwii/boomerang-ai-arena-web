@@ -493,6 +493,13 @@ export class FXSystem {
   private stealthAlpha = 0;
   private lastNowSec = 0;
 
+  // Mobile LoL-style skillshot indicator (rectangle + arrow head from the player along the aim)
+  private readonly skillshot = new THREE.Group();
+  private skillshotDirX = 0;
+  private skillshotDirZ = 0;
+  private skillshotActive = false;
+  private skillshotBuiltKey = '';
+
   private readonly _white = new THREE.Color('#ffffff');
   private readonly _yellow = new THREE.Color('#ffe066');
   private readonly _tmpCol = new THREE.Color();
@@ -620,6 +627,10 @@ export class FXSystem {
     this.recallRing.position.y = 0.05;
     this.recallRing.visible = false;
     scene.add(this.recallRing);
+
+    this.skillshot.visible = false;
+    this.skillshot.renderOrder = 998;
+    scene.add(this.skillshot);
 
     // Grass stealth detection range circle (exact 2.5m radius = cf.see_r, translucent white LoL Twitch style)
     this.stealthTex = createStealthRingTexture();
@@ -1461,6 +1472,85 @@ export class FXSystem {
     }
   }
 
+  /**
+   * Shows / hides the mobile skillshot indicator. `dirX/dirZ` is the world-space aim direction
+   * (any length), `lengthM` the throw range and `widthM` the dart hit width.
+   */
+  public setSkillshot(active: boolean, dirX = 0, dirZ = 0, lengthM = 7.2, widthM = 0.64) {
+    this.skillshotActive = active;
+    if (!active) {
+      this.skillshot.visible = false;
+      return;
+    }
+    const len = Math.hypot(dirX, dirZ);
+    if (len > 1e-4) {
+      this.skillshotDirX = dirX / len;
+      this.skillshotDirZ = dirZ / len;
+    }
+    const key = `${lengthM.toFixed(2)}|${widthM.toFixed(2)}`;
+    if (key !== this.skillshotBuiltKey) {
+      this.buildSkillshotMeshes(lengthM, widthM);
+      this.skillshotBuiltKey = key;
+    }
+  }
+
+  private buildSkillshotMeshes(lengthM: number, widthM: number) {
+    for (const child of [...this.skillshot.children]) {
+      this.skillshot.remove(child);
+      const m = child as THREE.Mesh;
+      m.geometry?.dispose();
+      (m.material as THREE.Material | undefined)?.dispose();
+    }
+    const startX = 0.42;
+    const headLen = Math.min(1.1, lengthM * 0.16);
+    const bodyEnd = Math.max(startX + 0.2, lengthM - headLen);
+    const hw = widthM * 0.5;
+    const headHw = hw * 1.75;
+
+    const mkMat = (color: string, opacity: number) =>
+      new THREE.MeshBasicMaterial({
+        color,
+        transparent: true,
+        opacity,
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+
+    // Translucent body with a brighter core lane
+    const body = new THREE.Mesh(new THREE.PlaneGeometry(bodyEnd - startX, widthM), mkMat('#6fb2ff', 0.34));
+    body.geometry.rotateX(-Math.PI / 2);
+    body.position.set((startX + bodyEnd) * 0.5, 0, 0);
+    const core = new THREE.Mesh(new THREE.PlaneGeometry(bodyEnd - startX, widthM * 0.28), mkMat('#cfe8ff', 0.3));
+    core.geometry.rotateX(-Math.PI / 2);
+    core.position.copy(body.position);
+
+    // Crisp side borders
+    const edgeW = Math.max(0.035, widthM * 0.07);
+    const edgeL = new THREE.Mesh(new THREE.PlaneGeometry(bodyEnd - startX, edgeW), mkMat('#f2f8ff', 0.95));
+    edgeL.geometry.rotateX(-Math.PI / 2);
+    edgeL.position.set((startX + bodyEnd) * 0.5, 0, hw - edgeW * 0.5);
+    const edgeR = edgeL.clone();
+    edgeR.position.z = -hw + edgeW * 0.5;
+
+    // Arrow head
+    const shape = new THREE.Shape();
+    shape.moveTo(bodyEnd, -headHw);
+    shape.lineTo(lengthM, 0);
+    shape.lineTo(bodyEnd, headHw);
+    shape.lineTo(bodyEnd + headLen * 0.22, 0);
+    shape.closePath();
+    const headGeo = new THREE.ShapeGeometry(shape);
+    headGeo.rotateX(Math.PI / 2);
+    const head = new THREE.Mesh(headGeo, mkMat('#e2f1ff', 0.92));
+
+    for (const m of [body, core, edgeL, edgeR, head]) {
+      m.renderOrder = 998;
+      m.frustumCulled = false;
+      this.skillshot.add(m);
+    }
+  }
+
   public update(
     nowSec: number,
     prev: TickSnapshot,
@@ -1729,6 +1819,19 @@ export class FXSystem {
       this.recallRing.visible = false;
     }
 
+    // 4b. Mobile skillshot indicator follows the human player's interpolated position
+    if (this.skillshotActive && humanSeat >= 0 && !curr.over && curr.players[humanSeat]?.alive) {
+      const sp0 = prev.players[humanSeat];
+      const sp1 = curr.players[humanSeat];
+      const sx = (sp0.x + (sp1.x - sp0.x) * alpha) / 1000;
+      const sz = (sp0.y + (sp1.y - sp0.y) * alpha) / 1000;
+      this.skillshot.position.set(sx, 0.07, sz);
+      this.skillshot.rotation.set(0, Math.atan2(-this.skillshotDirZ, this.skillshotDirX), 0);
+      this.skillshot.visible = true;
+    } else {
+      this.skillshot.visible = false;
+    }
+
     // 5. Grass stealth detection range circle (2.5m translucent white ring around human while in grass)
     const showStealth = humanSeat >= 0 && !curr.over && curr.players[humanSeat]?.alive === 1 && humanInGrass;
     const targetAlpha = showStealth ? 1 : 0;
@@ -1784,6 +1887,12 @@ export class FXSystem {
     this.scene.remove(this.reticleGroup);
     this.scene.remove(this.aimLine);
     this.scene.remove(this.recallRing);
+    this.scene.remove(this.skillshot);
+    for (const child of this.skillshot.children) {
+      const m = child as THREE.Mesh;
+      m.geometry?.dispose();
+      (m.material as THREE.Material | undefined)?.dispose();
+    }
     this.scene.remove(this.stealthRing);
     this.stealthRing.geometry.dispose();
     (this.stealthRing.material as THREE.Material).dispose();

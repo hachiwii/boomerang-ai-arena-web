@@ -12,10 +12,23 @@ import {
   SettingsStore,
 } from '../game/settings';
 import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
+import {
+  ICON_DOWNLOAD,
+  ICON_EXIT,
+  ICON_PAUSE,
+  ICON_PLAY,
+  ICON_REPLAY,
+  ICON_RESTART,
+  ICON_SETTINGS,
+  ICON_SKIP_START,
+  iconStar,
+} from './icons';
 
 export interface HudCallbacks {
   onReturnToLobby: (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => void;
   onRestartMatch: () => void;
+  /** Mirrors the PC quick-restart (R) availability; mobile shows the restart icon only when true. */
+  canQuickRestart?: () => boolean;
   onWatchCurrentReplay?: () => void;
   onToggleCurrentFavorite?: (nextFavorite: boolean) => Promise<void> | void;
   onOpenSettings: () => void;
@@ -98,10 +111,25 @@ export class HudUI {
   private perfEl: HTMLElement | null = null;
   private cardEls: {
     card: HTMLElement;
-    kills: HTMLElement;
-    dart: HTMLElement;
-    cdBar: HTMLElement;
+    kills: HTMLElement | null;
+    dart: HTMLElement | null;
+    cdBar: HTMLElement | null;
   }[] = [];
+
+  // Mobile presentation
+  private mobile = false;
+  private mRestartBtn: HTMLButtonElement | null = null;
+  private readonly mReplayTap: HTMLDivElement;
+  private readonly mReplayFlash: HTMLDivElement;
+  private mChromeVisible = false;
+  private mChromeTimer: number | null = null;
+  private mMenuOpen: 'export' | 'speed' | null = null;
+  private mScrubbing = false;
+  private mLastPlayback: ReplayPlaybackState | null = null;
+  private mSpeedBtn: HTMLButtonElement | null = null;
+  private mExportBtn: HTMLButtonElement | null = null;
+  private mTapTimer: number | null = null;
+  private mLastTapAt = 0;
   private humanHintMove: HTMLElement | null = null;
   private humanHintLeft: HTMLElement | null = null;
   private humanHintRight: HTMLElement | null = null;
@@ -139,6 +167,15 @@ export class HudUI {
     this.root = document.createElement('div');
     this.root.className = 'hud-root hidden';
     parent.appendChild(this.root);
+
+    // Mobile replay: full-screen tap surface (tap = toggle controls, double-tap = pause / play)
+    this.mReplayTap = document.createElement('div');
+    this.mReplayTap.className = 'm-replay-tap hidden';
+    this.root.appendChild(this.mReplayTap);
+    this.mReplayFlash = document.createElement('div');
+    this.mReplayFlash.className = 'm-replay-flash';
+    this.root.appendChild(this.mReplayFlash);
+    this.bindReplayTapSurface();
 
     this.topBar = document.createElement('div');
     this.topBar.className = 'hud-top';
@@ -214,6 +251,20 @@ export class HudUI {
             ? `${config.mapMeta.title} · 斗蛐蛐`
             : `${config.mapMeta.title}${humanSeat < 0 ? ' · 观战' : ''}${Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${config.speed.toFixed(1)}x` : ''}`;
 
+    this.resetMobileReplayChrome();
+    this.root.classList.toggle('is-mobile-hud', this.mobile);
+    if (this.mobile) {
+      this.renderMobileTop(config.slots, `<span class="m-hud-label">${mapTag}</span>`, '');
+      this.bottomBar.innerHTML = '';
+      this.humanHintMove = null;
+      this.humanHintLeft = null;
+      this.humanHintRight = null;
+      this.humanHintShift = null;
+      this.lastTickState = null;
+      this.refreshRestartVisibility();
+      return;
+    }
+
     this.topBar.innerHTML = `
       <div class="hud-players">
         ${config.slots
@@ -271,6 +322,380 @@ export class HudUI {
     this.renderBottomHints(humanSeat);
   }
 
+  // =====================================================================================
+  // Mobile presentation
+  // =====================================================================================
+
+  public setMobile(on: boolean) {
+    this.mobile = on;
+  }
+
+  public isMobile(): boolean {
+    return this.mobile;
+  }
+
+  /** Top row shared by mobile match & replay: round avatars · one-line label · icon actions. */
+  private renderMobileTop(slots: SlotConfig[], centerHtml: string, actionsHtml: string, chrome = false) {
+    this.topBar.innerHTML = `
+      <div class="m-hud-avatars">
+        ${slots
+          .map(
+            (s, i) => `
+          <div class="m-av ${s.kind === 'human' ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}" title="${s.displayName}">
+            <img src="${s.avatar || ''}" alt="" draggable="false" />
+          </div>`,
+          )
+          .join('')}
+      </div>
+      <div class="m-hud-center">${centerHtml}</div>
+      <div class="m-hud-actions ${chrome ? 'm-chrome' : ''}">
+        <div class="m-hud-btns">
+          ${
+            actionsHtml ||
+            `<button type="button" class="m-icon-btn hidden" id="hud-restart" aria-label="重开">${ICON_RESTART}</button>
+             <button type="button" class="m-icon-btn" id="hud-settings" aria-label="设置">${ICON_SETTINGS}</button>
+             <button type="button" class="m-icon-btn m-exit-btn" id="hud-exit" aria-label="退出到主界面">${ICON_EXIT}</button>`
+          }
+        </div>
+        <div class="m-hud-perf" id="hud-perf"></div>
+      </div>
+    `;
+    this.timerEl = null;
+    this.collapseEl = null;
+    this.perfEl = this.topBar.querySelector('#hud-perf');
+    this.cardEls = slots.map((_, i) => ({
+      card: this.topBar.querySelector<HTMLElement>(`[data-pcard="${i}"]`)!,
+      kills: null,
+      dart: null,
+      cdBar: null,
+    }));
+    this.mRestartBtn = this.topBar.querySelector<HTMLButtonElement>('#hud-restart');
+    this.mRestartBtn?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onRestartMatch();
+    });
+    this.topBar.querySelector('#hud-settings')?.addEventListener('click', () => {
+      this.closeMobileMenus();
+      this.callbacks.onOpenSettings();
+    });
+    this.topBar.querySelector('#hud-exit')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onReturnToLobby();
+    });
+  }
+
+  /** Restart icon follows the PC "R" availability (eliminated / finished ranked / AI spectating). */
+  public refreshRestartVisibility() {
+    if (!this.mobile || !this.mRestartBtn) return;
+    const can = Boolean(this.callbacks.canQuickRestart?.());
+    this.mRestartBtn.classList.toggle('hidden', !can);
+  }
+
+  private renderMobileReplay(
+    bundle: MatchReplayBundle,
+    playback: ReplayPlaybackState,
+    replayBadge: string,
+    modeTag: string,
+    isFav: boolean,
+  ) {
+    const { summary, replay } = bundle;
+    const actionsHtml = `
+      ${
+        this.replayIsLiveAi
+          ? `<button type="button" class="m-icon-btn" id="hud-restart" aria-label="${summary.matchMode === 'cricket' ? '重抽' : '重开'}">${ICON_RESTART}</button>`
+          : ''
+      }
+      <button type="button" class="m-icon-btn m-fav-btn ${isFav ? 'is-fav' : ''}" id="hud-replay-fav" aria-pressed="${isFav}" aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}">${iconStar(isFav)}</button>
+      <div class="m-menu-wrap">
+        <button type="button" class="m-icon-btn m-export-btn" id="m-export-btn" aria-label="导出">${ICON_DOWNLOAD}<span class="m-btn-badge hidden" id="m-export-badge"></span></button>
+        <div class="m-menu m-menu-down hidden" id="m-export-menu" role="menu">
+          <button type="button" class="m-menu-item" id="replay-export-btn" role="menuitem" ${this.replayComputing ? 'disabled' : ''}>${this.replayComputing ? '⏳ 推演完成后可导出 MP4' : '导出全场 MP4'}</button>
+          <button type="button" class="m-menu-item" id="replay-gif-btn" role="menuitem">导出最近 10s GIF</button>
+        </div>
+      </div>
+      <button type="button" class="m-icon-btn" id="hud-settings" aria-label="设置">${ICON_SETTINGS}</button>
+      <button type="button" class="m-icon-btn m-exit-btn" id="hud-exit" aria-label="退出">${ICON_EXIT}</button>
+    `;
+    this.renderMobileTop(
+      summary.slots,
+      `<span class="m-hud-label"><span class="hud-replay-tag">${replayBadge}</span> ${summary.mapTitle} · ${modeTag}</span>
+       <div class="replay-export-status hidden" id="replay-export-status"></div>`,
+      actionsHtml,
+      true,
+    );
+
+    const maxTick = replay.ticks[playback.maxIndex]?.t ?? playback.maxIndex;
+    const totalSec = (maxTick / 20).toFixed(1);
+    this.bottomBar.innerHTML = `
+      <div class="m-replay-dock m-chrome">
+        <div class="replay-end-banner hidden" id="replay-end-banner">${this.buildReplayEndBannerText(bundle)}</div>
+        <div class="m-replay-bar">
+          <button type="button" class="m-icon-btn m-dock-btn" id="replay-play-btn" aria-label="播放 / 暂停">${ICON_PAUSE}</button>
+          <button type="button" class="m-icon-btn m-dock-btn" id="replay-restart-btn" aria-label="从头重播">${ICON_SKIP_START}</button>
+          <div class="replay-timeline-wrap m-timeline">
+            <div class="replay-markers" id="replay-markers" aria-hidden="true">${this.renderReplayDeathMarkersHtml(bundle)}</div>
+            <input type="range" class="replay-slider" id="replay-slider" min="0" max="${playback.maxIndex}" step="1" value="${playback.tickIndex}" style="--rep-pct:0%" aria-label="回放进度条" />
+          </div>
+          <span class="replay-time m-replay-time" id="replay-time">0.0s / ${totalSec}s</span>
+          <div class="m-menu-wrap">
+            <button type="button" class="m-speed-btn" id="m-speed-btn" aria-label="倍速">${playback.speed.toFixed(1)}x</button>
+            <div class="m-menu m-menu-up hidden" id="m-speed-menu" role="menu">
+              ${[2.0, 1.5, 1.0, 0.5]
+                .map(
+                  (sp) =>
+                    `<button type="button" class="m-menu-item replay-spd-btn ${Math.abs(playback.speed - sp) < 0.01 ? 'active' : ''}" data-replay-speed="${sp}" role="menuitem">${sp.toFixed(1)}x</button>`,
+                )
+                .join('')}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    this.humanHintMove = null;
+    this.humanHintLeft = null;
+    this.humanHintRight = null;
+    this.humanHintShift = null;
+
+    this.replayFavBtn = this.topBar.querySelector('#hud-replay-fav');
+    this.replayExportStatusEl = this.topBar.querySelector('#replay-export-status');
+    this.replayExportBtn = this.topBar.querySelector('#replay-export-btn');
+    this.replayGifBtn = this.topBar.querySelector('#replay-gif-btn');
+    this.mExportBtn = this.topBar.querySelector('#m-export-btn');
+    this.replayPlayBtn = this.bottomBar.querySelector('#replay-play-btn');
+    this.replaySlider = this.bottomBar.querySelector('#replay-slider');
+    this.replayMarkersEl = this.bottomBar.querySelector('#replay-markers');
+    this.replayTimeEl = this.bottomBar.querySelector('#replay-time');
+    this.replayBannerEl = this.bottomBar.querySelector('#replay-end-banner');
+    this.replaySpeedBtns = Array.from(this.bottomBar.querySelectorAll<HTMLButtonElement>('[data-replay-speed]'));
+    this.mSpeedBtn = this.bottomBar.querySelector('#m-speed-btn');
+
+    this.replayFavBtn?.addEventListener('click', () => {
+      if (!this.isReplayMode || !this.replayBundle || !this.callbacks.onReplayToggleFavorite) return;
+      const targetBundle = this.replayBundle;
+      const nextFav = !Boolean(targetBundle.summary.favorite);
+      targetBundle.summary.favorite = nextFav;
+      this.syncReplayFavoriteBtn(nextFav);
+      void Promise.resolve(this.callbacks.onReplayToggleFavorite(targetBundle, nextFav)).catch((err) => {
+        console.error('Failed to toggle replay favorite:', err);
+        if (this.isReplayMode && this.replayBundle === targetBundle) {
+          targetBundle.summary.favorite = !nextFav;
+          this.syncReplayFavoriteBtn(!nextFav);
+        }
+        this.showReplayExportResultBanner('收藏状态更新失败，请稍后重试', false);
+      });
+    });
+
+    const exportMenu = this.topBar.querySelector<HTMLElement>('#m-export-menu');
+    const speedMenu = this.bottomBar.querySelector<HTMLElement>('#m-speed-menu');
+    this.mExportBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (this.replayExportAbort) return;
+      this.toggleMobileMenu('export', exportMenu, speedMenu);
+    });
+    this.mSpeedBtn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.toggleMobileMenu('speed', speedMenu, exportMenu);
+    });
+    this.replayExportBtn?.addEventListener('click', () => {
+      this.closeMobileMenus();
+      this.startReplayHudExport();
+    });
+    this.replayGifBtn?.addEventListener('click', () => {
+      this.closeMobileMenus();
+      this.startReplayGifExport();
+    });
+    this.replayPlayBtn?.addEventListener('click', () => {
+      this.callbacks.onReplayTogglePause?.();
+    });
+    this.bottomBar.querySelector('#replay-restart-btn')?.addEventListener('click', () => {
+      this.callbacks.onReplayRestart?.();
+    });
+    this.replaySlider?.addEventListener('input', () => {
+      if (!this.replaySlider) return;
+      this.callbacks.onReplaySeek?.(Number(this.replaySlider.value));
+    });
+    this.replaySlider?.addEventListener('pointerdown', () => {
+      this.mScrubbing = true;
+      this.showMobileChrome();
+    });
+    const endScrub = () => {
+      if (!this.mScrubbing) return;
+      this.mScrubbing = false;
+      this.scheduleMobileChromeHide();
+    };
+    this.replaySlider?.addEventListener('pointerup', endScrub);
+    this.replaySlider?.addEventListener('pointercancel', endScrub);
+    this.replaySlider?.addEventListener('change', endScrub);
+    for (const btn of this.replaySpeedBtns) {
+      btn.addEventListener('click', () => {
+        this.closeMobileMenus();
+        this.callbacks.onReplaySpeed?.(Number(btn.dataset.replaySpeed));
+      });
+    }
+
+    // Any interaction with the chrome keeps it awake
+    for (const el of [this.topBar, this.bottomBar]) {
+      el.addEventListener('pointerdown', () => {
+        if (this.isReplayMode && this.mobile) this.showMobileChrome();
+      });
+    }
+
+    this.mReplayTap.classList.remove('hidden');
+    this.setMobileChromeVisible(false);
+    this.lastTickState = null;
+    this.updateReplayControls(playback);
+  }
+
+  private updateMobileReplayControls(playback: ReplayPlaybackState) {
+    const prev = this.mLastPlayback;
+    this.mLastPlayback = playback;
+    if (this.replayPlayBtn) {
+      const icon = playback.finished ? ICON_REPLAY : playback.paused ? ICON_PLAY : ICON_PAUSE;
+      const key = playback.finished ? 'end' : playback.paused ? 'paused' : 'playing';
+      if (this.replayPlayBtn.dataset.state !== key) {
+        this.replayPlayBtn.dataset.state = key;
+        this.replayPlayBtn.innerHTML = icon;
+      }
+    }
+    if (this.mSpeedBtn) this.mSpeedBtn.textContent = `${playback.speed.toFixed(1)}x`;
+    // Video-player behaviour: controls stay up while paused / finished, auto-hide while playing
+    const holdOpen = playback.paused || playback.finished;
+    const wasHolding = prev ? prev.paused || prev.finished : false;
+    if (holdOpen && !wasHolding) {
+      this.showMobileChrome();
+    } else if (!holdOpen && wasHolding) {
+      this.scheduleMobileChromeHide();
+    }
+  }
+
+  private setMobileExportBusy(kind: 'mp4' | 'gif' | null, pct: number) {
+    const badge = this.topBar.querySelector<HTMLElement>('#m-export-badge');
+    if (this.mExportBtn) {
+      this.mExportBtn.classList.toggle('is-exporting', kind !== null);
+    }
+    if (badge) {
+      badge.classList.toggle('hidden', kind === null);
+      badge.textContent = kind ? `${Math.max(1, Math.min(100, Math.round(pct)))}` : '';
+    }
+    if (this.replayExportBtn) {
+      this.replayExportBtn.disabled = kind !== null || this.replayComputing;
+      this.replayExportBtn.textContent = this.replayComputing ? '⏳ 推演完成后可导出 MP4' : '导出全场 MP4';
+    }
+    if (this.replayGifBtn) {
+      this.replayGifBtn.disabled = kind !== null;
+    }
+  }
+
+  private toggleMobileMenu(kind: 'export' | 'speed', menu: HTMLElement | null, other: HTMLElement | null) {
+    other?.classList.add('hidden');
+    if (!menu) return;
+    const willOpen = menu.classList.contains('hidden') || this.mMenuOpen !== kind;
+    menu.classList.toggle('hidden', !willOpen);
+    this.mMenuOpen = willOpen ? kind : null;
+    this.showMobileChrome();
+  }
+
+  private closeMobileMenus() {
+    this.topBar.querySelector('#m-export-menu')?.classList.add('hidden');
+    this.bottomBar.querySelector('#m-speed-menu')?.classList.add('hidden');
+    if (this.mMenuOpen) {
+      this.mMenuOpen = null;
+      this.scheduleMobileChromeHide();
+    }
+  }
+
+  private setMobileChromeVisible(visible: boolean) {
+    this.mChromeVisible = visible;
+    this.root.classList.toggle('m-chrome-hidden', !visible);
+    if (!visible) {
+      this.topBar.querySelector('#m-export-menu')?.classList.add('hidden');
+      this.bottomBar.querySelector('#m-speed-menu')?.classList.add('hidden');
+      this.mMenuOpen = null;
+    }
+  }
+
+  private showMobileChrome() {
+    this.setMobileChromeVisible(true);
+    this.scheduleMobileChromeHide();
+  }
+
+  private scheduleMobileChromeHide() {
+    if (this.mChromeTimer !== null) {
+      window.clearTimeout(this.mChromeTimer);
+      this.mChromeTimer = null;
+    }
+    if (!this.mChromeVisible) return;
+    this.mChromeTimer = window.setTimeout(() => {
+      this.mChromeTimer = null;
+      const pb = this.mLastPlayback;
+      const hold = Boolean(pb?.paused || pb?.finished) || this.mMenuOpen !== null || this.mScrubbing;
+      if (hold) return;
+      this.setMobileChromeVisible(false);
+    }, 3200);
+  }
+
+  private resetMobileReplayChrome() {
+    if (this.mChromeTimer !== null) {
+      window.clearTimeout(this.mChromeTimer);
+      this.mChromeTimer = null;
+    }
+    if (this.mTapTimer !== null) {
+      window.clearTimeout(this.mTapTimer);
+      this.mTapTimer = null;
+    }
+    this.mChromeVisible = false;
+    this.mMenuOpen = null;
+    this.mScrubbing = false;
+    this.mLastPlayback = null;
+    this.root.classList.remove('m-chrome-hidden');
+    this.mReplayTap.classList.add('hidden');
+    this.mReplayFlash.classList.remove('is-on');
+  }
+
+  private flashMobileReplayIcon(paused: boolean) {
+    this.mReplayFlash.innerHTML = paused ? ICON_PAUSE : ICON_PLAY;
+    this.mReplayFlash.classList.remove('is-on');
+    void this.mReplayFlash.offsetWidth;
+    this.mReplayFlash.classList.add('is-on');
+  }
+
+  /** Tap = toggle the controls; double-tap = pause / resume (with a center flash). */
+  private bindReplayTapSurface() {
+    let downX = 0;
+    let downY = 0;
+    let downAt = 0;
+    this.mReplayTap.addEventListener('pointerdown', (e) => {
+      downX = e.clientX;
+      downY = e.clientY;
+      downAt = performance.now();
+    });
+    this.mReplayTap.addEventListener('pointerup', (e) => {
+      if (!this.isReplayMode || !this.mobile) return;
+      const now = performance.now();
+      if (now - downAt > 450 || Math.hypot(e.clientX - downX, e.clientY - downY) > 18) return;
+      if (this.mMenuOpen) {
+        this.closeMobileMenus();
+        return;
+      }
+      if (this.mTapTimer !== null && now - this.mLastTapAt < 300) {
+        window.clearTimeout(this.mTapTimer);
+        this.mTapTimer = null;
+        this.mLastTapAt = 0;
+        const wasPaused = Boolean(this.mLastPlayback?.paused);
+        this.callbacks.onReplayTogglePause?.();
+        this.flashMobileReplayIcon(!wasPaused);
+        return;
+      }
+      this.mLastTapAt = now;
+      this.mTapTimer = window.setTimeout(() => {
+        this.mTapTimer = null;
+        if (this.mChromeVisible) this.setMobileChromeVisible(false);
+        else this.showMobileChrome();
+      }, 300);
+    });
+  }
+
   private clearReplayRefs() {
     if (this.replayExportAbort) {
       this.replayExportAbort.abort();
@@ -293,6 +718,9 @@ export class HudUI {
     this.replayGifBtn = null;
     this.replayExportStatusEl = null;
     this.replayCurrentTickIndex = 0;
+    this.mSpeedBtn = null;
+    this.mExportBtn = null;
+    this.mMenuOpen = null;
   }
 
   private renderReplayDeathMarkersHtml(bundle: MatchReplayBundle): string {
@@ -341,7 +769,9 @@ export class HudUI {
     this.replayFavBtn.title = isFav
       ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）'
       : '收藏此对局（永久保留，不受每模式 50 场上限控制）';
-    this.replayFavBtn.innerHTML = `${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span>`;
+    this.replayFavBtn.innerHTML = this.mobile
+      ? iconStar(isFav)
+      : `${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span>`;
   }
 
   public showReplay(
@@ -382,6 +812,12 @@ export class HudUI {
       : '🎬 观战回放';
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
     const isFav = Boolean(summary.favorite);
+    this.resetMobileReplayChrome();
+    this.root.classList.toggle('is-mobile-hud', this.mobile);
+    if (this.mobile) {
+      this.renderMobileReplay(bundle, playback, replayBadge, modeTag, isFav);
+      return;
+    }
 
     this.topBar.innerHTML = `
       <div class="hud-players">
@@ -589,6 +1025,10 @@ export class HudUI {
   }
 
   private setReplayExportButtonsBusy(activeKind: 'mp4' | 'gif' | null) {
+    if (this.mobile) {
+      this.setMobileExportBusy(activeKind, 1);
+      return;
+    }
     if (this.replayExportBtn) {
       const mp4WaitingSim = activeKind === null && this.replayComputing;
       this.replayExportBtn.disabled = activeKind !== null || mp4WaitingSim;
@@ -653,7 +1093,8 @@ export class HudUI {
       .onReplayExportMp4(bundle, abortCtrl.signal, (p01, phaseText) => {
         if (this.replayExportAbort !== abortCtrl) return;
         const pct = Math.max(0, Math.min(100, Math.round(p01 * 100)));
-        if (this.replayExportBtn) this.replayExportBtn.textContent = `导出 ${pct}%`;
+        if (this.mobile) this.setMobileExportBusy('mp4', pct);
+        else if (this.replayExportBtn) this.replayExportBtn.textContent = `导出 ${pct}%`;
         const txt = this.replayExportStatusEl?.querySelector('#res-text');
         const pctEl = this.replayExportStatusEl?.querySelector('#res-pct');
         const fill = this.replayExportStatusEl?.querySelector<HTMLElement>('#res-fill');
@@ -732,7 +1173,8 @@ export class HudUI {
       .onReplayExportGif(bundle, endTickIndex, abortCtrl.signal, (p01, phaseText) => {
         if (this.replayExportAbort !== abortCtrl) return;
         const pct = Math.max(0, Math.min(100, Math.round(p01 * 100)));
-        if (this.replayGifBtn) this.replayGifBtn.textContent = `GIF ${pct}%`;
+        if (this.mobile) this.setMobileExportBusy('gif', pct);
+        else if (this.replayGifBtn) this.replayGifBtn.textContent = `GIF ${pct}%`;
         const txt = this.replayExportStatusEl?.querySelector('#res-text');
         const pctEl = this.replayExportStatusEl?.querySelector('#res-pct');
         const fill = this.replayExportStatusEl?.querySelector<HTMLElement>('#res-fill');
@@ -781,7 +1223,7 @@ export class HudUI {
     }
     if (wasComputing && !this.replayComputing && !this.replayExportAbort && this.replayExportBtn) {
       this.replayExportBtn.disabled = false;
-      this.replayExportBtn.textContent = '⬇ 导出';
+      this.replayExportBtn.textContent = this.mobile ? '导出全场 MP4' : '⬇ 导出';
       this.replayExportBtn.title = `导出本局观战回放 MP4（当前设置：${this.getExportPresetLabel()}）`;
     }
     this.updateReplayControls(playback);
@@ -807,7 +1249,9 @@ export class HudUI {
         this.replayTimeEl.textContent = timeStr;
       }
     }
-    if (this.replayPlayBtn) {
+    if (this.mobile) {
+      this.updateMobileReplayControls(playback);
+    } else if (this.replayPlayBtn) {
       if (playback.finished) {
         this.replayPlayBtn.textContent = '↺ 重播';
         this.replayPlayBtn.classList.add('is-paused');
@@ -843,6 +1287,10 @@ export class HudUI {
       : '观战回放';
     const spdStr = paused ? '已暂停' : `${speed === 1 ? '1.0' : speed}x`;
     const simTag = computing ? ' · 推演中' : '';
+    if (this.mobile) {
+      this.perfEl.textContent = `${spdStr}${simTag} · 渲染 ${Math.round(renderHz)}Hz · ${frameWorkMs.toFixed(1)}ms`;
+      return;
+    }
     this.perfEl.textContent = `${prefix} ${spdStr}${simTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms)`;
   }
 
@@ -882,6 +1330,7 @@ export class HudUI {
       }
       return;
     }
+    if (this.mobile) return;
     this.renderBottomHints(this.humanSeat);
     if (this.lastTickState) {
       this.updateHumanActionHints(this.lastTickState);
@@ -922,14 +1371,22 @@ export class HudUI {
       const d = state.darts[i];
       const el = this.cardEls[i];
       el.card.classList.toggle('is-dead', !p.alive);
-      el.kills.textContent = `${p.kills} 击杀`;
-      const db = dartBadge(d.st);
-      el.dart.textContent = p.alive ? db.text : '出局';
-      el.dart.className = `hud-dart ${p.alive ? db.cls : 'st-dead'}`;
-      const readyPct = p.alive ? Math.max(0, Math.min(100, (1 - p.cd / 20) * 100)) : 0;
-      el.cdBar.style.width = `${readyPct}%`;
+      if (el.kills) el.kills.textContent = `${p.kills} 击杀`;
+      if (el.dart) {
+        const db = dartBadge(d.st);
+        el.dart.textContent = p.alive ? db.text : '出局';
+        el.dart.className = `hud-dart ${p.alive ? db.cls : 'st-dead'}`;
+      }
+      if (el.cdBar) {
+        const readyPct = p.alive ? Math.max(0, Math.min(100, (1 - p.cd / 20) * 100)) : 0;
+        el.cdBar.style.width = `${readyPct}%`;
+      }
     }
 
+    if (this.mobile) {
+      this.refreshRestartVisibility();
+      return;
+    }
     this.updateHumanActionHints(state);
   }
 
@@ -981,6 +1438,11 @@ export class HudUI {
 
   public updateTelemetry(logicHz: number, renderHz: number, frameWorkMs: number, botMaxMs: number, speed = 1.0) {
     if (!this.perfEl) return;
+    if (this.mobile) {
+      const lg = logicHz < 10 ? logicHz.toFixed(1) : logicHz.toFixed(0);
+      this.perfEl.textContent = `逻辑 ${lg}Hz · 渲染 ${Math.round(renderHz)}Hz · ${frameWorkMs.toFixed(1)}ms · AI ${botMaxMs.toFixed(1)}ms`;
+      return;
+    }
     const capHz = frameWorkMs > 0.05 ? Math.min(999, Math.round(1000 / frameWorkMs)) : 999;
     const logicStr = logicHz < 10 ? logicHz.toFixed(1) : logicHz.toFixed(0);
     const spdTag = Math.abs(speed - 1) > 0.01 ? ` (${speed.toFixed(1)}x)` : '';
@@ -1523,6 +1985,8 @@ export class HudUI {
     }
     this.eloToastEl.classList.add('hidden');
     this.setCountdown(null);
+    this.resetMobileReplayChrome();
+    this.mRestartBtn = null;
     this.root.classList.add('hidden');
     this.resultOverlay.classList.add('hidden');
   }
