@@ -123,6 +123,13 @@ export class MatchController {
     this.engineWorker?.postMessage({ type: 'set_cliff_guard', enabled });
   }
 
+  public setMeleeAssist(enabled: boolean) {
+    if (this.config) {
+      this.config.meleeAssist = enabled;
+    }
+    this.engineWorker?.postMessage({ type: 'set_melee_assist', enabled });
+  }
+
   public setHumanSlashTicks(ticks: number) {
     if (this.config) {
       this.config.humanSlashTicks = ticks;
@@ -198,6 +205,7 @@ export class MatchController {
       botSeats: this.botSeats,
       humanSeat: this.humanSeat,
       cliffGuard: config.dashGuard ?? config.cliffGuard,
+      meleeAssist: config.meleeAssist ?? true,
       humanSlashTicks: config.humanSlashTicks ?? 5,
     });
     if (this.stopped) return;

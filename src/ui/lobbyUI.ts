@@ -506,6 +506,7 @@ export class LobbyUI {
       speed: 1.0, // Fixed standard speed in Ranked
       cliffGuard: s.cliffGuard,
       dashGuard: s.dashGuard,
+      meleeAssist: s.meleeAssist,
       humanSlashTicks: getSlashJudgmentTicks(s.slashJudgment),
     };
   }
@@ -651,6 +652,7 @@ export class LobbyUI {
       speed: this.gameSpeed,
       cliffGuard: s.cliffGuard,
       dashGuard: s.dashGuard,
+      meleeAssist: s.meleeAssist,
       humanSlashTicks: getSlashJudgmentTicks(s.slashJudgment),
     });
   }

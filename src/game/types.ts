@@ -104,6 +104,7 @@ export interface MatchConfig {
   speed: number; // 0.1 .. 2.0 (fixed 1.0 in ranked)
   cliffGuard: boolean; // Prevent human from walking off cliffs
   dashGuard?: boolean; // Dash-tail 25% cliff save in WASM engine
+  meleeAssist?: boolean; // Enables 30° human dart-block cone in WASM engine (20° when off)
   humanSlashTicks?: number; // 5 (normal) | 3 (strict) | 0 (AI 1-frame with windup)
 }
 

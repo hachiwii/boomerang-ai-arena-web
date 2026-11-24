@@ -416,6 +416,7 @@ async function bootstrap() {
         slots: activeConfig.slots.map((s) => ({ ...s })),
         cliffGuard: s.cliffGuard,
         dashGuard: s.dashGuard,
+        meleeAssist: s.meleeAssist,
         humanSlashTicks: getSlashJudgmentTicks(s.slashJudgment),
       };
     }
@@ -499,6 +500,7 @@ async function bootstrap() {
     bgm.applySettings(s.bgmEnabled, s.bgmVolume, s.bossMusicEnabled);
     controller.setCliffGuard(s.cliffGuard);
     controller.setDashGuard(s.dashGuard);
+    controller.setMeleeAssist(s.meleeAssist);
     controller.setHumanSlashTicks(getSlashJudgmentTicks(s.slashJudgment));
     if (s.lockFps !== activeLockFps) {
       activeLockFps = s.lockFps;

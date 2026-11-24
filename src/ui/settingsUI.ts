@@ -628,7 +628,7 @@ export class SettingsModal {
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">冲刺预输入</div>
-                  <div class="settings-toggle-desc">冲刺中按下扔镖或挥砍不打断冲刺，结束即释放</div>
+                  <div class="settings-toggle-desc">冲刺中按下扔镖不打断冲刺，结束即释放（不影响冲刺斩）</div>
                 </div>
                 <button
                   type="button"
@@ -645,7 +645,7 @@ export class SettingsModal {
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">近战吸附</div>
-                  <div class="settings-toggle-desc">挥砍或踢击时若鼠标指向无敌方角色，自动微调最小角度以命中范围内敌人（不影响移动与冲刺，不吸附飞镖）</div>
+                  <div class="settings-toggle-desc">挥砍或踢击时若鼠标指向无敌人，自动微调最小角度命中范围内敌人（不影响移动与冲刺）；开启时砍镖放宽至半角 30°（不吸附飞镖）</div>
                 </div>
                 <button
                   type="button"

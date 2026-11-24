@@ -41,10 +41,9 @@ export class HumanInputController {
   private queuedDashTargetY = 0;
   private queuedDashHasTarget = false;
 
-  // Dash pre-input buffer: retains only the LAST throw/melee pressed during dash
-  // and fires it on the first operable tick after dash completes without interrupting dash.
-  private dashBufferedAct: ActType.THROW | ActType.MELEE | ActType.NONE = ActType.NONE;
-  private dashBufferedAt = -1;
+  // Dash pre-input buffer: retains throw pressed during dash and fires it on the
+  // first operable tick after dash completes without interrupting dash (never blocks dash-slash melee).
+  private dashBufferedThrowAt = -1;
 
   private bufferMs = 140;
   private recallHoldDelayMs = 160;
@@ -90,8 +89,7 @@ export class HumanInputController {
       this.queuedDashAt = -1;
       this.queuedDashToMouseAt = -1;
       this.queuedDashHasTarget = false;
-      this.dashBufferedAct = ActType.NONE;
-      this.dashBufferedAt = -1;
+      this.dashBufferedThrowAt = -1;
     }
   }
 
@@ -122,8 +120,7 @@ export class HumanInputController {
       this.queuedDashAt = -1;
       this.queuedDashToMouseAt = -1;
       this.queuedDashHasTarget = false;
-      this.dashBufferedAct = ActType.NONE;
-      this.dashBufferedAt = -1;
+      this.dashBufferedThrowAt = -1;
     }
   }
 
@@ -140,8 +137,7 @@ export class HumanInputController {
     this.queuedDashAt = -1;
     this.queuedDashToMouseAt = -1;
     this.queuedDashHasTarget = false;
-    this.dashBufferedAct = ActType.NONE;
-    this.dashBufferedAt = -1;
+    this.dashBufferedThrowAt = -1;
   }
 
   private isActionHeld(action: ActionBindKey): boolean {
@@ -330,8 +326,7 @@ export class HumanInputController {
     const me = state.players[seat];
     const dart = state.darts[seat];
     if (!me || !me.alive) {
-      this.dashBufferedAct = ActType.NONE;
-      this.dashBufferedAt = -1;
+      this.dashBufferedThrowAt = -1;
       return { mx: 0, my: 0, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
 
@@ -347,25 +342,13 @@ export class HumanInputController {
 
     const dashBufferEnabled = this.settings.get().dashInputBuffer;
     if (!dashBufferEnabled) {
-      this.dashBufferedAct = ActType.NONE;
-      this.dashBufferedAt = -1;
+      this.dashBufferedThrowAt = -1;
     }
 
     const hasBufferedDash = this.queuedDashAt > 0 && now - this.queuedDashAt <= this.bufferMs;
     const hasBufferedDashToMouse = this.queuedDashToMouseAt > 0 && now - this.queuedDashToMouseAt <= this.bufferMs;
     const hasBufferedMelee = this.queuedMeleeAt > 0 && now - this.queuedMeleeAt <= this.bufferMs;
     const hasBufferedThrow = this.queuedThrowAt > 0 && now - this.queuedThrowAt <= this.bufferMs;
-
-    const pickLatestQueuedAttack = (): { act: ActType.THROW | ActType.MELEE | ActType.NONE; at: number } => {
-      if (hasBufferedMelee && hasBufferedThrow) {
-        return this.queuedMeleeAt >= this.queuedThrowAt
-          ? { act: ActType.MELEE, at: this.queuedMeleeAt }
-          : { act: ActType.THROW, at: this.queuedThrowAt };
-      }
-      if (hasBufferedMelee) return { act: ActType.MELEE, at: this.queuedMeleeAt };
-      if (hasBufferedThrow) return { act: ActType.THROW, at: this.queuedThrowAt };
-      return { act: ActType.NONE, at: -1 };
-    };
 
     const makeMeleeAction = (): HumanAction => {
       let ax = aimX;
@@ -378,56 +361,48 @@ export class HumanInputController {
 
     // A. During DASH
     if (me.st === PState.DASH) {
-      if (dashBufferEnabled) {
-        // Buffer throw/melee WITHOUT interrupting dash; keep only the LAST pressed command.
-        const latest = pickLatestQueuedAttack();
-        if (latest.act !== ActType.NONE && latest.at >= this.dashBufferedAt) {
-          this.dashBufferedAct = latest.act;
-          this.dashBufferedAt = latest.at;
-        }
-        this.queuedMeleeAt = -1;
-        this.queuedThrowAt = -1;
-        return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
-      }
-
-      // When dash pre-input is OFF: preserve original dash-cancel melee ("冲刺斩") during moving ticks (timer 3..6)
+      // Dash-cancel melee ("冲刺斩") ALWAYS works during dash moving ticks (timer 3..6),
+      // completely unaffected by dash throw pre-input!
       const canDashMelee = me.timer >= 3 && me.timer <= 6;
       if (hasBufferedMelee && canDashMelee) {
         this.queuedMeleeAt = -1;
+        this.dashBufferedThrowAt = -1;
         return makeMeleeAction();
       }
-      if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.bufferMs) {
+      if (this.queuedMeleeAt > 0 && now - this.queuedMeleeAt > this.bufferMs) {
+        this.queuedMeleeAt = -1;
+      }
+
+      if (dashBufferEnabled) {
+        // Buffer ONLY Throw during dash without interrupting dash
+        if (hasBufferedThrow && this.queuedThrowAt >= this.dashBufferedThrowAt) {
+          this.dashBufferedThrowAt = this.queuedThrowAt;
+        }
+        this.queuedThrowAt = -1;
+      } else if (this.queuedThrowAt > 0 && now - this.queuedThrowAt > this.bufferMs) {
         this.queuedThrowAt = -1;
       }
       return { mx, my, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
 
-    // B. First operable tick after DASH completes -> fire buffered command (or newer command pressed at dash end)
-    if (dashBufferEnabled && this.dashBufferedAct !== ActType.NONE) {
+    // B. First operable tick after DASH completes -> fire buffered Throw (unless a newer Melee was pressed)
+    if (dashBufferEnabled && this.dashBufferedThrowAt > 0) {
       if (me.st === PState.FREE) {
-        let chosenAct: ActType.THROW | ActType.MELEE = this.dashBufferedAct;
-        let chosenAt = this.dashBufferedAt;
-        const latest = pickLatestQueuedAttack();
-        if (latest.act !== ActType.NONE && latest.at >= chosenAt) {
-          chosenAct = latest.act;
-          chosenAt = latest.at;
-        }
-        this.dashBufferedAct = ActType.NONE;
-        this.dashBufferedAt = -1;
-        this.queuedMeleeAt = -1;
-        this.queuedThrowAt = -1;
-
-        if (chosenAct === ActType.MELEE) {
+        const savedThrowAt = this.dashBufferedThrowAt;
+        this.dashBufferedThrowAt = -1;
+        if (hasBufferedMelee && this.queuedMeleeAt >= savedThrowAt) {
+          this.queuedMeleeAt = -1;
+          this.queuedThrowAt = -1;
           return makeMeleeAction();
         }
-        if (chosenAct === ActType.THROW && dart.st === DState.HAND) {
+        this.queuedThrowAt = -1;
+        if (dart.st === DState.HAND) {
           this.throwConsumed = true;
           return { mx, my, act: ActType.THROW, ax: aimX, ay: aimY, msg: 0 };
         }
       } else {
-        // Exited dash abnormally (e.g. stunned during windup/recovery): discard stale dash buffer
-        this.dashBufferedAct = ActType.NONE;
-        this.dashBufferedAt = -1;
+        // Exited dash abnormally (e.g. stunned/slashing): discard stale dash throw buffer
+        this.dashBufferedThrowAt = -1;
       }
     }
 
@@ -438,14 +413,14 @@ export class HumanInputController {
       hasBufferedDashToMouse ? this.queuedDashToMouseAt : -1,
     );
 
-    // If Dash was pressed BEFORE Melee inside the same inter-tick window with dash pre-input ON,
-    // execute Dash first and pre-buffer the subsequent Throw/Melee for post-dash release.
+    // If Dash was pressed strictly BEFORE Melee inside the same inter-tick window,
+    // execute Dash first and keep the newer Melee queued so it can dash-slash naturally.
     const dashPrecedesMelee =
-      dashBufferEnabled &&
       anyBufferedDash &&
       canStartNew &&
       me.cd === 0 &&
-      (!hasBufferedMelee || latestDashAt < this.queuedMeleeAt);
+      hasBufferedMelee &&
+      latestDashAt < this.queuedMeleeAt;
 
     // 1. Priority: Melee (Slash / Kick)
     if (hasBufferedMelee && canStartNew && !dashPrecedesMelee) {
@@ -465,21 +440,12 @@ export class HumanInputController {
       this.queuedDashHasTarget = false;
 
       if (dashBufferEnabled) {
-        // Promote any Throw/Melee pressed AFTER Dash in the same tick window into the dash pre-input buffer,
-        // keeping only the last one; discard any stale pre-dash attack timestamps so they don't leak into dash.
-        let postAct: ActType.THROW | ActType.MELEE | ActType.NONE = ActType.NONE;
-        let postAt = -1;
-        if (hasBufferedMelee && this.queuedMeleeAt > latestDashAt) {
-          postAct = ActType.MELEE;
-          postAt = this.queuedMeleeAt;
+        // Promote ONLY Throw pressed AFTER Dash in the same tick window into dash pre-input buffer.
+        if (hasBufferedThrow && this.queuedThrowAt > latestDashAt) {
+          this.dashBufferedThrowAt = this.queuedThrowAt;
+        } else {
+          this.dashBufferedThrowAt = -1;
         }
-        if (hasBufferedThrow && this.queuedThrowAt > latestDashAt && this.queuedThrowAt >= postAt) {
-          postAct = ActType.THROW;
-          postAt = this.queuedThrowAt;
-        }
-        this.dashBufferedAct = postAct;
-        this.dashBufferedAt = postAt;
-        this.queuedMeleeAt = -1;
         this.queuedThrowAt = -1;
       }
 

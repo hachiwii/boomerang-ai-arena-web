@@ -109,6 +109,13 @@ void engine_set_human_cliff_guard(int enabled) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void engine_set_human_melee_assist(int enabled) {
+    if (g_game) {
+        g_game->human_melee_assist = (enabled != 0);
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
 void engine_set_human_dash_target(int active, int tx, int ty) {
     if (g_game) {
         g_game->human_dash_target_active = (active != 0);

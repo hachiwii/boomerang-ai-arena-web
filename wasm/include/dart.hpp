@@ -1009,6 +1009,7 @@ struct Game {
     int human_slash_seat = -1;  // 若 >= 0，该座位（真人）的近战（挥砍/踢人）从按下起持续 human_slash_ticks 步判定（默认 5 步 = 原速 250ms）
     i64 human_slash_ticks = 5;  // 原速 20Hz 下 250ms = 5 逻辑 tick（覆盖完整 2 步前摇 + 前 3 步后摇）
     bool human_cliff_guard = false;  // 开启跌落防护时：人类冲刺若原本会坠崖，但末尾 25% 存在安全落点，则停在最远安全点
+    bool human_melee_assist = true;  // 开启近战吸附时：人类挥砍格挡飞镖放宽至半角 30°（866）；关闭时恢复原版半角 20°（block_cos=940）
     bool human_dash_target_active = false;
     i64 human_dash_target_x = 0, human_dash_target_y = 0;
     bool record = false;
@@ -1627,8 +1628,9 @@ struct Game {
                     }
                 }
                 if (slash && cf.block) {
-                    const i64 block_cs = (k == human_slash_seat) ? cf.slash_cos : cf.block_cos;
-                    const i64 block_pb = (k == human_slash_seat) ? cf.body_r : 0;
+                    const bool assist_block = (k == human_slash_seat) && human_melee_assist;
+                    const i64 block_cs = assist_block ? 866 : cf.block_cos;  // 866 = cos(30°) * 1000
+                    const i64 block_pb = assist_block ? cf.body_r : 0;
                     for (int j = 0; j < n; ++j) {
                         if (j == k || blocked[j] || !dart_flying(d[j].st)) continue;
                         const i64 dx = d[j].x - P.x, dy = d[j].y - P.y;
@@ -1719,10 +1721,11 @@ struct Game {
                             ev(EV_KICKHIT, k, q);
                         }
                     }
-                    // 格挡：挥砍出手时，挥砍距离内的飞镖（别人的）被打落在原地；人类玩家与砍人判定扇形及贴身范围一致
+                    // 格挡：挥砍出手时，挥砍距离内的飞镖（别人的）被打落在原地；人类开启近战吸附时为半角 30°，关闭时与 AI 同为原版半角 20°
                     if (slash && cf.block) {
-                        const i64 block_cs = (k == human_slash_seat) ? cf.slash_cos : cf.block_cos;
-                        const i64 block_pb = (k == human_slash_seat) ? cf.body_r : 0;
+                        const bool assist_block = (k == human_slash_seat) && human_melee_assist;
+                        const i64 block_cs = assist_block ? 866 : cf.block_cos;  // 866 = cos(30°) * 1000
+                        const i64 block_pb = assist_block ? cf.body_r : 0;
                         for (int j = 0; j < n; ++j) {
                             if (j == k || blocked[j] || !dart_flying(d[j].st)) continue;
                             const i64 dx = d[j].x - P.x, dy = d[j].y - P.y;
