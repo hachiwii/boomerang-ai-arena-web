@@ -1,4 +1,5 @@
 import { PlatformPref, SettingsStore } from './settings';
+import { isForcedLandscape, setForcedLandscape } from './viewport';
 
 type PlatformListener = (isMobile: boolean) => void;
 
@@ -40,6 +41,8 @@ export class PlatformManager {
   private mobile: boolean;
   private autoSwitchAllowed = true;
   private userExitedFullscreen = false;
+  /** Touch devices start on the launch page; landscape forcing waits until the player picks a mode. */
+  private launchDone = !detectTouchPrimary();
 
   constructor(settings: SettingsStore) {
     this.settings = settings;
@@ -71,11 +74,51 @@ export class PlatformManager {
     // player explicitly left fullscreen through our own toggle button.
     // (Desktop browsers switched to mobile mode by hand only go fullscreen via the lobby button.)
     const onGesture = () => {
-      if (!this.mobile || !this.autoGuess || this.userExitedFullscreen || this.isFullscreen()) return;
+      if (!this.launchDone || !this.mobile || !this.autoGuess || this.userExitedFullscreen || this.isFullscreen()) return;
       void this.enterImmersive();
     };
     window.addEventListener('touchend', onGesture, { capture: true, passive: true });
     window.addEventListener('click', onGesture, { capture: true, passive: true });
+
+    // Keep the CSS landscape fallback in sync with the physical orientation (registered before the
+    // renderer's own resize listener, so it always reads the updated logical viewport)
+    const onViewportChange = () => this.updateOrientation();
+    window.addEventListener('resize', onViewportChange);
+    window.addEventListener('orientationchange', onViewportChange);
+    this.updateOrientation();
+  }
+
+  /**
+   * Mobile mode is landscape-only. Where the OS keeps the page upright (iOS Safari, a failed or
+   * unsupported orientation lock), the whole app is rotated 90° with CSS instead of asking the
+   * player to turn the phone and tap again.
+   */
+  public updateOrientation() {
+    const want = this.mobile && this.launchDone && window.innerHeight > window.innerWidth;
+    const was = isForcedLandscape();
+    setForcedLandscape(want);
+    if (want !== was) {
+      // Logical viewport flipped without a real resize: let canvas / HUD / controls re-layout
+      window.dispatchEvent(new Event('resize'));
+    }
+  }
+
+  public isLaunchDone(): boolean {
+    return this.launchDone;
+  }
+
+  /**
+   * Launch page choice (must run inside the tap handler so fullscreen / orientation lock are allowed).
+   * Mobile: pin mobile mode, go fullscreen + lock landscape (Android rotates by itself); anything the
+   * browser refuses falls back to the CSS rotation. Desktop: pin desktop mode, no fullscreen.
+   */
+  public async launch(choice: 'mobile' | 'desktop'): Promise<void> {
+    this.settings.setPlatformMode(choice);
+    if (choice === 'mobile') {
+      await Promise.race([this.enterImmersive(), new Promise((r) => window.setTimeout(r, 900))]);
+    }
+    this.launchDone = true;
+    this.updateOrientation();
   }
 
   private resolve(pref: PlatformPref): boolean {
@@ -93,6 +136,7 @@ export class PlatformManager {
     if (next === this.mobile) return;
     this.mobile = next;
     this.applyBodyClass();
+    this.updateOrientation();
     for (const fn of this.listeners) fn(next);
   }
 

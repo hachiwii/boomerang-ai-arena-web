@@ -10,6 +10,7 @@ import {
   SettingsStore,
 } from '../game/settings';
 import { DState, EngineMapData, PState, TickSnapshot } from '../game/types';
+import { getLogicalViewport, localPoint } from '../game/viewport';
 import {
   ICON_BOOMERANG,
   ICON_DASH,
@@ -80,8 +81,8 @@ function placeControl(el: HTMLElement, px: SpotPx) {
 export interface MobileControlsCallbacks {
   /** Right stick pressed with the dart in hand → pin the match to 0.1x (and back on release). */
   onAimSlowmo: (active: boolean) => void;
-  /** Skillshot indicator direction in screen/world axes, or null to hide it. */
-  onAimIndicator: (dir: [number, number] | null) => void;
+  /** Skillshot indicator direction in screen/world axes, or null to hide it; `cancel` tints it red. */
+  onAimIndicator: (dir: [number, number] | null, cancel?: boolean) => void;
 }
 
 type AimPhase = 'idle' | 'pending' | 'aiming' | 'recall';
@@ -107,6 +108,9 @@ export class MobileControls {
   private readonly slashIcon: HTMLElement;
   private readonly dashCd: HTMLElement;
   private readonly dashCdText: HTMLElement;
+  private readonly aimCancel: HTMLDivElement;
+  private cancelPx: SpotPx = { cx: 0, cy: 0, d: 0 };
+  private cancelHot = false;
 
   private readonly input: HumanInputController;
   private readonly settings: SettingsStore;
@@ -159,6 +163,11 @@ export class MobileControls {
       dash: buildControlEl('dash'),
     };
     for (const k of MOBILE_CONTROL_KEYS) this.layer.appendChild(this.els[k]);
+    // Red "cancel throw" target that appears next to the aim stick while aiming
+    this.aimCancel = document.createElement('div');
+    this.aimCancel.className = 'm-aim-cancel hidden';
+    this.aimCancel.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg><span>取消</span>`;
+    this.layer.appendChild(this.aimCancel);
     parent.insertBefore(this.layer, parent.firstChild);
 
     this.moveKnob = this.els.move.querySelector('.m-knob')!;
@@ -223,8 +232,8 @@ export class MobileControls {
   }
 
   private applyLayout() {
-    const w = this.layer.clientWidth || window.innerWidth;
-    const h = this.layer.clientHeight || window.innerHeight;
+    const w = this.layer.clientWidth || getLogicalViewport().width;
+    const h = this.layer.clientHeight || getLogicalViewport().height;
     const layout = this.settings.get().mobileLayout;
     for (const k of MOBILE_CONTROL_KEYS) {
       this.px[k] = spotToPx(layout[k], w, h);
@@ -232,6 +241,35 @@ export class MobileControls {
     }
     const mv = layout.move;
     this.moveZone.classList.toggle('is-right', mv.side === 'r');
+    this.placeCancelZone(w, h, layout.aim.side);
+  }
+
+  /** Cancel target sits off the aim stick's upper outer corner (mirrored if the stick is on the left). */
+  private placeCancelZone(w: number, h: number, side: 'l' | 'r') {
+    const a = this.px.aim;
+    const r = a.d / 2;
+    const d = Math.max(48, Math.min(74, a.d * 0.4));
+    const cr = d / 2;
+    const dist = r + 12 + cr;
+    const ang = (35 * Math.PI) / 180;
+    const sgn = side === 'r' ? 1 : -1;
+    const cx = Math.max(cr + 6, Math.min(w - cr - 6, a.cx + sgn * Math.cos(ang) * dist));
+    const cy = Math.max(cr + 6, Math.min(h - cr - 6, a.cy - Math.sin(ang) * dist));
+    this.cancelPx = { cx, cy, d };
+    placeControl(this.aimCancel, this.cancelPx);
+  }
+
+  private setCancelVisible(visible: boolean) {
+    this.aimCancel.classList.toggle('hidden', !visible);
+    if (!visible) this.setCancelHot(false);
+  }
+
+  private setCancelHot(hot: boolean) {
+    if (this.cancelHot === hot) return;
+    this.cancelHot = hot;
+    this.aimCancel.classList.toggle('is-hot', hot);
+    this.els.aim.classList.toggle('is-cancelling', hot);
+    if (this.aimPhase === 'aiming') this.pushIndicator();
   }
 
   // ---------- Per-tick state → icons, recall fill, cooldown ----------
@@ -257,6 +295,7 @@ export class MobileControls {
         this.beginAiming();
       } else if (dart.st !== DState.HAND) {
         this.aimPhase = 'recall';
+        this.setCancelVisible(false);
         this.input.setVirtualRecallHeld(true);
       }
     } else if (this.aimPhase === 'aiming' && (dart.st !== DState.HAND || this.input.getInputMode() !== 'active')) {
@@ -313,17 +352,15 @@ export class MobileControls {
       this.movePointer = e.pointerId;
       safeCapture(e.currentTarget as HTMLElement, e.pointerId);
       const base = this.px.move;
-      const rect = this.layer.getBoundingClientRect();
-      const lx = e.clientX - rect.left;
-      const ly = e.clientY - rect.top;
+      const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
       const r = base.d / 2;
       if (Math.hypot(lx - base.cx, ly - base.cy) <= r * 1.1) {
         this.moveCenterX = base.cx;
         this.moveCenterY = base.cy;
       } else {
         // Floating: re-center the stick under the thumb (kept fully on screen)
-        this.moveCenterX = Math.max(r, Math.min(rect.width - r, lx));
-        this.moveCenterY = Math.max(r, Math.min(rect.height - r, ly));
+        this.moveCenterX = Math.max(r, Math.min(this.layer.clientWidth - r, lx));
+        this.moveCenterY = Math.max(r, Math.min(this.layer.clientHeight - r, ly));
         const el = this.els.move;
         el.style.left = `${(this.moveCenterX - r).toFixed(1)}px`;
         el.style.top = `${(this.moveCenterY - r).toFixed(1)}px`;
@@ -334,8 +371,8 @@ export class MobileControls {
     const move = (e: PointerEvent) => {
       if (e.pointerId !== this.movePointer) return;
       e.preventDefault();
-      const rect = this.layer.getBoundingClientRect();
-      this.updateMove(e.clientX - rect.left, e.clientY - rect.top);
+      const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
+      this.updateMove(lx, ly);
     };
     const end = (e: PointerEvent) => {
       if (e.pointerId !== this.movePointer) return;
@@ -402,6 +439,7 @@ export class MobileControls {
         ) {
           // Countdown / mid-dash / mid-swing: enter slow-mo aim the moment we are free (and live) again
           this.aimPhase = 'pending';
+          this.setCancelVisible(true);
         } else {
           this.beginAiming();
         }
@@ -413,11 +451,15 @@ export class MobileControls {
     el.addEventListener('pointermove', (e) => {
       if (e.pointerId !== this.aimPointer) return;
       e.preventDefault();
-      const rect = this.layer.getBoundingClientRect();
       const c = this.px.aim;
       const maxR = (c.d / 2) * 0.7;
-      let dx = e.clientX - rect.left - c.cx;
-      let dy = e.clientY - rect.top - c.cy;
+      const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
+      if (this.aimPhase === 'aiming' || this.aimPhase === 'pending') {
+        const cz = this.cancelPx;
+        this.setCancelHot(Math.hypot(lx - cz.cx, ly - cz.cy) <= (cz.d / 2) * 1.3);
+      }
+      let dx = lx - c.cx;
+      let dy = ly - c.cy;
       const len = Math.hypot(dx, dy);
       if (len > maxR) {
         dx = (dx / len) * maxR;
@@ -432,7 +474,8 @@ export class MobileControls {
       if (e.pointerId !== this.aimPointer) return;
       this.aimPointer = null;
       el.classList.remove('is-pressed');
-      this.endAim(!cancelled);
+      // Lifting the finger on the red cancel target drops the throw entirely
+      this.endAim(!cancelled && !this.cancelHot);
     };
     el.addEventListener('pointerup', (e) => release(e, false));
     el.addEventListener('pointercancel', (e) => release(e, true));
@@ -453,6 +496,7 @@ export class MobileControls {
   private beginAiming() {
     this.aimPhase = 'aiming';
     this.els.aim.classList.add('is-aiming');
+    this.setCancelVisible(true);
     if (!this.slowmoOn) {
       this.slowmoOn = true;
       this.callbacks.onAimSlowmo(true);
@@ -461,7 +505,7 @@ export class MobileControls {
   }
 
   private pushIndicator() {
-    this.callbacks.onAimIndicator(this.stickAimDir() ?? this.faceDir());
+    this.callbacks.onAimIndicator(this.stickAimDir() ?? this.faceDir(), this.cancelHot);
   }
 
   /** Ends whatever the right stick was doing; `commit` = finger lifted normally (throw if aiming). */
@@ -472,6 +516,7 @@ export class MobileControls {
       this.aimPointer = null;
     }
     this.els.aim.classList.remove('is-aiming', 'is-pressed');
+    this.setCancelVisible(false);
     if (phase === 'aiming' && commit) {
       const dir = this.stickAimDir();
       this.input.queueVirtualThrow(dir ? dir[0] : 0, dir ? dir[1] : 0, false);
@@ -529,6 +574,7 @@ export class MobileLayoutEditor {
   private readonly root: HTMLDivElement;
   private readonly stage: HTMLDivElement;
   private readonly handle: HTMLDivElement;
+  private readonly frame: HTMLDivElement;
   private readonly els: Record<MobileControlKey, HTMLDivElement>;
   private draft: MobileLayout = cloneDefaultMobileLayout();
   private selected: MobileControlKey | null = null;
@@ -536,7 +582,7 @@ export class MobileLayoutEditor {
   private onClose: (() => void) | null = null;
   private drag:
     | { kind: 'move'; key: MobileControlKey; pointerId: number; offX: number; offY: number }
-    | { kind: 'resize'; key: MobileControlKey; pointerId: number }
+    | { kind: 'resize'; key: MobileControlKey; pointerId: number; startD: number; startDist: number }
     | null = null;
 
   constructor(settings: SettingsStore) {
@@ -546,7 +592,7 @@ export class MobileLayoutEditor {
     this.root.innerHTML = `
       <div class="m-editor-mock" aria-hidden="true">
         <div class="m-editor-avatars"><span></span><span></span><span></span><span></span></div>
-        <div class="m-editor-title">键位调整 · 拖动按钮移动位置，点选后拖动圆点缩放</div>
+        <div class="m-editor-title">键位调整 · 拖动按钮移动位置，选中后拖动右下角 ⤡ 缩放</div>
         <div class="m-editor-mock-actions"><span>${ICON_RESTART}</span><span>${ICON_SETTINGS}</span><span>${ICON_EXIT}</span></div>
       </div>
       <div class="m-editor-stage"></div>
@@ -574,8 +620,14 @@ export class MobileLayoutEditor {
       el.appendChild(lbl);
       this.stage.appendChild(el);
     }
+    // Selection frame (dashed square) + corner resize handle with a diagonal ⤡ arrow
+    this.frame = document.createElement('div');
+    this.frame.className = 'm-editor-frame hidden';
+    this.stage.appendChild(this.frame);
     this.handle = document.createElement('div');
     this.handle.className = 'm-editor-handle hidden';
+    this.handle.setAttribute('aria-label', '拖动缩放');
+    this.handle.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6.5 6.5l11 11" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"/><path d="M6 12.5V6h6.5M18 11.5V18h-6.5" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
     this.stage.appendChild(this.handle);
     document.body.appendChild(this.root);
 
@@ -626,7 +678,10 @@ export class MobileLayoutEditor {
   }
 
   private stageSize(): { w: number; h: number } {
-    return { w: this.stage.clientWidth || window.innerWidth, h: this.stage.clientHeight || window.innerHeight };
+    return {
+      w: this.stage.clientWidth || getLogicalViewport().width,
+      h: this.stage.clientHeight || getLogicalViewport().height,
+    };
   }
 
   private render() {
@@ -639,17 +694,25 @@ export class MobileLayoutEditor {
     if (this.selected) {
       const p = spotToPx(this.draft[this.selected], w, h);
       const r = p.d / 2;
-      this.handle.style.left = `${(p.cx + r * 0.7071).toFixed(1)}px`;
-      this.handle.style.top = `${(p.cy + r * 0.7071).toFixed(1)}px`;
+      const pad = 6;
+      this.frame.style.left = `${(p.cx - r - pad).toFixed(1)}px`;
+      this.frame.style.top = `${(p.cy - r - pad).toFixed(1)}px`;
+      this.frame.style.width = `${(p.d + pad * 2).toFixed(1)}px`;
+      this.frame.style.height = `${(p.d + pad * 2).toFixed(1)}px`;
+      this.frame.classList.remove('hidden');
+      // Handle sits on the frame's bottom-right corner (kept on screen for edge-hugging controls)
+      this.handle.style.left = `${Math.min(w - 18, p.cx + r + pad).toFixed(1)}px`;
+      this.handle.style.top = `${Math.min(h - 18, p.cy + r + pad).toFixed(1)}px`;
       this.handle.classList.remove('hidden');
     } else {
+      this.frame.classList.add('hidden');
       this.handle.classList.add('hidden');
     }
   }
 
   private localPoint(e: PointerEvent): { x: number; y: number } {
-    const rect = this.stage.getBoundingClientRect();
-    return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+    const [x, y] = localPoint(this.stage, e.clientX, e.clientY);
+    return { x, y };
   }
 
   private onPointerDown(e: PointerEvent) {
@@ -658,7 +721,15 @@ export class MobileLayoutEditor {
     const target = e.target as HTMLElement;
     const { x, y } = this.localPoint(e);
     if (target.closest('.m-editor-handle') && this.selected) {
-      this.drag = { kind: 'resize', key: this.selected, pointerId: e.pointerId };
+      const { w, h } = this.stageSize();
+      const p = spotToPx(this.draft[this.selected], w, h);
+      this.drag = {
+        kind: 'resize',
+        key: this.selected,
+        pointerId: e.pointerId,
+        startD: p.d,
+        startDist: Math.hypot(x - p.cx, y - p.cy),
+      };
       safeCapture(this.stage, e.pointerId);
       return;
     }
@@ -691,8 +762,9 @@ export class MobileLayoutEditor {
       this.draft[d.key] = pxToSpot({ cx, cy, d: cur.d }, w, h);
     } else {
       const [sMin, sMax] = MOBILE_CONTROL_SIZE_LIMITS[d.key];
+      // Corner handle on the diagonal: moving it by Δ along the diagonal changes the diameter by Δ·√2
       const dist = Math.hypot(x - cur.cx, y - cur.cy);
-      const nextD = Math.max(sMin * h, Math.min(sMax * h, dist * 2));
+      const nextD = Math.max(sMin * h, Math.min(sMax * h, d.startD + (dist - d.startDist) * Math.SQRT2));
       this.draft[d.key] = pxToSpot({ cx: cur.cx, cy: cur.cy, d: nextD }, w, h);
     }
     this.render();

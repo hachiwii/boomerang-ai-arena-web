@@ -254,3 +254,193 @@ export function applyMeleeAssist(
   const direct = scaleToUnit(bestTarget.dx, bestTarget.dy);
   return direct ?? [aimX, aimY];
 }
+
+// ---------------------------------------------------------------------------------------------
+// Mobile 360° dart-block assist
+// ---------------------------------------------------------------------------------------------
+
+// Dart flight constants mirrored from wasm/include/dart.hpp `Config` defaults (maps never override them)
+const DART_V = 900;
+const DART_DEC = 50;
+const DART_VMIN = 200;
+const DART_HANG = 3;
+const RET_V0 = 150;
+const RET_ACC = 80;
+const RET_V = 900;
+const RECALL_V = 900;
+const CATCH_R = 600;
+const SLASH_PRE = 2;
+// Human block cone with melee assist ON: half-angle 30° (cos 866), point-blank inside BODY_R always blocks
+const ASSIST_BLOCK_COS = 866;
+const ASSIST_BLOCK_HALF_RAD = Math.acos(ASSIST_BLOCK_COS / 1000);
+
+export interface IncomingDartTarget {
+  /** Dart seat (owner index) */
+  seat: number;
+  /** Judgment index inside the slash window (0 = the tick the slash is issued) */
+  k: number;
+  dx: number;
+  dy: number;
+  dl: number;
+}
+
+function isFlying(st: number): boolean {
+  return st === DState.OUT || st === DState.BACK || st === DState.CALL;
+}
+
+/**
+ * Predicts where dart `j` will be at the start of each of the next `steps` engine steps
+ * (index 0 = current snapshot position). Stops early once the dart would stop flying
+ * (wall drop on the way out / back, or caught by its owner).
+ */
+export function predictDartPath(map: EngineMapData, state: TickSnapshot, j: number, steps: number): [number, number][] {
+  const d = state.darts[j];
+  const owner = state.players[j];
+  const out: [number, number][] = [];
+  if (!d || !isFlying(d.st)) return out;
+  let st = d.st;
+  let x = d.x;
+  let y = d.y;
+  let left = d.left;
+  let age = d.age;
+  const ux = d.vx;
+  const uy = d.vy;
+  const range = map.range > 0 ? map.range : 7200;
+  if (st === DState.OUT && left <= 0) left = range;
+  out.push([x, y]);
+  for (let s = 0; s < steps; s++) {
+    let x1 = x;
+    let y1 = y;
+    if (st === DState.OUT) {
+      const spd = Math.max(DART_VMIN, DART_V - age * DART_DEC);
+      const m1 = Math.min(spd, left);
+      x1 = x + rdiv(ux * m1, UNIT);
+      y1 = y + rdiv(uy * m1, UNIT);
+      left -= m1;
+    } else {
+      const spd =
+        st === DState.BACK ? (age < DART_HANG ? 0 : Math.min(RET_V, RET_V0 + (age - DART_HANG) * RET_ACC)) : Math.min(RECALL_V, RET_V0 + age * RET_ACC);
+      if (spd > 0 && owner) {
+        // Homes onto the owner's position (assume the owner keeps its current velocity)
+        const ox = owner.x + owner.vx * (s + 1);
+        const oy = owner.y + owner.vy * (s + 1);
+        const gx = ox - x;
+        const gy = oy - y;
+        const gl = Math.hypot(gx, gy);
+        if (gl <= Math.max(spd, CATCH_R)) return out; // caught this step
+        x1 = x + (gx * spd) / gl;
+        y1 = y + (gy * spd) / gl;
+      }
+    }
+    age++;
+    const throughWalls = st === DState.CALL;
+    if (!throughWalls && (x1 !== x || y1 !== y) && wallBetween(map, state.t, Math.round(x), Math.round(y), Math.round(x1), Math.round(y1))) {
+      return out; // drops on the wall
+    }
+    x = x1;
+    y = y1;
+    if (st === DState.OUT && left <= 0) {
+      st = DState.BACK;
+      age = 0;
+    }
+    out.push([x, y]);
+  }
+  return out;
+}
+
+/**
+ * The first enemy dart that will be inside slash reach (with no wall in between) on one of the
+ * human slash judgment ticks: k = 0..ticks-1 for the multi-frame window, or only k = SLASH_PRE-1
+ * for the AI-identical mode (ticks = 0). The slashing player stands still for the whole swing.
+ */
+export function findIncomingDartTarget(
+  map: EngineMapData,
+  state: TickSnapshot,
+  seat: number,
+  slashTicks: number,
+): IncomingDartTarget | null {
+  const me = state.players[seat];
+  if (!me || !me.alive) return null;
+  const reach = map.slashReach > 0 ? map.slashReach : 1500;
+  const judgeKs = slashTicks > 0 ? Array.from({ length: slashTicks }, (_, i) => i) : [SLASH_PRE - 1];
+  const lastK = judgeKs[judgeKs.length - 1];
+  let best: IncomingDartTarget | null = null;
+  for (let j = 0; j < state.darts.length; j++) {
+    if (j === seat || !isFlying(state.darts[j]?.st)) continue;
+    const path = predictDartPath(map, state, j, lastK);
+    for (const k of judgeKs) {
+      const pos = path[k];
+      if (!pos) break;
+      const dx = Math.round(pos[0] - me.x);
+      const dy = Math.round(pos[1] - me.y);
+      const dd = dx * dx + dy * dy;
+      if (dd > reach * reach) continue;
+      if (wallBetween(map, state.t, me.x, me.y, Math.round(pos[0]), Math.round(pos[1]))) continue;
+      const dl = isqrt(dd);
+      if (!best || k < best.k || (k === best.k && dl < best.dl)) {
+        best = { seat: j, k, dx, dy, dl };
+      }
+      break;
+    }
+  }
+  return best;
+}
+
+/**
+ * Mobile melee assist. With the dart in hand and an enemy dart arriving inside the slash judgment
+ * window, the swing turns (any angle, 360°) toward that dart's predicted position — and, when an
+ * enemy player in reach can share the swing, leans toward them while keeping the dart inside the
+ * 30° block cone. Otherwise falls back to the regular player-only assist.
+ */
+export function applyMobileMeleeAssist(
+  map: EngineMapData,
+  state: TickSnapshot,
+  seat: number,
+  aimX: number,
+  aimY: number,
+  slashTicks: number,
+): [number, number] {
+  const me = state.players[seat];
+  const myDart = state.darts[seat];
+  if (!me || !me.alive || !myDart || myDart.st !== DState.HAND) {
+    return applyMeleeAssist(map, state, seat, aimX, aimY);
+  }
+  const bodyR = map.bodyR > 0 ? map.bodyR : 400;
+  const target = findIncomingDartTarget(map, state, seat, slashTicks);
+  // No incoming dart, or one already point-blank (blocked whatever the direction) → aim at players
+  if (!target || target.dl <= bodyR) {
+    return applyMeleeAssist(map, state, seat, aimX, aimY);
+  }
+
+  const dartAngle = Math.atan2(target.dy, target.dx);
+  const reach = map.slashReach > 0 ? map.slashReach : 1500;
+  const blockHalf = Math.max(0, ASSIST_BLOCK_HALF_RAD - CONE_MARGIN_RAD);
+  const playerHalf = Math.max(0, SLASH_HALF_RAD - CONE_MARGIN_RAD);
+  let bestRot = 0;
+  let bestNeed = Infinity;
+  for (let q = 0; q < state.players.length; q++) {
+    if (q === seat) continue;
+    const p = state.players[q];
+    if (!p || !p.alive) continue;
+    if (typeof p.visMask === 'number' && ((p.visMask >> seat) & 1) === 0) continue;
+    const dx = p.x - me.x;
+    const dy = p.y - me.y;
+    if (dx * dx + dy * dy > reach * reach) continue;
+    if (wallBetween(map, state.t, me.x, me.y, p.x, p.y)) continue;
+    const delta = wrapAngleRad(Math.atan2(dy, dx) - dartAngle);
+    const need = Math.max(0, Math.abs(delta) - playerHalf);
+    if (need <= blockHalf && need < bestNeed) {
+      bestNeed = need;
+      bestRot = need * (delta >= 0 ? 1 : -1);
+    }
+  }
+
+  const ang = dartAngle + bestRot;
+  const ax = Math.round(Math.cos(ang) * UNIT);
+  const ay = Math.round(Math.sin(ang) * UNIT);
+  const unit = scaleToUnit(ax, ay);
+  if (unit && passesEngineCone(target.dx, target.dy, target.dl, unit[0], unit[1], ASSIST_BLOCK_COS)) {
+    return [ax, ay];
+  }
+  return scaleToUnit(target.dx, target.dy) ?? [aimX, aimY];
+}

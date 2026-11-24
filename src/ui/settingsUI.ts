@@ -51,6 +51,8 @@ export class SettingsModal {
   private onResetRanked?: () => void;
   private isMobile?: () => boolean;
   private onEditMobileLayout?: () => void;
+  /** Mobile: settings are split into tabs so each page fits a landscape phone without scrolling. */
+  private mobileTab: 'audio' | 'graphics' | 'assist' | 'export' | 'keys' = 'audio';
   private suppressClickUntil = 0;
 
   private readonly handleCaptureKeyDown: (e: KeyboardEvent) => void;
@@ -87,6 +89,13 @@ export class SettingsModal {
     this.card.innerHTML = `
       <div class="settings-head">
         <h2>⚙️ 游戏设置</h2>
+        <div class="settings-mtabs" role="tablist" aria-label="设置分类">
+          <button type="button" class="settings-mtab" data-mtab="audio" role="tab">🔊 音效</button>
+          <button type="button" class="settings-mtab" data-mtab="graphics" role="tab">🎨 画面</button>
+          <button type="button" class="settings-mtab" data-mtab="assist" role="tab">🛡️ 辅助</button>
+          <button type="button" class="settings-mtab" data-mtab="export" role="tab">🎬 导出</button>
+          <button type="button" class="settings-mtab" data-mtab="keys" role="tab">🎮 键位与重置</button>
+        </div>
         <button type="button" class="settings-close-btn" id="settings-close" data-close-settings="1">完成</button>
       </div>
     `;
@@ -135,6 +144,12 @@ export class SettingsModal {
     });
     this.card.querySelector('#settings-close')?.addEventListener('click', () => {
       this.close();
+    });
+    this.card.querySelectorAll<HTMLButtonElement>('[data-mtab]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.mobileTab = btn.dataset.mtab as typeof this.mobileTab;
+        this.applyMobileTab();
+      });
     });
 
     this.handleCaptureKeyDown = (e: KeyboardEvent) => {
@@ -349,6 +364,23 @@ export class SettingsModal {
       this.noticeText = null;
     }
     this.render();
+  }
+
+  /** Tag each settings section with its mobile tab and show only the active one (CSS-gated to mobile). */
+  private applyMobileTab() {
+    const order: (typeof this.mobileTab)[] = ['audio', 'graphics', 'assist', 'export', 'keys', 'keys', 'keys'];
+    const sections = Array.from(this.body.querySelectorAll<HTMLElement>(':scope > section'));
+    // Desktop renders 6 sections (no touch-layout section): audio, graphics, assist, export, keyboard, danger
+    const tabs = sections.length === 7 ? order : ['audio', 'graphics', 'assist', 'export', 'keys', 'keys'];
+    sections.forEach((sec, i) => {
+      sec.classList.toggle('m-tab-hidden', tabs[i] !== this.mobileTab);
+    });
+    this.card.querySelectorAll<HTMLButtonElement>('[data-mtab]').forEach((btn) => {
+      const on = btn.dataset.mtab === this.mobileTab;
+      btn.classList.toggle('active', on);
+      btn.setAttribute('aria-selected', String(on));
+    });
+    this.body.scrollTop = 0;
   }
 
   private syncControlsInPlace() {
@@ -734,7 +766,11 @@ export class SettingsModal {
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">近战吸附</div>
-                  <div class="settings-toggle-desc">挥砍或踢击时若鼠标指向无敌人，自动微调最小角度命中范围内敌人（不影响移动与冲刺）；开启时砍镖放宽至半角 30°（不吸附飞镖）</div>
+                  <div class="settings-toggle-desc">${
+                    mobile
+                      ? '挥砍或踢击自动转向范围内敌人；持镖挥砍时会 360° 转向判定帧内最先进入范围的飞镖并格挡（砍镖半角 30°）'
+                      : '挥砍或踢击时若鼠标指向无敌人，自动微调最小角度命中范围内敌人（不影响移动与冲刺）；开启时砍镖放宽至半角 30°（不吸附飞镖）'
+                  }</div>
                 </div>
                 <button
                   type="button"
@@ -912,6 +948,7 @@ export class SettingsModal {
           </section>
     `;
     this.body.scrollTop = prevScrollTop;
+    this.applyMobileTab();
 
     // Sound toggle
     this.body.querySelector('#settings-sound-toggle')?.addEventListener('click', () => {

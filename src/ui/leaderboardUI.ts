@@ -1,5 +1,6 @@
 import { LeaderboardRow, LeaderboardStore, ModeStats } from '../game/leaderboard';
 import { RankedMode } from '../game/types';
+import { clientToLogical, getLogicalViewport } from '../game/viewport';
 
 type SortField = 'rating' | 'wr' | 'kills' | 'deaths' | 'kd';
 
@@ -117,16 +118,18 @@ export class LeaderboardPanel {
     }
   }
 
-  private positionTooltip(clientX: number, clientY: number) {
+  private positionTooltip(rawX: number, rawY: number) {
     const pad = 14;
     const w = this.tooltipWidth;
     const h = this.tooltipHeight;
+    const [clientX, clientY] = clientToLogical(rawX, rawY);
+    const vp = getLogicalViewport();
     let left = clientX + 16;
     let top = clientY + 14;
-    if (left + w > window.innerWidth - pad) {
+    if (left + w > vp.width - pad) {
       left = Math.max(pad, clientX - w - 16);
     }
-    if (top + h > window.innerHeight - pad) {
+    if (top + h > vp.height - pad) {
       top = Math.max(pad, clientY - h - 14);
     }
     this.tooltip.style.transform = `translate3d(${Math.round(left)}px, ${Math.round(top)}px, 0)`;

@@ -499,6 +499,8 @@ export class FXSystem {
   private skillshotDirZ = 0;
   private skillshotActive = false;
   private skillshotBuiltKey = '';
+  private skillshotCancel = false;
+  private readonly skillshotMats: { mat: THREE.MeshBasicMaterial; aim: THREE.Color; cancel: THREE.Color }[] = [];
 
   private readonly _white = new THREE.Color('#ffffff');
   private readonly _yellow = new THREE.Color('#ffe066');
@@ -1476,7 +1478,7 @@ export class FXSystem {
    * Shows / hides the mobile skillshot indicator. `dirX/dirZ` is the world-space aim direction
    * (any length), `lengthM` the throw range and `widthM` the dart hit width.
    */
-  public setSkillshot(active: boolean, dirX = 0, dirZ = 0, lengthM = 7.2, widthM = 0.64) {
+  public setSkillshot(active: boolean, dirX = 0, dirZ = 0, lengthM = 7.2, widthM = 0.64, cancel = false) {
     this.skillshotActive = active;
     if (!active) {
       this.skillshot.visible = false;
@@ -1491,6 +1493,12 @@ export class FXSystem {
     if (key !== this.skillshotBuiltKey) {
       this.buildSkillshotMeshes(lengthM, widthM);
       this.skillshotBuiltKey = key;
+      this.skillshotCancel = !cancel;
+    }
+    if (cancel !== this.skillshotCancel) {
+      // Finger hovering the cancel target → indicator turns red
+      this.skillshotCancel = cancel;
+      for (const m of this.skillshotMats) m.mat.color.copy(cancel ? m.cancel : m.aim);
     }
   }
 
@@ -1507,8 +1515,15 @@ export class FXSystem {
     const hw = widthM * 0.5;
     const headHw = hw * 1.75;
 
-    const mkMat = (color: string, opacity: number) =>
-      new THREE.MeshBasicMaterial({
+    this.skillshotMats.length = 0;
+    const cancelColors: Record<string, string> = {
+      '#6fb2ff': '#ff5a5a',
+      '#cfe8ff': '#ffc2c2',
+      '#f2f8ff': '#ffe2e2',
+      '#e2f1ff': '#ffd0d0',
+    };
+    const mkMat = (color: string, opacity: number) => {
+      const mat = new THREE.MeshBasicMaterial({
         color,
         transparent: true,
         opacity,
@@ -1516,6 +1531,13 @@ export class FXSystem {
         depthWrite: false,
         side: THREE.DoubleSide,
       });
+      this.skillshotMats.push({
+        mat,
+        aim: new THREE.Color(color),
+        cancel: new THREE.Color(cancelColors[color] ?? '#ff6b6b'),
+      });
+      return mat;
+    };
 
     // Translucent body with a brighter core lane
     const body = new THREE.Mesh(new THREE.PlaneGeometry(bodyEnd - startX, widthM), mkMat('#6fb2ff', 0.34));

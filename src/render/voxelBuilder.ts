@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { computeDartVoxels, DART_CELL } from './dartShape';
 
 export interface VoxelPartData {
   pivot: [number, number, number];
@@ -268,49 +269,20 @@ function mixHex(hex: string, weight: number, target = 255): string {
   return out;
 }
 
-const DART_CELL = 0.058;
-
 /**
  * Exact 3-blade voxel boomerang from chars_voxel.py dart_part() + make_dart()!
+ * (Pattern lives in dartShape.ts so the mobile HUD icon matches the model exactly.)
  */
 export function buildVoxelDartMesh(colorHex: string, scale = 1.0): THREE.Group {
   const main = colorHex;
   const light = mixHex(colorHex, 0.5, 255);
   const deep = mixHex(colorHex, 0.28, 20);
-  const voxels: [number, number, number, string][] = [];
-  const blades = 3;
-  const n = 6;
-
-  for (let i = -n; i <= n; i++) {
-    for (let j = -n; j <= n; j++) {
-      const x = i * DART_CELL;
-      const y = j * DART_CELL;
-      const r = Math.hypot(x, y);
-      if (r < 0.085) {
-        voxels.push([i, j, 0, r > 0.03 ? '#FFFFFF' : main]);
-        continue;
-      }
-      let best: [number, number, number] | null = null;
-      for (let b = 0; b < blades; b++) {
-        const a0 = (2 * Math.PI * b) / blades;
-        for (let k = 0; k <= 40; k++) {
-          const t = k / 40;
-          const rr = 0.05 + 0.26 * t;
-          const ang = a0 + 0.8 * Math.pow(t, 1.25);
-          const d = Math.hypot(x - rr * Math.cos(ang), y - rr * Math.sin(ang));
-          const w = 0.074 * (1.0 - 0.32 * t);
-          if (d < w && (best === null || d / w < best[0])) {
-            const side = x * Math.cos(ang) + y * Math.sin(ang) - rr;
-            best = [d / w, t, side];
-          }
-        }
-      }
-      if (best !== null) {
-        const col = best[1] > 0.8 ? light : best[2] < -0.012 ? deep : main;
-        voxels.push([i, j, 0, col]);
-      }
-    }
-  }
+  const voxels: [number, number, number, string][] = computeDartVoxels().map((v) => [
+    v.i,
+    v.j,
+    0,
+    v.kind === 'ring' ? '#FFFFFF' : v.kind === 'tip' ? light : v.kind === 'shade' ? deep : main,
+  ]);
 
   const part: VoxelPartData = {
     pivot: [0.5, 0.5, 0.5],

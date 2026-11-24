@@ -1,6 +1,6 @@
 import { applyCliffGuard } from './cliffGuard';
-import { applyMeleeAssist } from './meleeAssist';
-import { ActionBindKey, isBoundToAction, SettingsStore } from './settings';
+import { applyMeleeAssist, applyMobileMeleeAssist } from './meleeAssist';
+import { ActionBindKey, getSlashJudgmentTicks, isBoundToAction, SettingsStore } from './settings';
 import {
   ActType,
   DartSnapshot,
@@ -619,6 +619,15 @@ export class HumanInputController {
     this.vDashAt = -1;
   }
 
+  /**
+   * Touch mode: the move vector the NEXT logic tick will send (before cliff guard), or null when
+   * touch movement is not live. Used only for render-side prediction — never feeds the engine.
+   */
+  public getTouchMoveIntent(): [number, number] | null {
+    if (!this.touchMode || this.paused || this.inputMode !== 'active') return null;
+    return this.getVirtualMoveVector();
+  }
+
   /** Analog left stick → engine move vector (|v| ≥ 1000 = full speed, shorter = proportional walk). */
   private getVirtualMoveVector(): [number, number] {
     const m = Math.hypot(this.vMoveX, this.vMoveY);
@@ -662,7 +671,9 @@ export class HumanInputController {
     const makeMelee = (): HumanAction => {
       let [ax, ay] = meleeDir();
       if (this.settings.get().meleeAssist && this.mapData) {
-        [ax, ay] = applyMeleeAssist(this.mapData, state, seat, ax, ay);
+        // Touch: 360° auto-turn toward the first dart entering reach within the slash judgment window
+        const ticks = getSlashJudgmentTicks(this.settings.get().slashJudgment);
+        [ax, ay] = applyMobileMeleeAssist(this.mapData, state, seat, ax, ay, ticks);
       }
       this.vMeleeAt = -1;
       this.vMeleeAfterDash = false;

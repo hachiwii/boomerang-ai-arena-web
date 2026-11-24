@@ -50,10 +50,11 @@ const mod = await createEngine({ wasmBinary: fs.readFileSync(path.join(root, 'pu
 const openRows = Array.from({ length: 20 }, () => '.'.repeat(32));
 // Wall column at x = 8.0m (cell 16) so a thrown dart drops to the ground for recall tests
 const wallRows = Array.from({ length: 20 }, () => '.'.repeat(16) + '#' + '.'.repeat(15));
-const mapText = (rows) => ['NAME test_touch', 'MODES 0', 'SPAWN 0 3.0 5.0 13.0 5.0', 'GRID 32 20', ...rows].join('\n');
+const mapText = (rows, spawn = '3.0 5.0 13.0 5.0') =>
+  ['NAME test_touch', 'MODES 0', `SPAWN 0 ${spawn}`, 'GRID 32 20', ...rows].join('\n');
 
-function initMatch(rows) {
-  const rc = mod.ccall('engine_init', 'number', ['string', 'number', 'number'], [mapText(rows), 2, 0]);
+function initMatch(rows, spawn) {
+  const rc = mod.ccall('engine_init', 'number', ['string', 'number', 'number'], [mapText(rows, spawn), 2, 0]);
   assert.equal(rc, 1, 'engine_init should succeed');
   mod.ccall('engine_set_human_seat', 'void', ['number'], [0]);
   mod.ccall('engine_set_human_cliff_guard', 'void', ['number'], [1]);
@@ -63,30 +64,32 @@ function initMatch(rows) {
   };
 }
 
-function stepEngine(a) {
+function stepEngine(a, botLine = '0 0 0 0 0 0') {
   mod.ccall('engine_set_human_dash_target', 'void', ['number', 'number', 'number'], [0, 0, 0]);
-  mod.ccall('engine_step', 'number', ['string'], [`${a.mx} ${a.my} ${a.act} ${a.ax} ${a.ay} ${a.msg}\n0 0 0 0 0 0`]);
+  mod.ccall('engine_step', 'number', ['string'], [`${a.mx} ${a.my} ${a.act} ${a.ax} ${a.ay} ${a.msg}\n${botLine}`]);
   return JSON.parse(mod.ccall('engine_get_state_json', 'string', [], []));
 }
 
-function setup(rows = openRows) {
+function setup(rows = openRows, opts = {}) {
   storage.clear();
   fakeNowMs = 1000;
   const settings = new SettingsStore();
+  if (opts.meleeAssist === false) settings.setMeleeAssist(false);
+  mod.ccall('engine_set_human_melee_assist', 'void', ['number'], [opts.meleeAssist === false ? 0 : 1]);
   const input = new HumanInputController(fakeCanvas, settings);
   input.setTouchMode(true);
-  const { mapData, state } = initMatch(rows);
+  const { mapData, state } = initMatch(rows, opts.spawn);
   input.setMapData(mapData);
   input.setCliffGuard(true);
   input.setTickIntervalMs(50);
   input.setInputMode('active');
   let st = state;
   let tick = 0;
-  const step = () => {
+  const step = (botLine) => {
     tick++;
     fakeNowMs = 1000 + tick * 50;
     const act = input.sampleAction(st, 0);
-    st = stepEngine(act);
+    st = stepEngine(act, botLine);
     return { act, st };
   };
   const at = (offsetMs) => {
@@ -247,6 +250,73 @@ for (const pressTick of [1, 3, 5]) {
   assert.equal(h.st.players[0].st, 0, 'back to free after release');
   assert.equal(h.st.darts[0].st, 3, 'dart stays on the ground');
   console.log('  [TEST 7 PASS] releasing mid-channel cancels the recall');
+}
+
+// ---------- 8. Melee assist ON: slash auto-turns 360° to block a dart coming from behind ----------
+// P0 at (7,5) faces +x (toward map center); P1 at (2,5) throws +x straight at P0's back.
+function dartFromBehind(meleeAssist, slashTicksLabel = 'normal') {
+  const h = setup(openRows, { meleeAssist, spawn: '7.0 5.0 2.0 5.0' });
+  if (slashTicksLabel !== 'normal') {
+    h.input['settings'].setSlashJudgment(slashTicksLabel);
+    mod.ccall('engine_set_human_slash_ticks', 'void', ['number'], [slashTicksLabel === 'strict' ? 3 : 0]);
+  }
+  const faceRad = (h.st.players[0].face / 100) * (Math.PI / 180);
+  assert.ok(Math.cos(faceRad) > 0.9, 'P0 starts facing +x (away from the thrower)');
+  h.step('0 0 1 1000 0 0'); // P1 throws toward P0
+  let pressed = -1;
+  let slash = null;
+  let block = null;
+  let died = false;
+  for (let i = 0; i < 20 && !block && !died; i++) {
+    const d = h.st.darts[1];
+    const dist = Math.hypot(d.x - h.st.players[0].x, d.y - h.st.players[0].y);
+    if (pressed < 0 && d.st === 1 && dist <= 2600) {
+      pressed = h.tick;
+      h.at(10);
+      h.input.queueVirtualMelee(); // no stick held → would swing toward facing (+x) without assist
+    }
+    const { st } = h.step();
+    slash = slash || ev(st, 'SLASH');
+    block = block || st.events.find((e) => e.name === 'BLOCK' && e.a === 0);
+    died = st.players[0].alive !== 1;
+  }
+  return { pressed, slash, block, died };
+}
+{
+  const on = dartFromBehind(true);
+  assert.ok(on.pressed > 0, 'slash pressed while the dart was inbound');
+  assert.ok(on.slash && on.slash.b < -900, `assist swings back toward the dart (-x), got (${on.slash?.b}, ${on.slash?.c})`);
+  assert.ok(on.block, 'dart blocked');
+  assert.ok(!on.died, 'player survives');
+  const off = dartFromBehind(false);
+  assert.ok(off.slash && off.slash.b > 900, 'without assist the swing keeps facing +x');
+  assert.ok(!off.block, 'without assist the dart is not blocked');
+  console.log('  [TEST 8 PASS] assist ON turns 360° and blocks a dart from behind; OFF does not');
+}
+
+// ---------- 9. Multi-frame prediction: dart still out of reach on the press tick, enters later ----------
+{
+  const h = setup(openRows, { spawn: '7.0 5.0 2.0 5.0' });
+  h.step('0 0 1 1000 0 0');
+  let pressedDist = -1;
+  let block = null;
+  let died = false;
+  for (let i = 0; i < 20 && !block && !died; i++) {
+    const d = h.st.darts[1];
+    const dist = Math.hypot(d.x - h.st.players[0].x, d.y - h.st.players[0].y);
+    // Press while the dart is clearly OUTSIDE reach (1.5m) — only the window prediction can catch it
+    if (pressedDist < 0 && d.st === 1 && dist > 1700 && dist <= 3400) {
+      pressedDist = dist;
+      h.at(10);
+      h.input.queueVirtualMelee();
+    }
+    const { st } = h.step();
+    block = block || st.events.find((e) => e.name === 'BLOCK' && e.a === 0);
+    died = st.players[0].alive !== 1;
+  }
+  assert.ok(pressedDist > 1500, `pressed out of reach (${Math.round(pressedDist)}mm)`);
+  assert.ok(block && !died, 'blocked on a later judgment frame of the same swing');
+  console.log(`  [TEST 9 PASS] pressed at ${Math.round(pressedDist)}mm (out of reach) → blocked on a later window frame`);
 }
 
 console.log('\nAll touch-control tests passed.');

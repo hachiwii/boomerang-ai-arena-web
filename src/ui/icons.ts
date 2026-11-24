@@ -1,3 +1,5 @@
+import { computeDartVoxels, DartVoxelKind } from '../render/dartShape';
+
 /** Inline SVG icons for the mobile HUD & touch controls (currentColor, 24×24 viewBox). */
 
 const svg = (body: string, extra = '') =>
@@ -6,9 +8,28 @@ const svg = (body: string, extra = '') =>
 const stroke = (d: string, w = 2.2) =>
   `<path d="${d}" fill="none" stroke="currentColor" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"/>`;
 
-export const ICON_BOOMERANG = svg(
-  `<path d="M5.2 5.6C12.8 2.9 20.4 7.6 18.9 19.2 16 14.2 12.6 11.2 5.2 5.6Z" fill="currentColor" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/>`,
-);
+/**
+ * The in-game boomerang, voxel for voxel (same pattern as the 3D mesh, viewed from above):
+ * white blades with shaded trailing edges, warm tips, white hub ring around a dark core.
+ */
+function buildBoomerangIcon(): string {
+  const fills: Record<DartVoxelKind, string> = {
+    blade: 'currentColor',
+    shade: 'rgba(205, 220, 245, 0.9)',
+    tip: '#ffe39a',
+    ring: '#ffffff',
+    core: 'rgba(10, 18, 40, 0.55)',
+  };
+  const rects = computeDartVoxels()
+    .map(
+      (v) =>
+        `<rect x="${v.i - 0.5}" y="${-v.j - 0.5}" width="1" height="1" fill="${fills[v.kind]}"/>`,
+    )
+    .join('');
+  return `<svg viewBox="-7 -7 14 14" width="24" height="24" aria-hidden="true" shape-rendering="crispEdges"><g stroke="rgba(8, 12, 26, 0.6)" stroke-width="0.16">${rects}</g></svg>`;
+}
+
+export const ICON_BOOMERANG = buildBoomerangIcon();
 
 export const ICON_RECALL = svg(
   stroke('M19.2 12.6A7.3 7.3 0 1 1 16.9 6.8') +

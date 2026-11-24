@@ -3,6 +3,7 @@ import { CricketFormat, CricketStore, CricketTier } from '../game/cricketStore';
 import { LeaderboardStore } from '../game/leaderboard';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore } from '../game/settings';
 import { MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
+import { getLogicalViewport, rectToLogical } from '../game/viewport';
 import { getTheme } from '../render/themes';
 import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_PHONE } from './icons';
 import { LeaderboardPanel } from './leaderboardUI';
@@ -799,11 +800,12 @@ export class LobbyUI {
       ${sparringBots.map(renderBotItem).join('')}
     `;
 
-    const rect = triggerEl.getBoundingClientRect();
+    const rect = rectToLogical(triggerEl.getBoundingClientRect());
+    const vp = getLogicalViewport();
     const pad = 12;
     const width = Math.max(rect.width, 320);
-    const left = Math.max(pad, Math.min(rect.left, window.innerWidth - width - pad));
-    const spaceBelow = window.innerHeight - rect.bottom - pad;
+    const left = Math.max(pad, Math.min(rect.left, vp.width - width - pad));
+    const spaceBelow = vp.height - rect.bottom - pad;
     const spaceAbove = rect.top - pad;
     const openUpward = spaceBelow < 340 && spaceAbove > spaceBelow;
     const maxHeight = Math.max(180, Math.min(390, (openUpward ? spaceAbove : spaceBelow) - 8));
@@ -813,7 +815,7 @@ export class LobbyUI {
     this.dropdownMenu.style.left = `${Math.round(left)}px`;
     if (openUpward) {
       this.dropdownMenu.style.top = 'auto';
-      this.dropdownMenu.style.bottom = `${Math.round(window.innerHeight - rect.top + 6)}px`;
+      this.dropdownMenu.style.bottom = `${Math.round(vp.height - rect.top + 6)}px`;
       this.dropdownMenu.classList.add('open-up');
     } else {
       this.dropdownMenu.style.bottom = 'auto';

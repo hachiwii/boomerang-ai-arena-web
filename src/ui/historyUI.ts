@@ -18,6 +18,8 @@ export interface HistoryModalCallbacks {
   ) => Promise<Mp4ExportResult>;
   onOpenSettings: () => void;
   onOpenChange?: (open: boolean) => void;
+  /** Mobile: paginate the list so every page fits a landscape phone without scrolling. */
+  isMobile?: () => boolean;
 }
 
 interface ActiveExportState {
@@ -86,6 +88,7 @@ export class HistoryModal {
   private openState = false;
   private filter: HistoryFilter = 'all';
   private favoritesOnly = false;
+  private page = 0;
   private suppressStoreRefreshCount = 0;
   private summaries: MatchHistorySummary[] = [];
   private loading = false;
@@ -207,6 +210,7 @@ export class HistoryModal {
         const next = btn.dataset.hfilter as HistoryFilter;
         if (next === this.filter) return;
         this.filter = next;
+        this.page = 0;
         this.bodyEl.scrollTop = 0;
         this.render();
       });
@@ -214,6 +218,7 @@ export class HistoryModal {
 
     this.favOnlyBtn.addEventListener('click', () => {
       this.favoritesOnly = !this.favoritesOnly;
+      this.page = 0;
       this.bodyEl.scrollTop = 0;
       this.render();
     });
@@ -256,6 +261,7 @@ export class HistoryModal {
 
   public async open() {
     this.openState = true;
+    this.page = 0;
     this.loadingReplayId = null;
     this.clearConfirmReset();
     this.callbacks.onOpenChange?.(true);
@@ -627,6 +633,22 @@ export class HistoryModal {
           <div class="he-title">${emptyTitle}</div>
           <div class="he-desc">${emptyHint}</div>
         </div>`;
+    } else if (this.callbacks.isMobile?.()) {
+      const pageSize = 3;
+      const pages = Math.max(1, Math.ceil(visible.length / pageSize));
+      this.page = Math.max(0, Math.min(pages - 1, this.page));
+      const slice = visible.slice(this.page * pageSize, this.page * pageSize + pageSize);
+      bodyHtml = `
+        <div class="history-list">${slice.map((m) => this.renderRow(m)).join('')}</div>
+        ${
+          pages > 1
+            ? `<div class="history-pager">
+                <button type="button" class="history-page-btn" data-hpage="-1" ${this.page === 0 ? 'disabled' : ''}>‹ 上一页</button>
+                <span class="history-page-info">${this.page + 1} / ${pages} · 共 ${visible.length} 场</span>
+                <button type="button" class="history-page-btn" data-hpage="1" ${this.page >= pages - 1 ? 'disabled' : ''}>下一页 ›</button>
+              </div>`
+            : ''
+        }`;
     } else {
       bodyHtml = `<div class="history-list">${visible.map((m) => this.renderRow(m)).join('')}</div>`;
     }
@@ -658,6 +680,12 @@ export class HistoryModal {
 
     const prevScrollTop = this.bodyEl.scrollTop;
     this.bodyEl.innerHTML = bodyHtml;
+    this.bodyEl.querySelectorAll<HTMLButtonElement>('[data-hpage]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.page += Number(btn.dataset.hpage) || 0;
+        this.render();
+      });
+    });
     this.bodyEl.scrollTop = prevScrollTop;
 
     this.bodyEl.querySelectorAll<HTMLButtonElement>('[data-replay-id]').forEach((btn) => {

@@ -65,15 +65,39 @@ export const MOBILE_CONTROL_SIZE_LIMITS: Record<MobileControlKey, [number, numbe
 export function cloneDefaultMobileLayout(): MobileLayout {
   return {
     move: { side: 'l', x: 0.3, y: 0.3, s: 0.4 },
+    aim: { side: 'r', x: 0.24, y: 0.3, s: 0.36 },
+    slash: { side: 'r', x: 0.2, y: 0.63, s: 0.17 },
+    dash: { side: 'r', x: 0.57, y: 0.26, s: 0.17 },
+  };
+}
+
+/** Previous built-in defaults: players who never customised get upgraded to the new defaults. */
+const LEGACY_DEFAULT_MOBILE_LAYOUTS: MobileLayout[] = [
+  {
+    move: { side: 'l', x: 0.3, y: 0.3, s: 0.4 },
     aim: { side: 'r', x: 0.3, y: 0.3, s: 0.36 },
     slash: { side: 'r', x: 0.35, y: 0.63, s: 0.17 },
     dash: { side: 'r', x: 0.63, y: 0.26, s: 0.17 },
-  };
+  },
+];
+
+function isSameMobileLayout(a: MobileLayout, b: MobileLayout): boolean {
+  return MOBILE_CONTROL_KEYS.every((k) => {
+    const p = a[k];
+    const q = b[k];
+    return p.side === q.side && Math.abs(p.x - q.x) < 1e-6 && Math.abs(p.y - q.y) < 1e-6 && Math.abs(p.s - q.s) < 1e-6;
+  });
 }
 
 function sanitizeMobileLayout(raw: unknown): MobileLayout {
   const def = cloneDefaultMobileLayout();
   if (!raw || typeof raw !== 'object') return def;
+  const parsed = sanitizeMobileLayoutEntries(raw);
+  return LEGACY_DEFAULT_MOBILE_LAYOUTS.some((old) => isSameMobileLayout(parsed, old)) ? def : parsed;
+}
+
+function sanitizeMobileLayoutEntries(raw: object): MobileLayout {
+  const def = cloneDefaultMobileLayout();
   const src = raw as Record<string, unknown>;
   for (const key of MOBILE_CONTROL_KEYS) {
     const e = src[key] as Partial<MobileControlSpot> | undefined;

@@ -24,7 +24,8 @@ import { CellType, EngineMapData, isRankedMatchMode, MapMeta, MatchConfig, Ranke
 import { GameRenderer } from './render/renderer';
 import { HistoryModal } from './ui/historyUI';
 import { HudUI } from './ui/hudUI';
-import { ICON_ROTATE } from './ui/icons';
+import { AutoFitter } from './ui/autoFit';
+import { showLaunchScreen } from './ui/launchScreen';
 import { LobbyUI, makeHoodieAvatarDataUrl } from './ui/lobbyUI';
 import { MobileControls, MobileLayoutEditor } from './ui/mobileControls';
 import { SettingsModal } from './ui/settingsUI';
@@ -80,6 +81,13 @@ async function bootstrap() {
 
   const settings = new SettingsStore();
   const platform = new PlatformManager(settings);
+  // Touch devices open on a launch page: 移动端 = landscape + fullscreen in one tap, or 桌面端
+  if (!platform.isLaunchDone()) {
+    showLaunchScreen({
+      fullscreenSupported: platform.isFullscreenSupported() || platform.isStandaloneApp(),
+      onChoose: (choice) => platform.launch(choice),
+    });
+  }
   const sfx = new SoundFX();
   sfx.applySettings(settings.get().soundEnabled, settings.get().volume);
   const bgm = new BgmManager();
@@ -180,12 +188,11 @@ async function bootstrap() {
     }
   };
 
-  // External pause reasons: Settings modal open, or a mobile device held in portrait
+  // External pause reasons: Settings modal open
   let settingsOpen = false;
-  let portraitBlocked = false;
   let externalPaused = false;
   const syncExternalPause = () => {
-    const want = settingsOpen || portraitBlocked;
+    const want = settingsOpen;
     if (want === externalPaused) return;
     externalPaused = want;
     input.setPaused(want);
@@ -864,6 +871,7 @@ async function bootstrap() {
     onOpenSettings: () => {
       settingsModal.open();
     },
+    isMobile: () => platform.isMobile(),
   });
 
   controller = new MatchController(input, {
@@ -1038,22 +1046,6 @@ async function bootstrap() {
     }, 2600);
   };
 
-  const rotateHint = document.createElement('div');
-  rotateHint.className = 'rotate-hint';
-  rotateHint.innerHTML = `<div class="rotate-hint-card">${ICON_ROTATE}<div class="rotate-hint-title">请将设备横屏</div><div class="rotate-hint-sub">移动端固定横屏游玩 · 对局中会自动暂停</div></div>`;
-  document.body.appendChild(rotateHint);
-
-  const syncPortrait = () => {
-    const blocked = platform.isMobile() && platform.isPortrait();
-    document.body.classList.toggle('is-portrait-blocked', blocked);
-    if (blocked !== portraitBlocked) {
-      portraitBlocked = blocked;
-      syncExternalPause();
-    }
-  };
-  window.addEventListener('resize', syncPortrait);
-  window.addEventListener('orientationchange', syncPortrait);
-  syncPortrait();
 
   platform.onChange((isMobile) => {
     input.setTouchMode(isMobile);
@@ -1061,7 +1053,6 @@ async function bootstrap() {
     hudUI.setMobile(isMobile);
     if (!isMobile) layoutEditor.close(false);
     lobbyUI.refreshPlatformButtons();
-    syncPortrait();
     if (mode === 'lobby') {
       showPlatformToast(isMobile ? '已切换到移动端 · 触屏操作 · 横屏全屏' : '已切换到桌面端 · 键鼠操作');
     }
@@ -1162,6 +1153,56 @@ async function bootstrap() {
       restartCurrentMatch();
     }
   });
+
+  // ---------- Mobile: every screen fits a landscape phone without vertical scrolling ----------
+  const autoFit = new AutoFitter(() => platform.isMobile());
+  const q = <T extends HTMLElement>(sel: string, root: ParentNode = document) => root.querySelector<T>(sel);
+  const lobbyRoot = q('.lobby-overlay');
+  if (lobbyRoot) {
+    autoFit.add({
+      root: lobbyRoot,
+      scroll: () => q('.lobby-card', lobbyRoot),
+      targets: () => Array.from(lobbyRoot.querySelectorAll<HTMLElement>('.lobby-card > :not(.lobby-header)')),
+      minZoom: 0.55,
+    });
+  }
+  const settingsRoot = q('.settings-backdrop');
+  if (settingsRoot) {
+    autoFit.add({
+      root: settingsRoot,
+      scroll: () => q('.settings-body', settingsRoot),
+      targets: () => Array.from(settingsRoot.querySelectorAll<HTMLElement>('.settings-body > section')),
+      minZoom: 0.6,
+    });
+  }
+  const historyRoot = q('.history-backdrop');
+  if (historyRoot) {
+    autoFit.add({
+      root: historyRoot,
+      scroll: () => q('.history-body', historyRoot),
+      targets: () => Array.from(historyRoot.querySelectorAll<HTMLElement>('.history-body > *')),
+      minZoom: 0.6,
+    });
+  }
+  const mapPoolRoot = q('.mappool-backdrop');
+  if (mapPoolRoot) {
+    autoFit.add({
+      root: mapPoolRoot,
+      scroll: () => q('.mappool-card', mapPoolRoot),
+      targets: () => Array.from(mapPoolRoot.querySelectorAll<HTMLElement>('.mappool-card')),
+      minZoom: 0.55,
+    });
+  }
+  const resultRoot = q('.result-overlay');
+  if (resultRoot) {
+    autoFit.add({
+      root: resultRoot,
+      scroll: () => q('.result-card', resultRoot),
+      targets: () => Array.from(resultRoot.querySelectorAll<HTMLElement>('.result-card')),
+      minZoom: 0.5,
+    });
+  }
+  platform.onChange(() => autoFit.schedule());
 
   // Load initial 3D island preview behind the lobby
   const firstMap = lobbyUI.getSelectedMap();

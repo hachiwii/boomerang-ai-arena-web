@@ -4,6 +4,7 @@ import { HumanInputController } from '../game/humanInput';
 import { CinematicCameraPose, CinematicDirector } from '../game/killCamDirector';
 import { CountdownStage } from '../game/matchController';
 import { GraphicsQualityOption } from '../game/settings';
+import { clientToLogical, getLogicalViewport } from '../game/viewport';
 import {
   CauseType,
   CellType,
@@ -11,6 +12,7 @@ import {
   EngineMapData,
   GameEvent,
   LOGIC_DT_MS,
+  PlayerSnapshot,
   PState,
   SlotConfig,
   TickSnapshot,
@@ -150,9 +152,20 @@ export class GameRenderer {
   private aimIndicatorActive = false;
   private aimIndicatorX = 1;
   private aimIndicatorY = 0;
+  private aimIndicatorCancel = false;
 
   // Human recall channel charge → release audio cue
   private recallChargeActive = false;
+
+  // Touch-mode render-side movement prediction for the local player (visual only, logic stays 20Hz)
+  private predErrX = 0;
+  private predErrY = 0;
+  private predLastDispX = Number.NaN;
+  private predLastDispY = Number.NaN;
+  private predLastTickRef: TickSnapshot | null = null;
+  private predLastMode = false;
+  private predLastIntentX = 0;
+  private predLastIntentY = 0;
 
   // Floating nameplate DOM elements (positioned via CSS transform3d for 240Hz smoothness!)
   private nameplateLayer: HTMLDivElement | null = null;
@@ -191,8 +204,8 @@ export class GameRenderer {
     this.charModelCache = sharedCharModelCache ?? new Map<string, VoxelModelData>();
     this.graphicsQuality = graphicsQuality;
 
-    const initW = this.fixedSize ? this.fixedSize.width : window.innerWidth;
-    const initH = this.fixedSize ? this.fixedSize.height : window.innerHeight;
+    const initW = this.fixedSize ? this.fixedSize.width : getLogicalViewport().width;
+    const initH = this.fixedSize ? this.fixedSize.height : getLogicalViewport().height;
 
     this.renderer = new THREE.WebGLRenderer({
       canvas,
@@ -279,7 +292,7 @@ export class GameRenderer {
 
   private getViewportSize(): { width: number; height: number } {
     if (this.fixedSize) return this.fixedSize;
-    return { width: window.innerWidth, height: window.innerHeight };
+    return getLogicalViewport();
   }
 
   public setNameplateLayer(el: HTMLDivElement) {
@@ -300,13 +313,15 @@ export class GameRenderer {
   }
 
   /** Mobile aim slow-mo skillshot indicator direction (screen/world axes), or null to hide. */
-  public setAimIndicator(dir: [number, number] | null) {
+  public setAimIndicator(dir: [number, number] | null, cancel = false) {
     if (!dir) {
       this.aimIndicatorActive = false;
+      this.aimIndicatorCancel = false;
       return;
     }
     const len = Math.hypot(dir[0], dir[1]);
     this.aimIndicatorActive = true;
+    this.aimIndicatorCancel = cancel;
     if (len > 1e-4) {
       this.aimIndicatorX = dir[0] / len;
       this.aimIndicatorY = dir[1] / len;
@@ -314,8 +329,7 @@ export class GameRenderer {
   }
 
   private handleResize() {
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    const { width: w, height: h } = getLogicalViewport();
     this.camera.aspect = w / h;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
@@ -1526,8 +1540,8 @@ export class GameRenderer {
       let aimZ = this.camTargetZ;
       if (this.humanSeat >= 0 && input.hasMouse) {
         this._ndc.set(
-          (input.mouseX / window.innerWidth) * 2 - 1,
-          -(input.mouseY / window.innerHeight) * 2 + 1,
+          (input.mouseX / getLogicalViewport().width) * 2 - 1,
+          -(input.mouseY / getLogicalViewport().height) * 2 + 1,
         );
         this._raycaster.setFromCamera(this._ndc, this.camera);
         if (this._raycaster.ray.intersectPlane(this._groundPlane, this._hitPoint)) {
@@ -1588,12 +1602,19 @@ export class GameRenderer {
         Boolean(meHuman && this.isCellGrassAt(meHuman.x, meHuman.y, this.currState.t));
       let spottedByAny = false;
 
+      // Touch mode: predicted display pose for the local player (render only)
+      const rawAlpha = this.playbackPaused
+        ? this.pausedAlpha
+        : Math.max(0, (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs);
+      const humanDisp = this.computeHumanDisplayPose(alpha, rawAlpha, input, frameDt);
+      const fxPrevState = humanDisp ? this.withPlayer(this.prevState, this.humanSeat, humanDisp.prevP) : this.prevState;
+      const fxCurrState = humanDisp ? this.withPlayer(this.currState, this.humanSeat, humanDisp.currP) : this.currState;
+
       // Update character rigs & floating nameplates
-      const screenW = window.innerWidth;
-      const screenH = window.innerHeight;
+      const { width: screenW, height: screenH } = getLogicalViewport();
       for (let k = 0; k < this.rigs.length; k++) {
-        const prevP = this.prevState.players[k];
-        const currP = this.currState.players[k];
+        const prevP = humanDisp && k === this.humanSeat ? humanDisp.prevP : this.prevState.players[k];
+        const currP = humanDisp && k === this.humanSeat ? humanDisp.currP : this.currState.players[k];
         const prevD = this.prevState.darts[k];
         const currD = this.currState.darts[k];
 
@@ -1682,11 +1703,12 @@ export class GameRenderer {
           this.aimIndicatorY,
           (md?.range ?? 7200) / 1000,
           ((md?.dartR ?? 320) * 2) / 1000,
+          this.aimIndicatorCancel,
         );
         this.fx.update(
           this.elapsedSec,
-          this.prevState,
-          this.currState,
+          fxPrevState,
+          fxCurrState,
           alpha,
           this.humanSeat,
           aimX,
@@ -1713,7 +1735,7 @@ export class GameRenderer {
           const vFovRad = (CAM_FOV * Math.PI) / 180;
           const worldYPerPx =
             (2 * this.camDist * Math.tan(vFovRad * 0.5)) /
-            Math.max(1, window.innerHeight * Math.cos(PITCH_RAD));
+            Math.max(1, getLogicalViewport().height * Math.cos(PITCH_RAD));
           const baseTipY = 1.52 + 24 * worldYPerPx;
 
           // Crisp downward-pointing arcade bounce + gentle 3D yaw rock to showcase volumetric depth
@@ -1750,6 +1772,142 @@ export class GameRenderer {
       this.workMsAccum = 0;
       this.workMsSamples = 0;
     }
+  }
+
+  private withPlayer(state: TickSnapshot, seat: number, p: PlayerSnapshot): TickSnapshot {
+    const players = state.players.slice();
+    players[seat] = p;
+    return { ...state, players };
+  }
+
+  private resetHumanPrediction() {
+    this.predErrX = 0;
+    this.predErrY = 0;
+    this.predLastDispX = Number.NaN;
+    this.predLastDispY = Number.NaN;
+    this.predLastTickRef = null;
+    this.predLastMode = false;
+  }
+
+  private isWalkableAt(xMm: number, yMm: number, tick: number): boolean {
+    if (!this.isCellSolidAt(xMm, yMm, tick) || !this.arena) return false;
+    const M = this.arena.mapData;
+    const idx = Math.floor(yMm / M.cell) * M.nx + Math.floor(xMm / M.cell);
+    return M.cells[idx] !== CellType.WALL;
+  }
+
+  /**
+   * Touch-mode "feels-under-the-thumb" display pose for the local player — purely visual:
+   * - While free-walking, mirror the engine's walk model (RUN_V 250mm/tick, ACC 250) with the stick
+   *   intent the next tick will send, and lead the authoritative position by the elapsed tick fraction
+   *   (instead of trailing a tick behind with prev→curr interpolation). Facing & run cycle follow the
+   *   predicted velocity immediately.
+   * - Any mismatch when a real tick lands (walls, pushes, cliff guard, state changes) is folded into an
+   *   offset that eases out over ~50ms, so nothing ever snaps.
+   * Returns null when the normal interpolated pose should be used unchanged.
+   */
+  private computeHumanDisplayPose(
+    alpha: number,
+    rawAlpha: number,
+    input: HumanInputController,
+    frameDt: number,
+  ): { prevP: PlayerSnapshot; currP: PlayerSnapshot } | null {
+    const h = this.humanSeat;
+    const prev = this.prevState;
+    const curr = this.currState;
+    const intent = input.getTouchMoveIntent();
+    const p0 = prev && h >= 0 ? prev.players[h] : null;
+    const p1 = curr && h >= 0 ? curr.players[h] : null;
+    if (!intent || !curr || !p0 || !p1 || p1.alive !== 1 || curr.over || !this.activeMapData) {
+      this.resetHumanPrediction();
+      return null;
+    }
+
+    const predicting = !this.playbackPaused && p1.st === PState.FREE;
+    let baseX: number;
+    let baseY: number;
+    let vnx = p1.vx;
+    let vny = p1.vy;
+    if (predicting) {
+      const RUN_V = 250;
+      const ACC = 250;
+      const [mx, my] = intent;
+      const L = Math.hypot(mx, my);
+      let tvx = 0;
+      let tvy = 0;
+      if (L > 0) {
+        const sp = (RUN_V * Math.min(L, 1000)) / 1000;
+        tvx = (mx / L) * sp;
+        tvy = (my / L) * sp;
+      }
+      let dvx = tvx - p1.vx;
+      let dvy = tvy - p1.vy;
+      const dl = Math.hypot(dvx, dvy);
+      if (dl > ACC) {
+        dvx *= ACC / dl;
+        dvy *= ACC / dl;
+      }
+      vnx = p1.vx + dvx;
+      vny = p1.vy + dvy;
+      const lead = Math.min(1.5, rawAlpha);
+      let ex = vnx * lead;
+      let ey = vny * lead;
+      const sp = Math.hypot(vnx, vny);
+      if (sp > 1) {
+        // Never draw the player sliding into a wall or over a pit ahead of the engine
+        const bodyR = this.activeMapData.bodyR || 400;
+        const tipX = p1.x + vnx + (vnx / sp) * bodyR * 0.85;
+        const tipY = p1.y + vny + (vny / sp) * bodyR * 0.85;
+        if (!this.isWalkableAt(tipX, tipY, curr.t) || !this.isWalkableAt(p1.x + vnx, p1.y + vny, curr.t)) {
+          ex = 0;
+          ey = 0;
+        }
+      }
+      baseX = p1.x + ex;
+      baseY = p1.y + ey;
+    } else {
+      baseX = p0.x + (p1.x - p0.x) * alpha;
+      baseY = p0.y + (p1.y - p0.y) * alpha;
+    }
+
+    // Fold discontinuities (new tick, mode switch, stick change) into an easing offset
+    const intentChanged = Math.abs(intent[0] - this.predLastIntentX) + Math.abs(intent[1] - this.predLastIntentY) > 1;
+    const discontinuity = curr !== this.predLastTickRef || predicting !== this.predLastMode || intentChanged;
+    if (discontinuity && Number.isFinite(this.predLastDispX)) {
+      this.predErrX = this.predLastDispX - baseX;
+      this.predErrY = this.predLastDispY - baseY;
+      if (Math.hypot(this.predErrX, this.predErrY) > 1200) {
+        this.predErrX = 0;
+        this.predErrY = 0;
+      }
+    }
+    this.predLastTickRef = curr;
+    this.predLastMode = predicting;
+    this.predLastIntentX = intent[0];
+    this.predLastIntentY = intent[1];
+    const decay = Math.exp(-frameDt / 0.05);
+    this.predErrX *= decay;
+    this.predErrY *= decay;
+
+    const dispX = baseX + this.predErrX;
+    const dispY = baseY + this.predErrY;
+    this.predLastDispX = dispX;
+    this.predLastDispY = dispY;
+
+    if (!predicting && Math.abs(this.predErrX) < 0.5 && Math.abs(this.predErrY) < 0.5) return null;
+    const prevP: PlayerSnapshot = { ...p0, x: dispX, y: dispY };
+    const currP: PlayerSnapshot = { ...p1, x: dispX, y: dispY };
+    if (predicting) {
+      currP.vx = vnx;
+      currP.vy = vny;
+      if (Math.hypot(vnx, vny) >= 20) {
+        const faceDeg = (Math.atan2(vny, vnx) * 180) / Math.PI;
+        const face = Math.round((((faceDeg % 360) + 360) % 360) * 100);
+        prevP.face = face;
+        currP.face = face;
+      }
+    }
+    return { prevP, currP };
   }
 
   /** Rising "charge" hum while the live human channels a recall; stops (or releases on CALL). */
@@ -1810,10 +1968,10 @@ export class GameRenderer {
 
   public projectClientToWorldMm(clientX: number, clientY: number): [number, number] | null {
     if (this.previewMode || !this.arena) return null;
-    const w = window.innerWidth;
-    const h = window.innerHeight;
+    const { width: w, height: h } = getLogicalViewport();
     if (w <= 0 || h <= 0) return null;
-    this._ndc.set((clientX / w) * 2 - 1, -(clientY / h) * 2 + 1);
+    const [lx, ly] = clientToLogical(clientX, clientY);
+    this._ndc.set((lx / w) * 2 - 1, -(ly / h) * 2 + 1);
     this._raycaster.setFromCamera(this._ndc, this.camera);
     if (this._raycaster.ray.intersectPlane(this._groundPlane, this._hitPoint)) {
       return [Math.round(this._hitPoint.x * 1000), Math.round(this._hitPoint.z * 1000)];
