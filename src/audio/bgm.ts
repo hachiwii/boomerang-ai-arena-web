@@ -85,9 +85,8 @@ export function isAstraSoloSpecialContext(ctx: BgmMatchContext): boolean {
 export function predictInitialMatchTrack(ctx: BgmMatchContext, bossMusicEnabled: boolean): BgmTrackId {
   if (!bossMusicEnabled) return 'main';
   if (isAstraSoloSpecialContext(ctx)) return 'astra_solo';
-  if (ctx.slots.length === 2) {
-    const bossCount = ctx.slots.filter((s) => isBossSlot(s)).length;
-    if (bossCount === 1) return 'boss';
+  if (ctx.slots.length === 2 && ctx.slots.some((s) => isBossSlot(s))) {
+    return 'boss';
   }
   return 'main';
 }
@@ -101,13 +100,7 @@ export function getPrefetchTracksForMatch(ctx: BgmMatchContext, bossMusicEnabled
   if (isAstraSoloSpecialContext(ctx)) {
     return ['astra_solo', 'astra_win'];
   }
-  let bossCount = 0;
-  let nonBossCount = 0;
-  for (const s of ctx.slots) {
-    if (isBossSlot(s)) bossCount++;
-    else nonBossCount++;
-  }
-  if (bossCount >= 1 && nonBossCount >= 1 && ctx.slots.length >= 2) {
+  if (ctx.slots.length >= 2 && ctx.slots.some((s) => isBossSlot(s))) {
     return ['boss'];
   }
   return [];
@@ -130,6 +123,8 @@ export class BgmRuleEngine {
   public bossDuelStatus: BossDuelStatus = 'idle';
   public bossDuelChallengerSeat = -1;
   public bossDuelBossSeat = -1;
+  public bossDuelSecondBossSeat = -1;
+  public bossDuelIsBossVsBoss = false;
 
   public enterLobby() {
     this.mode = 'lobby';
@@ -141,6 +136,8 @@ export class BgmRuleEngine {
     this.bossDuelStatus = 'idle';
     this.bossDuelChallengerSeat = -1;
     this.bossDuelBossSeat = -1;
+    this.bossDuelSecondBossSeat = -1;
+    this.bossDuelIsBossVsBoss = false;
   }
 
   public beginMatch(ctx: BgmMatchContext, initialSnapshot?: TickSnapshot | null) {
@@ -153,16 +150,30 @@ export class BgmRuleEngine {
     this.bossDuelStatus = 'idle';
     this.bossDuelChallengerSeat = -1;
     this.bossDuelBossSeat = -1;
+    this.bossDuelSecondBossSeat = -1;
+    this.bossDuelIsBossVsBoss = false;
 
     if (initialSnapshot) {
       this.updateTick(initialSnapshot);
     } else if (!this.isAstraSoloSpecial && ctx.slots.length === 2) {
-      const bossSeat = ctx.slots.findIndex((s) => isBossSlot(s));
-      const nonBossSeat = ctx.slots.findIndex((s) => !isBossSlot(s));
-      if (bossSeat >= 0 && nonBossSeat >= 0) {
+      const bossSeats: number[] = [];
+      const nonBossSeats: number[] = [];
+      for (let i = 0; i < ctx.slots.length; i++) {
+        if (isBossSlot(ctx.slots[i])) bossSeats.push(i);
+        else nonBossSeats.push(i);
+      }
+      if (bossSeats.length === 1 && nonBossSeats.length === 1) {
         this.bossDuelStatus = 'active';
-        this.bossDuelBossSeat = bossSeat;
-        this.bossDuelChallengerSeat = nonBossSeat;
+        this.bossDuelIsBossVsBoss = false;
+        this.bossDuelBossSeat = bossSeats[0];
+        this.bossDuelSecondBossSeat = -1;
+        this.bossDuelChallengerSeat = nonBossSeats[0];
+      } else if (bossSeats.length === 2) {
+        this.bossDuelStatus = 'active';
+        this.bossDuelIsBossVsBoss = true;
+        this.bossDuelBossSeat = bossSeats[0];
+        this.bossDuelSecondBossSeat = bossSeats[1];
+        this.bossDuelChallengerSeat = -1;
       }
     }
   }
@@ -202,7 +213,7 @@ export class BgmRuleEngine {
       return;
     }
 
-    // General Boss BGM rule (XOR: exactly 2 alive AND exactly 1 of them is Fable or Astra)
+    // General Boss BGM rule: exactly 2 alive AND at least 1 of them is Fable or Astra
     if (this.bossDuelStatus === 'idle') {
       if (!snapshot.over) {
         const aliveSeats: number[] = [];
@@ -214,8 +225,16 @@ export class BgmRuleEngine {
           const aliveNonBoss = aliveSeats.filter((seat) => !isBossSlot(this.ctx!.slots[seat]));
           if (aliveBoss.length === 1 && aliveNonBoss.length === 1) {
             this.bossDuelStatus = 'active';
+            this.bossDuelIsBossVsBoss = false;
             this.bossDuelBossSeat = aliveBoss[0];
+            this.bossDuelSecondBossSeat = -1;
             this.bossDuelChallengerSeat = aliveNonBoss[0];
+          } else if (aliveBoss.length === 2) {
+            this.bossDuelStatus = 'active';
+            this.bossDuelIsBossVsBoss = true;
+            this.bossDuelBossSeat = aliveBoss[0];
+            this.bossDuelSecondBossSeat = aliveBoss[1];
+            this.bossDuelChallengerSeat = -1;
           }
         }
       }
@@ -223,6 +242,32 @@ export class BgmRuleEngine {
     }
 
     if (this.bossDuelStatus === 'active') {
+      if (this.bossDuelIsBossVsBoss) {
+        const bossA = snapshot.players[this.bossDuelBossSeat];
+        const bossB = snapshot.players[this.bossDuelSecondBossSeat];
+        const aAlive = !!bossA && bossA.alive === 1;
+        const bAlive = !!bossB && bossB.alive === 1;
+
+        if (!aAlive && !bAlive) {
+          // Mutual kill draw: stop Boss BGM immediately.
+          this.bossDuelStatus = 'challenger_dead';
+        } else if (aAlive !== bAlive) {
+          // One boss defeated the other: keep playing Boss BGM through celebration until lobby / next match / EOF!
+          this.bossDuelStatus = 'challenger_won';
+        } else if (snapshot.over) {
+          if (
+            snapshot.winner === this.bossDuelBossSeat ||
+            snapshot.winner === this.bossDuelSecondBossSeat
+          ) {
+            this.bossDuelStatus = 'challenger_won';
+          } else {
+            // Timeout draw with both alive.
+            this.bossDuelStatus = 'challenger_dead';
+          }
+        }
+        return;
+      }
+
       const challenger = snapshot.players[this.bossDuelChallengerSeat];
       const boss = snapshot.players[this.bossDuelBossSeat];
       const challengerAlive = !!challenger && challenger.alive === 1;
@@ -251,6 +296,8 @@ export class BgmRuleEngine {
     this.bossDuelStatus = 'idle';
     this.bossDuelChallengerSeat = -1;
     this.bossDuelBossSeat = -1;
+    this.bossDuelSecondBossSeat = -1;
+    this.bossDuelIsBossVsBoss = false;
     for (let i = 0; i <= clamped; i++) {
       this.updateTick(ticks[i]);
     }
