@@ -252,7 +252,7 @@ export function cloneDefaultKeybindings(): KeyBindings {
     moveRight: ['KeyD', 'ArrowRight'],
     throwRecall: ['Mouse0', null],
     melee: ['Mouse2', null],
-    dash: ['ShiftLeft', 'ShiftRight'],
+    dash: ['ShiftLeft', 'Space'],
     dashToMouse: [null, null],
     quickRestart: ['KeyR', null],
     toggleHideUi: ['Shift+KeyF', null],
@@ -528,6 +528,10 @@ export class SettingsStore {
         typeof parsed.exportBgmEnabled === 'boolean' ? parsed.exportBgmEnabled : def.exportBgmEnabled;
 
       const kb = cloneDefaultKeybindings();
+      // Preserve legacy ShiftLeft/ShiftRight for existing saved configs that predate an explicit dash entry
+      if (!parsed.keybindings || !Array.isArray(parsed.keybindings.dash)) {
+        kb.dash = ['ShiftLeft', 'ShiftRight'];
+      }
       if (parsed.keybindings && typeof parsed.keybindings === 'object') {
         for (const meta of ACTION_META) {
           const entry = parsed.keybindings[meta.key];

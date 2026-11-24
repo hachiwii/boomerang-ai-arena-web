@@ -244,43 +244,27 @@ export class BgmRuleEngine {
     if (this.bossDuelStatus === 'active') {
       const seatA = this.bossDuelBossSeat;
       const seatB = this.bossDuelIsBossVsBoss ? this.bossDuelSecondBossSeat : this.bossDuelChallengerSeat;
-      const humanInDuel = this.humanSeat >= 0 && seatB === this.humanSeat;
 
       const fighterA = snapshot.players[seatA];
       const fighterB = snapshot.players[seatB];
       const aAlive = !!fighterA && fighterA.alive === 1;
       const bAlive = !!fighterB && fighterB.alive === 1;
 
-      if (!humanInDuel) {
-        // No human player in this boss duel (pure AI / 斗蛐蛐 / Boss vs Boss / spectating after elimination):
-        // keep playing Boss BGM regardless of who wins, until track ends / lobby / next match!
-        if (!aAlive && !bAlive) {
-          // Mutual kill draw: stop Boss BGM immediately.
-          this.bossDuelStatus = 'challenger_dead';
-        } else if (aAlive !== bAlive) {
-          // Decisive winner (either side won): keep playing Boss BGM through celebration until lobby / next match / EOF!
-          this.bossDuelStatus = 'challenger_won';
-        } else if (snapshot.over) {
-          if (snapshot.winner === seatA || snapshot.winner === seatB) {
-            this.bossDuelStatus = 'challenger_won';
-          } else {
-            // Timeout draw with both alive.
-            this.bossDuelStatus = 'challenger_dead';
-          }
-        }
-        return;
-      }
-
-      // Human vs Boss duel: keep playing Boss BGM only if human wins; stop immediately if human dies or draw.
-      if (!bAlive) {
-        // Human side died (including mutual kill): stop Boss BGM immediately.
+      // Normal Boss BGM: regardless of who wins (Human, AI, or Boss), keep playing
+      // until returning to lobby, launching a new match, or the track finishes naturally.
+      if (!aAlive && !bAlive) {
+        // Mutual kill draw (no winner): fade back to main BGM.
         this.bossDuelStatus = 'challenger_dead';
-      } else if ((snapshot.over && snapshot.winner === seatB) || !aAlive) {
-        // Human defeated Fable/Astra: keep playing Boss BGM until lobby / next match / EOF!
+      } else if (aAlive !== bAlive) {
+        // Decisive winner (either side won): keep playing Boss BGM until lobby / next match / EOF!
         this.bossDuelStatus = 'challenger_won';
       } else if (snapshot.over) {
-        // Match ended without human winning (e.g., timeout draw with both alive).
-        this.bossDuelStatus = 'challenger_dead';
+        if (snapshot.winner === seatA || snapshot.winner === seatB) {
+          this.bossDuelStatus = 'challenger_won';
+        } else {
+          // Timeout draw with both alive (no winner).
+          this.bossDuelStatus = 'challenger_dead';
+        }
       }
     }
   }

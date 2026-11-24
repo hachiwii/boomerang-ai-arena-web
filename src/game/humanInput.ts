@@ -271,6 +271,14 @@ export class HumanInputController {
       if (isMove) {
         this.pressedCodes.add(code);
         if (code === 'Space' || code.startsWith('Arrow')) e.preventDefault();
+      } else if (
+        code === 'Space' &&
+        (isBoundToAction(kb, 'dash', code) ||
+          isBoundToAction(kb, 'dashToMouse', code) ||
+          isBoundToAction(kb, 'melee', code) ||
+          isBoundToAction(kb, 'throwRecall', code))
+      ) {
+        e.preventDefault();
       }
 
       if (this.inputMode === 'active') {
