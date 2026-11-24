@@ -1261,7 +1261,7 @@ export class GameRenderer {
       }
 
       // Play escalating crumbling-gravel SFX when the human player stands on an impending-collapse tile
-      const warnUrgency = this.getHumanCollapseWarnUrgency();
+      const warnUrgency = this.playbackPaused ? -1 : this.getHumanCollapseWarnUrgency();
       if (warnUrgency >= 0) {
         if (!this.wasOnWarnTile || tWork0 >= this.nextCrumbleAtMs) {
           this.sfx.playCrumble(warnUrgency);

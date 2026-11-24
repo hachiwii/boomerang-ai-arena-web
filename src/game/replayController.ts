@@ -39,6 +39,7 @@ export class ReplayController {
   private tickIndex = 0;
   private speed = 1.0;
   private paused = false;
+  private externalPaused = false;
   private finished = false;
   private simComplete = true;
   private waitingForSim = false;
@@ -49,8 +50,12 @@ export class ReplayController {
   private sessionSeq = 0;
 
   private timerHandle: number | null = null;
-  private countdownTimers: number[] = [];
+  private countdownTimer: number | null = null;
+  private countdownStep = 0;
+  private countdownDeadline = 0;
+  private countdownRemainingMs = 0;
   private nextTickDeadline = 0;
+  private pausedTickRemainingMs = 0;
 
   constructor(renderer: GameRenderer, callbacks: ReplayCallbacks) {
     this.renderer = renderer;
@@ -178,38 +183,91 @@ export class ReplayController {
     if (opts?.countdown) {
       this.inCountdown = true;
       this.clearCountdownTimers();
+      this.countdownStep = 1;
+      this.countdownRemainingMs = 1000;
       this.callbacks.onCountdown?.(3);
+      if (!this.externalPaused) {
+        this.scheduleCountdownWait(mySeq, 1000);
+      }
+    } else if (!this.waitingForSim) {
+      this.nextTickDeadline = performance.now() + 320;
+      this.pausedTickRemainingMs = 320;
+      this.scheduleNextTick();
+    }
+  }
 
-      const scheduleStep = (delayMs: number, fn: () => void) => {
-        const h = window.setTimeout(() => {
-          if (this.sessionSeq !== mySeq || !this.active || !this.inCountdown) return;
-          fn();
-        }, delayMs);
-        this.countdownTimers.push(h);
-      };
-
-      scheduleStep(1000, () => {
+  private scheduleCountdownWait(mySeq: number, delayMs: number) {
+    if (this.sessionSeq !== mySeq || !this.active || this.externalPaused || this.countdownStep <= 0) return;
+    if (this.countdownTimer !== null) {
+      window.clearTimeout(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+    const wait = Math.max(0, delayMs);
+    this.countdownDeadline = performance.now() + wait;
+    this.countdownRemainingMs = wait;
+    this.countdownTimer = window.setTimeout(() => {
+      this.countdownTimer = null;
+      if (this.sessionSeq !== mySeq || !this.active || this.externalPaused) return;
+      if (this.countdownStep === 1) {
+        if (!this.inCountdown) return;
+        this.countdownStep = 2;
         this.callbacks.onCountdown?.(2);
-      });
-      scheduleStep(2000, () => {
+        this.scheduleCountdownWait(mySeq, 1000);
+      } else if (this.countdownStep === 2) {
+        if (!this.inCountdown) return;
+        this.countdownStep = 3;
         this.callbacks.onCountdown?.(1);
-      });
-      scheduleStep(3000, () => {
+        this.scheduleCountdownWait(mySeq, 1000);
+      } else if (this.countdownStep === 3) {
+        if (!this.inCountdown) return;
         this.inCountdown = false;
+        this.countdownStep = 4;
         this.callbacks.onCountdown?.('GO');
-        if (!this.paused && !this.finished && !this.waitingForSim) {
+        if (!this.paused && !this.externalPaused && !this.finished && !this.waitingForSim) {
           this.nextTickDeadline = performance.now();
           this.scheduleNextTick();
         }
-      });
-      const hideGoTimer = window.setTimeout(() => {
-        if (this.sessionSeq !== mySeq || !this.active) return;
+        this.scheduleCountdownWait(mySeq, 550);
+      } else if (this.countdownStep === 4) {
+        this.countdownStep = 0;
+        this.countdownRemainingMs = 0;
         this.callbacks.onCountdown?.(null);
-      }, 3550);
-      this.countdownTimers.push(hideGoTimer);
-    } else if (!this.waitingForSim) {
-      this.nextTickDeadline = performance.now() + 320;
-      this.scheduleNextTick();
+      }
+    }, wait);
+  }
+
+  /**
+   * External pause (e.g. Settings modal opened during live AI spectator or replay):
+   * freezes countdown, playback timer, and visual interpolation without altering the
+   * user's manual pause toggle, then resumes seamlessly on close.
+   */
+  public setExternalPaused(paused: boolean) {
+    if (!this.active || this.externalPaused === paused) return;
+    this.externalPaused = paused;
+    if (paused) {
+      if (this.timerHandle !== null) {
+        this.pausedTickRemainingMs = Math.max(0, this.nextTickDeadline - performance.now());
+        this.clearTimer();
+      } else {
+        this.pausedTickRemainingMs = 0;
+      }
+      if (this.countdownTimer !== null) {
+        this.countdownRemainingMs = Math.max(0, this.countdownDeadline - performance.now());
+        window.clearTimeout(this.countdownTimer);
+        this.countdownTimer = null;
+      }
+      this.renderer.setPlaybackPaused(true);
+    } else {
+      if (this.countdownStep > 0 && this.countdownTimer === null) {
+        this.scheduleCountdownWait(this.sessionSeq, this.countdownRemainingMs);
+      }
+      if (!this.paused) {
+        this.renderer.setPlaybackPaused(false);
+        if (!this.finished && !this.waitingForSim && !this.inCountdown) {
+          this.nextTickDeadline = performance.now() + this.pausedTickRemainingMs;
+          this.scheduleNextTick();
+        }
+      }
     }
   }
 
@@ -352,7 +410,7 @@ export class ReplayController {
   }
 
   private scheduleNextTick() {
-    if (!this.active || this.paused || this.finished || this.waitingForSim || this.inCountdown) return;
+    if (!this.active || this.paused || this.externalPaused || this.finished || this.waitingForSim || this.inCountdown) return;
     this.clearTimer();
     const wait = Math.max(0, this.nextTickDeadline - performance.now());
     this.timerHandle = window.setTimeout(() => {
@@ -362,7 +420,7 @@ export class ReplayController {
   }
 
   private stepForward() {
-    if (!this.active || this.paused || this.finished || !this.bundle) return;
+    if (!this.active || this.paused || this.externalPaused || this.finished || !this.bundle) return;
     const ticks = this.bundle.replay.ticks;
     const maxIndex = ticks.length - 1;
     if (this.tickIndex >= maxIndex) {
@@ -415,14 +473,17 @@ export class ReplayController {
   }
 
   private clearCountdownTimers() {
-    for (const h of this.countdownTimers) {
-      window.clearTimeout(h);
+    if (this.countdownTimer !== null) {
+      window.clearTimeout(this.countdownTimer);
+      this.countdownTimer = null;
     }
-    this.countdownTimers = [];
+    this.countdownStep = 0;
+    this.countdownDeadline = 0;
+    this.countdownRemainingMs = 0;
   }
 
   private cancelCountdown() {
-    if (!this.inCountdown && this.countdownTimers.length === 0) return;
+    if (!this.inCountdown && this.countdownStep === 0 && this.countdownTimer === null) return;
     this.inCountdown = false;
     this.clearCountdownTimers();
     this.callbacks.onCountdown?.(null);
@@ -436,6 +497,8 @@ export class ReplayController {
     this.callbacks.onCountdown?.(null);
     this.active = false;
     this.paused = false;
+    this.externalPaused = false;
+    this.pausedTickRemainingMs = 0;
     this.finished = false;
     this.simComplete = true;
     this.waitingForSim = false;

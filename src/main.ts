@@ -83,6 +83,13 @@ async function bootstrap() {
     settings.get().bossMusicEnabled,
   );
   bgm.enterLobby();
+  const syncPageVisibilityAudio = () => {
+    const hidden = document.hidden;
+    bgm.setPageHidden(hidden);
+    sfx.setPageHidden(hidden);
+  };
+  syncPageVisibilityAudio();
+  document.addEventListener('visibilitychange', syncPageVisibilityAudio);
   (window as unknown as { __getBgmState?: () => ReturnType<BgmManager['getDebugState']> }).__getBgmState = () =>
     bgm.getDebugState();
 
@@ -100,6 +107,9 @@ async function bootstrap() {
   let replayMapData: EngineMapData | null = null;
   let lastFinishedBundle: MatchReplayBundle | null = null;
   let matchOverTimer: number | null = null;
+  let matchOverDeadlineMs = 0;
+  let matchOverRemainingMs = 0;
+  let matchOverCallback: (() => void) | null = null;
   let matchRecorded = false;
   let historyRecorded = false;
   let pendingMatchElo: { rank: number; outcome: 'win' | 'draw' | 'loss'; elo: EloUpdateResult } | null = null;
@@ -120,10 +130,60 @@ async function bootstrap() {
   let replayController: ReplayController;
   let historyModal: HistoryModal;
 
+  const clearMatchOverTimer = () => {
+    if (matchOverTimer !== null) {
+      window.clearTimeout(matchOverTimer);
+      matchOverTimer = null;
+    }
+    matchOverDeadlineMs = 0;
+    matchOverRemainingMs = 0;
+    matchOverCallback = null;
+  };
+
+  const scheduleMatchOverTimer = (delayMs: number, cb: () => void) => {
+    clearMatchOverTimer();
+    matchOverCallback = cb;
+    matchOverRemainingMs = Math.max(0, delayMs);
+    if (settingsModal.isOpen()) return;
+    matchOverDeadlineMs = performance.now() + matchOverRemainingMs;
+    matchOverTimer = window.setTimeout(() => {
+      const fn = matchOverCallback;
+      clearMatchOverTimer();
+      fn?.();
+    }, matchOverRemainingMs);
+  };
+
+  const pauseMatchOverTimer = () => {
+    if (matchOverTimer !== null) {
+      matchOverRemainingMs = Math.max(0, matchOverDeadlineMs - performance.now());
+      window.clearTimeout(matchOverTimer);
+      matchOverTimer = null;
+    }
+  };
+
+  const resumeMatchOverTimer = () => {
+    if (matchOverTimer === null && matchOverCallback) {
+      matchOverDeadlineMs = performance.now() + matchOverRemainingMs;
+      matchOverTimer = window.setTimeout(() => {
+        const fn = matchOverCallback;
+        clearMatchOverTimer();
+        fn?.();
+      }, matchOverRemainingMs);
+    }
+  };
+
   const settingsModal = new SettingsModal(settings, {
     onOpenChange: (open) => {
       input.setPaused(open);
       renderer.setCursorSuppressed(open);
+      if (mode === 'playing') {
+        controller.setPaused(open);
+        renderer.setPlaybackPaused(open);
+        if (open) pauseMatchOverTimer();
+        else resumeMatchOverTimer();
+      } else if (mode === 'replay') {
+        replayController.setExternalPaused(open);
+      }
     },
     onTestSound: () => {
       sfx.playCatch();
@@ -136,13 +196,6 @@ async function bootstrap() {
       lobbyUI.refreshFromStores();
     },
   });
-
-  const clearMatchOverTimer = () => {
-    if (matchOverTimer !== null) {
-      window.clearTimeout(matchOverTimer);
-      matchOverTimer = null;
-    }
-  };
 
   const persistCurrentMatchHistory = (eloResult: EloUpdateResult | null, earlyExit: boolean) => {
     if (historyRecorded || !activeConfig || !activeMapData) return;
@@ -741,19 +794,17 @@ async function bootstrap() {
       }
 
       // Wait for victory celebration at 1.0x (post-match playback smoothly transitions to 1.0x regardless of gameSpeed)
-      clearMatchOverTimer();
       const celebrateMs =
         activeDirector && activeDirector.isEnabled()
           ? Math.round(activeDirector.getRecommendedOutroRealSec(1.6) * 1000)
           : 1600;
-      matchOverTimer = window.setTimeout(() => {
-        matchOverTimer = null;
+      scheduleMatchOverTimer(celebrateMs, () => {
         if (mode === 'playing') {
           resultOverlayShown = true;
           pendingMatchElo = null;
           hudUI.showMatchResult(finalState, eloResult);
         }
-      }, celebrateMs);
+      });
     },
     onError: (err) => {
       console.error('Match error:', err);

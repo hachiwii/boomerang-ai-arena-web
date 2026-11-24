@@ -5,12 +5,25 @@ export class SoundFX {
   private ctx: AudioContext | null = null;
   private offlineCtx: BaseAudioContext | null = null;
   private offlineTimeSec = 0;
+  private pageHidden = typeof document !== 'undefined' ? document.hidden : false;
   public muted = false;
   public volume = 1.0;
 
   public applySettings(soundEnabled: boolean, volumePct: number) {
     this.muted = !soundEnabled;
     this.volume = Math.max(0, Math.min(1, volumePct / 100));
+  }
+
+  public setPageHidden(hidden: boolean) {
+    if (this.pageHidden === hidden) return;
+    this.pageHidden = hidden;
+    if (hidden) {
+      if (this.ctx && this.ctx.state === 'running') {
+        void this.ctx.suspend().catch(() => {});
+      }
+    } else if (this.ctx && this.ctx.state === 'suspended' && !this.muted) {
+      void this.ctx.resume().catch(() => {});
+    }
   }
 
   /**
@@ -25,6 +38,7 @@ export class SoundFX {
   private ensure(): BaseAudioContext | null {
     if (this.muted || this.volume <= 0.001) return null;
     if (this.offlineCtx) return this.offlineCtx;
+    if (this.pageHidden) return null;
     if (!this.ctx) {
       const AC = window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
       if (!AC) return null;

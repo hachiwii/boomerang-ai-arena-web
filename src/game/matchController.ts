@@ -49,6 +49,7 @@ export class MatchController {
   private humanSeat = -1;
   private botSeats: number[] = [];
   private running = false;
+  private paused = false;
   private stopped = false;
   private simSessionSeq = 0;
 
@@ -61,8 +62,13 @@ export class MatchController {
   private tickIntervalMs = LOGIC_DT_MS;
   private gameSpeed = 1.0;
   private nextTickDeadline = 0;
+  private pausedTickRemainingMs = 0;
   private timerHandle: number | null = null;
-  private countdownTimers: number[] = [];
+  private countdownTimer: number | null = null;
+  private countdownStep = 0; // 0=idle, 1=waiting 3->2, 2=waiting 2->1, 3=waiting 1->GO, 4=waiting GO->null
+  private countdownDeadline = 0;
+  private countdownRemainingMs = 0;
+  private countdownOnGo: (() => void) | null = null;
   private pendingBots: PendingBotDecision[] = [];
   private stepping = false;
 
@@ -93,6 +99,38 @@ export class MatchController {
 
   public isRunning(): boolean {
     return this.running;
+  }
+
+  public isPaused(): boolean {
+    return this.paused;
+  }
+
+  public setPaused(paused: boolean) {
+    if (this.stopped || this.paused === paused) return;
+    this.paused = paused;
+    if (paused) {
+      if (this.timerHandle !== null) {
+        this.pausedTickRemainingMs = Math.max(0, this.nextTickDeadline - performance.now());
+        window.clearTimeout(this.timerHandle);
+        this.timerHandle = null;
+      } else {
+        this.pausedTickRemainingMs = 0;
+      }
+      if (this.countdownTimer !== null) {
+        this.countdownRemainingMs = Math.max(0, this.countdownDeadline - performance.now());
+        window.clearTimeout(this.countdownTimer);
+        this.countdownTimer = null;
+      }
+    } else {
+      this.tickTimes = [];
+      if (this.countdownStep > 0 && this.countdownTimer === null) {
+        this.scheduleCountdownWait(this.countdownRemainingMs);
+      }
+      if (this.running && !this.stepping) {
+        this.nextTickDeadline = performance.now() + this.pausedTickRemainingMs;
+        this.scheduleNextTick();
+      }
+    }
   }
 
   public getCinematicDirector(): CinematicDirector | null {
@@ -349,36 +387,63 @@ export class MatchController {
 
   private startPreMatchCountdown(onGo: () => void) {
     this.clearCountdownTimers();
+    this.countdownOnGo = onGo;
+    this.countdownStep = 1;
+    this.countdownRemainingMs = 1000;
     this.callbacks.onCountdown?.(3);
+    if (!this.paused) {
+      this.scheduleCountdownWait(1000);
+    }
+  }
 
-    const scheduleStep = (delayMs: number, fn: () => void) => {
-      const h = window.setTimeout(() => {
-        if (this.stopped) return;
-        fn();
-      }, delayMs);
-      this.countdownTimers.push(h);
-    };
+  private scheduleCountdownWait(delayMs: number) {
+    if (this.stopped || this.paused || this.countdownStep <= 0) return;
+    if (this.countdownTimer !== null) {
+      window.clearTimeout(this.countdownTimer);
+      this.countdownTimer = null;
+    }
+    const wait = Math.max(0, delayMs);
+    this.countdownDeadline = performance.now() + wait;
+    this.countdownRemainingMs = wait;
+    this.countdownTimer = window.setTimeout(() => {
+      this.countdownTimer = null;
+      if (this.stopped || this.paused) return;
+      this.advanceCountdownStep();
+    }, wait);
+  }
 
-    scheduleStep(1000, () => {
+  private advanceCountdownStep() {
+    if (this.countdownStep === 1) {
+      this.countdownStep = 2;
       this.callbacks.onCountdown?.(2);
-    });
-    scheduleStep(2000, () => {
+      this.scheduleCountdownWait(1000);
+    } else if (this.countdownStep === 2) {
+      this.countdownStep = 3;
       this.callbacks.onCountdown?.(1);
-    });
-    scheduleStep(3000, () => {
+      this.scheduleCountdownWait(1000);
+    } else if (this.countdownStep === 3) {
+      this.countdownStep = 4;
       this.callbacks.onCountdown?.('GO');
-      onGo();
-    });
-    scheduleStep(3550, () => {
+      const cb = this.countdownOnGo;
+      this.countdownOnGo = null;
+      cb?.();
+      this.scheduleCountdownWait(550);
+    } else if (this.countdownStep === 4) {
+      this.countdownStep = 0;
+      this.countdownRemainingMs = 0;
       this.callbacks.onCountdown?.(null);
-    });
+    }
   }
 
   private clearCountdownTimers() {
-    for (const h of this.countdownTimers) {
-      window.clearTimeout(h);
+    if (this.countdownTimer !== null) {
+      window.clearTimeout(this.countdownTimer);
+      this.countdownTimer = null;
     }
-    this.countdownTimers = [];
+    this.countdownStep = 0;
+    this.countdownDeadline = 0;
+    this.countdownRemainingMs = 0;
+    this.countdownOnGo = null;
   }
 
   private dispatchBots(obsMap: Record<number, string>) {
@@ -398,10 +463,12 @@ export class MatchController {
   }
 
   private scheduleNextTick() {
-    if (!this.running || this.stopped) return;
+    if (!this.running || this.stopped || this.paused) return;
     const now = performance.now();
     const wait = Math.max(0, this.nextTickDeadline - now);
     this.timerHandle = window.setTimeout(() => {
+      this.timerHandle = null;
+      if (this.paused || this.stopped || !this.running) return;
       if (this.precomputedTicks) {
         this.executePrecomputedTick();
       } else {
@@ -416,7 +483,7 @@ export class MatchController {
   }
 
   private executePrecomputedTick() {
-    if (!this.running || this.stopped || !this.precomputedTicks) return;
+    if (!this.running || this.stopped || this.paused || !this.precomputedTicks) return;
     const ticks = this.precomputedTicks;
     const maxIdx = ticks.length - 1;
     if (this.precomputedIndex >= maxIdx) {
@@ -465,7 +532,7 @@ export class MatchController {
   }
 
   private async executeTick() {
-    if (!this.running || this.stopped || this.stepping || !this.engineWorker || !this.currentState || !this.config) {
+    if (!this.running || this.stopped || this.paused || this.stepping || !this.engineWorker || !this.currentState || !this.config) {
       return;
     }
     this.stepping = true;
@@ -477,7 +544,7 @@ export class MatchController {
       const botResults = await Promise.all(
         this.pendingBots.map(async (p) => ({ seat: p.seat, ...(await p.promise) })),
       );
-      if (!this.running || this.stopped) return;
+      if (!this.running || this.stopped || this.paused) return;
 
       let maxMs = 0;
       const actionLines: string[] = new Array(n).fill('0 0 0 0 0 0');
@@ -717,6 +784,8 @@ export class MatchController {
     this.simSessionSeq++;
     this.stopped = true;
     this.running = false;
+    this.paused = false;
+    this.pausedTickRemainingMs = 0;
     this.stepping = false;
     this.clearCountdownTimers();
     this.callbacks.onCountdown?.(null);

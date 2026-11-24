@@ -301,6 +301,7 @@ export class BgmManager {
   private masterGain: GainNode | null = null;
   private unlocked = false;
   private unlockListenersBound = false;
+  private pageHidden = typeof document !== 'undefined' ? document.hidden : false;
 
   private bgmEnabled = true;
   private volumePct = 70;
@@ -365,6 +366,7 @@ export class BgmManager {
   }
 
   public unlock() {
+    if (this.pageHidden) return;
     const ctx = this.ensureContext();
     if (!ctx) return;
     if (ctx.state === 'running') {
@@ -379,12 +381,42 @@ export class BgmManager {
         if (this.ctx && this.ctx.state === 'running') {
           this.unlocked = true;
           this.unbindUnlockListeners();
-          this.syncPlayback();
+          if (!this.pageHidden) {
+            this.syncPlayback();
+          }
         }
       })
       .catch(() => {
         // Still awaiting user gesture
       });
+  }
+
+  /**
+   * Automatically suspends audio when the browser tab leaves the foreground
+   * and seamlessly resumes from the exact paused position upon returning.
+   */
+  public setPageHidden(hidden: boolean) {
+    if (this.pageHidden === hidden) return;
+    this.pageHidden = hidden;
+    if (hidden) {
+      if (this.ctx && this.ctx.state === 'running') {
+        void this.ctx.suspend().catch(() => {});
+      }
+      return;
+    }
+    if (!this.bgmEnabled) return;
+    if (this.ctx && this.ctx.state === 'suspended' && this.unlocked) {
+      void this.ctx
+        .resume()
+        .then(() => {
+          if (!this.pageHidden) {
+            this.syncPlayback();
+          }
+        })
+        .catch(() => {});
+    } else if (this.unlocked) {
+      this.syncPlayback();
+    }
   }
 
   public applySettings(bgmEnabled: boolean, bgmVolumePct: number, bossMusicEnabled: boolean) {
@@ -483,6 +515,7 @@ export class BgmManager {
       activeTrack: this.activeVoice?.trackId ?? null,
       audioState: this.ctx?.state ?? 'uninitialized',
       unlocked: this.unlocked,
+      pageHidden: this.pageHidden,
       matchSessionId: this.matchSessionId,
       isAstraSoloSpecial: this.rules.isAstraSoloSpecial,
       astraSoloStatus: this.rules.astraSoloStatus,
@@ -650,7 +683,7 @@ export class BgmManager {
   }
 
   private syncPlayback() {
-    if (!this.bgmEnabled) return;
+    if (!this.bgmEnabled || this.pageHidden) return;
 
     const { trackId: desired, sessionId: desiredSessionId } = this.resolveEffectiveTarget();
     const targetKey = `${desiredSessionId}:${desired}`;
@@ -690,7 +723,7 @@ export class BgmManager {
       if (seq !== this.transitionSeq) return;
       this.pendingTrackKey = null;
       if (!buffer) return;
-      if (!this.bgmEnabled || !this.ctx || !this.masterGain || this.ctx.state !== 'running') return;
+      if (!this.bgmEnabled || this.pageHidden || !this.ctx || !this.masterGain || this.ctx.state !== 'running') return;
 
       const latest = this.resolveEffectiveTarget();
       if (latest.trackId !== desired || latest.sessionId !== desiredSessionId) return;
