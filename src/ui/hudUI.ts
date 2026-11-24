@@ -1141,8 +1141,7 @@ export class HudUI {
     }
 
     const endSec = endTickIndex / 20;
-    const atEnd = endTickIndex >= bundle.replay.ticks.length - 1;
-    const startSec = Math.max(0, endSec + (atEnd ? 0.85 : 0) - 10);
+    const startSec = Math.max(0, endSec - 10);
     const rangeLabel = `${startSec.toFixed(1)}s–${endSec.toFixed(1)}s · 720p 24fps`;
     const abortCtrl = new AbortController();
     this.replayExportAbort = abortCtrl;

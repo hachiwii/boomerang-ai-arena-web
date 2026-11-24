@@ -215,6 +215,21 @@ export class CinematicDirector {
     return this.enabled && this.kills.length > 0;
   }
 
+  /**
+   * Exact 1x real-time end of the match-ending finisher kill-cam slow-mo beat
+   * (or `null` if no finisher kill-cam extends past `matchEndSimSec`).
+   */
+  public getFinisherEndRealSec(): number | null {
+    if (!this.enabled) return null;
+    for (let i = this.kills.length - 1; i >= 0; i--) {
+      const k = this.kills[i];
+      if (k.slowEndSim > this.matchEndSimSec) {
+        return this.simToReal(k.slowEndSim);
+      }
+    }
+    return null;
+  }
+
   /** Recommended real-time post-match outro duration (at 1x base speed) so winner close-up shines. */
   public getRecommendedOutroRealSec(fallbackSec: number): number {
     if (!this.enabled) return fallbackSec;

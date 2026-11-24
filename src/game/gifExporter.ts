@@ -2,7 +2,7 @@ import { GIFEncoder, PaletteColor, quantize } from 'gifenc';
 import { SoundFX } from '../audio/sfx';
 import { GameRenderer } from '../render/renderer';
 import { VoxelModelData } from '../render/voxelBuilder';
-import { CinematicDirector } from './killCamDirector';
+import { CinematicDirector, normalizeCinematicOptions } from './killCamDirector';
 import { MatchReplayBundle } from './matchHistory';
 import { drawBroadcastOverlay, loadImage, triggerMp4Download } from './mp4Exporter';
 import { CinematicOptions, GraphicsQualityOption } from './settings';
@@ -37,7 +37,8 @@ export interface GifClipExportResult {
 
 const GIF_FPS = 24;
 const DEFAULT_MAX_CLIP_SEC = 10.0;
-const END_OUTRO_SEC = 0.85;
+// Short post-kill impact tail when finisherCam is off (0.16s = 3.2 ticks, strictly below WINNER_CELEBRATE_DELAY_TICKS = 4.0)
+const NO_FINISHER_END_TAIL_SEC = 0.16;
 const WARMUP_TICKS = 30; // 1.5s pre-roll so trails/particles are warm at clip start
 // Keep every 10s High-Quality GIF comfortably under 10 MB even with nonstop close-up camera pans!
 const TARGET_MAX_GIF_BYTES = Math.round(9.4 * 1024 * 1024);
@@ -89,7 +90,8 @@ function buildGifFilename(
  * Exports up to the last `maxDurationSec` (default 10s) leading up to `endTickIndex`
  * as a compact 24fps animated GIF guaranteed under 10 MB even on High-Quality maps:
  * - Freezes background clouds, tall grass sway, waterfalls, and micro screen-shake, and hides
- *   ambient falling petals/snow/leaves (while keeping winner close-up confetti ribbons!)
+ *   ambient falling petals/snow/leaves; stops cleanly at the end of the finisher shot without
+ *   winner celebration or close-up outro
  * - Uses 7-bit / 6-bit global palettes, perceptual delta dead-zone against displayed palette RGB,
  *   and isolated 1-pixel grain despeckling for dramatically longer LZW runs
  * - Automatically adapts resolution/palette tier (720p -> 540p -> 450p) to stay under 9.4 MB.
@@ -111,15 +113,22 @@ export async function exportReplayClipToGif(
 
   const maxDurationSec = Math.max(1, options.maxDurationSec ?? DEFAULT_MAX_CLIP_SEC);
   const tickSec = LOGIC_DT_MS / 1000; // 0.05s per logic tick (20Hz)
-  const director = new CinematicDirector(ticks, bundle.replay.mapData, options.cinematic ?? false);
+  const baseCinematic = normalizeCinematicOptions(options.cinematic ?? false);
+  // GIF exports stop right at the end of the finisher shot and omit the post-match celebration / winner close-up.
+  const director = new CinematicDirector(ticks, bundle.replay.mapData, {
+    killCam: baseCinematic.killCam,
+    finisherCam: baseCinematic.finisherCam,
+    winnerCam: false,
+  });
 
   const endPlaySimSec = endTickIndex * tickSec;
   const endPlayRealSec = director.simToReal(endPlaySimSec);
   const atMatchEnd = endTickIndex >= maxTickIdx && Boolean(ticks[maxTickIdx]?.over);
+  const finisherEndRealSec = atMatchEnd ? director.getFinisherEndRealSec() : null;
   const outroRealSec = atMatchEnd
-    ? director.isEnabled() && director.hasWinnerCloseup()
-      ? 2.55
-      : END_OUTRO_SEC
+    ? finisherEndRealSec !== null
+      ? Math.max(0, finisherEndRealSec - endPlayRealSec)
+      : NO_FINISHER_END_TAIL_SEC
     : 0;
   const totalEndRealSec = endPlayRealSec + outroRealSec;
   const startRealSec = Math.max(0, totalEndRealSec - maxDurationSec);
@@ -133,7 +142,6 @@ export async function exportReplayClipToGif(
 
   const startTickIdx = Math.max(0, Math.min(maxTickIdx, Math.floor(startPlaySimSec / tickSec)));
   const warmupStartIdx = Math.max(0, startTickIdx - WARMUP_TICKS);
-  const matchEndRealSec = director.simToReal(maxTickIdx * tickSec);
 
   // Pre-estimate camera-motion frame count in < 0.2ms so HQ clips packed with close-up camera pans
   // jump straight to compact 540p 6-bit encoding instead of wasting a pass on a doomed 720p stream!
@@ -288,14 +296,12 @@ export async function exportReplayClipToGif(
             offRenderer.processOfflineTickEvents(ticks[nextIdx - 1], ticks[nextIdx], nextIdx * tickSec);
             stateRef.processedIdx = nextIdx;
           }
-          const extraSimSec = Math.max(0, simSec - maxTickIdx * tickSec);
-          const extraRealSec = Math.max(0, realSec - matchEndRealSec);
+          const extraSimSec = Math.min(NO_FINISHER_END_TAIL_SEC, Math.max(0, simSec - maxTickIdx * tickSec));
           prevSnap = ticks[maxTickIdx];
           currSnap = ticks[maxTickIdx];
           alpha = 1.0;
           gt = currSnap.t + extraSimSec / tickSec;
-          const bannerDelay = director.hasWinnerCloseup() ? 0.72 : 0.12;
-          outroAlpha = Math.max(0, Math.min(1, (extraRealSec - bannerDelay) / 0.35));
+          outroAlpha = 0;
         }
 
         const nameplates = offRenderer.renderOfflineFrame(prevSnap, currSnap, alpha, gt, frameDtSim, simSec, {
