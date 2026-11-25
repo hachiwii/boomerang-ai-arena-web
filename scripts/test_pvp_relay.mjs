@@ -93,7 +93,7 @@ class Peer {
     });
     socket.once('open', () => {
       this.send({
-        type: 'hello', protocol: 2, token: this.welcome?.token ?? null, buildId: this.build, matchId: this.play?.info.matchId ?? this.resumeMatchId,
+        type: 'hello', protocol: 3, token: this.welcome?.token ?? null, buildId: this.build, matchId: this.play?.info.matchId ?? this.resumeMatchId,
       });
     });
     socket.on('message', (raw) => {

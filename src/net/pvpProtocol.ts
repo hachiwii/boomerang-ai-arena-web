@@ -1,7 +1,7 @@
 import type { PvpChallengeResult, PvpMatchInfo, PvpRematchState } from './pvpTypes.ts';
 
 // Bump whenever client and relay messages change incompatibly: the relay closes older/newer clients with 4003.
-export const PVP_PROTOCOL = 2;
+export const PVP_PROTOCOL = 3;
 export const PVP_TICK_MS = 50;
 export const PVP_INPUT_GRACE_MS = 125;
 export const PVP_MAX_FRAMES = 800;
