@@ -37,12 +37,23 @@ export interface PvpCodeInfo {
 
 export interface PvpMatchInfo {
   matchId: string;
-  mySeat: 0 | 1; // seat 0 = P1, seat 1 = P2
+  mySeat: 0 | 1; // seat 0 = P1, seat 1 = P2 (kept across rematches)
   challenger: boolean; // true on the side that entered the code
+  // Drawn by the relay at random from the CHALLENGED side's map pool (empty pool = every map), fresh for each rematch
   mapId: string;
   seed: number;
   spawnSeed: number;
   bgmSeed: number;
+  rematchOf?: string; // previous matchId when both players chose 再来一局
+}
+
+/** Post-match choice on the PvP result screen. A disconnect after the match counts as 'left'. */
+export type PvpRematchChoice = 'undecided' | 'rematch' | 'left';
+
+export interface PvpRematchState {
+  matchId: string; // the finished match
+  me: PvpRematchChoice;
+  opponent: PvpRematchChoice;
 }
 
 export interface PvpNetStats {
@@ -57,7 +68,8 @@ export interface PvpLobbyEventMap {
   state: PvpConnState;
   code: PvpCodeInfo;
   stats: PvpNetStats; // ~1 Hz in the lobby, ~2 Hz in a match
-  matchStart: PvpMatchInfo; // both sides; main.ts starts the match on it
+  matchStart: PvpMatchInfo; // both sides; main.ts starts the match on it (also for a rematch, from the result screen)
+  rematch: PvpRematchState; // result-screen choices of both players, on every change
   notice: string; // short human-readable message (e.g. 对方已断开)
 }
 
@@ -73,5 +85,11 @@ export interface PvpLobbyClient {
   resetCode(): Promise<string | null>;
   /** Challenge another player's code. On success matchStart fires on both sides. */
   challenge(code: string): Promise<PvpChallengeResult>;
+  /** The local PvP map pool (map ids; empty = all maps). Used when this player is the one being challenged. */
+  setMapPool(mapIds: string[]): void;
+  /** Result screen: 再来一局. When both players asked, matchStart fires again with new seeds. */
+  requestRematch(): void;
+  /** Result screen: 退出. The opponent's 再来一局 becomes unavailable. */
+  leaveRematch(): void;
   on<K extends keyof PvpLobbyEventMap>(ev: K, cb: (v: PvpLobbyEventMap[K]) => void): () => void;
 }

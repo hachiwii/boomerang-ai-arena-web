@@ -13,6 +13,11 @@ import { PVP_CODE_TTL_MS } from './pvpTypes';
  * 222222 → not_found, 333333 → version, 444444 → network; anything else succeeds and fires matchStart.
  */
 export class PvpLobbyMock implements PvpLobbyClient {
+  // TODO(pvp rematch/map pool): contract stubs added by the integrator; replace with the real implementation
+  setMapPool(_mapIds: string[]): void {}
+  requestRematch(): void {}
+  leaveRematch(): void {}
+
   private state: PvpConnState = 'idle';
   private code: PvpCodeInfo = { code: null, expiresAt: null };
   private stats: PvpNetStats = { rttMs: null, transport: 'ws' };
