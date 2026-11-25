@@ -6,6 +6,7 @@ import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgme
 import { generateSpawnSeed, MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { clientToLogical, getLogicalViewport, isForcedLandscape, rectToLogical } from '../game/viewport';
 import { getPvpLobbyClient } from '../net/pvpLobbyClient';
+import { isPvpAvailable } from '../net/pvpConfig';
 import type { PvpChallengeFailReason, PvpConnState, PvpLobbyClient, PvpNetStats } from '../net/pvpTypes';
 import { getTheme } from '../render/themes';
 import { makeHoodieAvatarDataUrl } from './hoodieAvatar';
@@ -458,7 +459,7 @@ export class LobbyUI {
     this.closeDropdown();
     this.closeMapPoolModal();
     this.loadingMessage = null;
-    if (tab) this.activeTab = tab;
+    if (tab) this.activeTab = tab === 'pvp' && !isPvpAvailable() ? 'ranked' : tab;
     if (opts?.rankedMode) this.rankedMode = opts.rankedMode;
     this.showLeaderboard = Boolean(opts?.openLeaderboard);
     this.pvpStarting = false;
@@ -2492,7 +2493,7 @@ export class LobbyUI {
               <button class="lobby-tab ${this.activeTab === 'ranked' ? 'active' : ''}" id="tab-ranked"><span class="nav-ico">🏆</span> 排位赛</button>
               <button class="lobby-tab ${this.activeTab === 'cricket' ? 'active' : ''}" id="tab-cricket"><span class="nav-ico">🦗</span> 斗蛐蛐</button>
               <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom"><span class="nav-ico">🎛️</span> 自定义</button>
-              <button class="lobby-tab lobby-tab-pvp ${this.activeTab === 'pvp' ? 'active' : ''}" id="tab-pvp" title="在线 1v1：用 6 位对战码和好友对战"><span class="nav-ico">🌐</span> PvP</button>
+              ${isPvpAvailable() ? `<button class="lobby-tab lobby-tab-pvp ${this.activeTab === 'pvp' ? 'active' : ''}" id="tab-pvp" title="在线 1v1：用 6 位对战码和好友对战"><span class="nav-ico">🌐</span> PvP</button>` : ''}
             </div>
             <div class="lobby-nav-actions">
               <button type="button" class="lobby-settings-btn lobby-training-btn" id="btn-start-training" title="训练场：打稻草人、练走位冲刺、练躲镖挡镖（不限时，玩家无敌）"><span class="nav-ico">🎯</span> 训练</button>

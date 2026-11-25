@@ -29,11 +29,13 @@ sends.
 ## Topology
 
 ```
-browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on, secret x-pvp-origin-key header) ──► origin :8787 (Node, ws, systemd boomerang-pvp)
+browser ──wss://<relay domain>/ws──► Aliyun CDN (WebSocket on, secret x-pvp-origin-key header) ──► origin :8787 (Node, ws, systemd boomerang-pvp)
 ```
 
-- The client never contains the origin IP. URL: `import.meta.env.VITE_PVP_URL`, default
-  `wss://pvp.biao.oinkvm.cn/ws`; on `localhost`/`127.0.0.1` pages default to `ws://<host>:8787/ws`.
+- Build config (`src/net/pvpConfig.ts`, `.env.example`): `VITE_PVP_ENABLED` switches PvP on (default on in `vite dev`,
+  off in production builds — the Cloudflare mirror builds with it off) and `VITE_PVP_URL` is the relay URL (on
+  `localhost`/`127.0.0.1` pages it defaults to `ws://<host>:8787/ws`). Off, or no URL → no PvP tab, no connection.
+  The client never contains the origin IP.
 - Transport is WebSocket (TCP): the account has no UDP-capable CDN product enabled (DCDN/IPA), and the user
   accepted TCP. Keep the message layer independent of the socket so a datagram transport could be added later, but
   do not build one now.
@@ -131,5 +133,5 @@ browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on, sec
   `boomerang-pvp` unit). A restart drops lobby codes and running matches.
 - `/etc/boomerang-pvp.env` on the origin holds `PVP_ORIGIN_KEY`; the CDN sends the same value in
   `x-pvp-origin-key`, so direct connections to the origin IP get 403.
-- TLS for `pvp.biao.oinkvm.cn` is a Let's Encrypt cert uploaded to the CDN; renew with `scripts/renew_pvp_cert.sh`
+- TLS for the relay domain is a Let's Encrypt cert uploaded to the CDN; renew with `scripts/renew_pvp_cert.sh`
   (expires 2027-02-23).

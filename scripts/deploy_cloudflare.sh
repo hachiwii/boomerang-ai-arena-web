@@ -42,10 +42,10 @@ if ! command -v wrangler >/dev/null 2>&1; then
 fi
 
 if [[ "$SKIP_BUILD" == "0" ]]; then
-  echo "==> Typechecking & building Cloudflare bundle (dist/, without ICP footer)..."
+  echo "==> Typechecking & building Cloudflare bundle (dist/, without ICP footer, PvP off)..."
   npx tsc --noEmit
-  # --mode cloudflare skips .env.production.local (which holds Aliyun/ICP settings)
-  NODE_ENV=production VITE_ICP_NUMBER="" npx vite build --mode cloudflare
+  # --mode cloudflare skips .env.production.local (which holds Aliyun/ICP/PvP settings); the mirror never shows PvP
+  NODE_ENV=production VITE_ICP_NUMBER="" VITE_PVP_ENABLED=0 VITE_PVP_URL="" npx vite build --mode cloudflare
 fi
 
 if [[ ! -f "dist/index.html" ]]; then

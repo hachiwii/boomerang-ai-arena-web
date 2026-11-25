@@ -1,3 +1,4 @@
+import { isPvpAvailable } from '../net/pvpConfig';
 import {
   getHistoryModeBucket,
   MatchHistoryStore,
@@ -449,6 +450,8 @@ export class HistoryModal {
     };
     for (const btn of this.filterBtns) {
       const f = btn.dataset.hfilter as HistoryFilter;
+      // PvP switched off in this build (mirror site): hide its tab unless old PvP records exist
+      if (f === 'pvp') btn.hidden = !isPvpAvailable() && filterCounts.pvp === 0;
       btn.classList.toggle('active', f === this.filter);
       const span = btn.querySelector<HTMLElement>(`[data-fcount="${f}"]`);
       if (span) span.textContent = String(filterCounts[f]);

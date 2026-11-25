@@ -1,10 +1,24 @@
 #!/usr/bin/env bash
 # Renew the Let's Encrypt certificate of the PvP relay domain (DNS-01 via Alibaba Cloud DNS) and upload it to the CDN.
 # Uses the aliyun CLI's current AK profile for both lego and the CDN upload. Run every ~60 days (certs last 90).
-#   PVP_DOMAIN     default pvp.biao.oinkvm.cn
+#   PVP_DOMAIN     relay domain; default: the host of VITE_PVP_URL in .env.production.local
 #   PVP_LEGO_PATH  lego state dir (account + certs), default ~/.lego-pvp
 set -euo pipefail
-DOMAIN="${PVP_DOMAIN:-pvp.biao.oinkvm.cn}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+if [[ -f "$ROOT_DIR/.env.production.local" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source "$ROOT_DIR/.env.production.local"
+  set +a
+fi
+DOMAIN="${PVP_DOMAIN:-}"
+if [[ -z "$DOMAIN" && -n "${VITE_PVP_URL:-}" ]]; then
+  DOMAIN="$(printf '%s' "$VITE_PVP_URL" | sed -E 's#^[a-z]+://([^/:]+).*#\1#')"
+fi
+if [[ -z "$DOMAIN" ]]; then
+  echo "Error: set PVP_DOMAIN or VITE_PVP_URL (in .env.production.local)." >&2
+  exit 1
+fi
 LEGO_PATH="${PVP_LEGO_PATH:-$HOME/.lego-pvp}"
 
 eval "$(python3 - <<'PY'

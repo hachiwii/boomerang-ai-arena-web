@@ -2,11 +2,21 @@
 # Build the PvP relay (server/) and install it on the origin box as the systemd unit boomerang-pvp.
 # The origin key lives only on the server in /etc/boomerang-pvp.env (PVP_ORIGIN_KEY=..., same value as the CDN's
 # back-to-origin header x-pvp-origin-key); this script never writes it.
-#   PVP_SSH_HOST  ssh host alias of the origin (default aliyun_e0)
+#   PVP_SSH_HOST  ssh host alias of the origin (env or .env.production.local)
 set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
-HOST="${PVP_SSH_HOST:-aliyun_e0}"
+if [[ -f ".env.production.local" ]]; then
+  set -a
+  # shellcheck disable=SC1091
+  source ".env.production.local"
+  set +a
+fi
+HOST="${PVP_SSH_HOST:-}"
+if [[ -z "$HOST" ]]; then
+  echo "Error: PVP_SSH_HOST is not set. Configure it in .env.production.local or env." >&2
+  exit 1
+fi
 
 echo "==> Building relay bundle..."
 npm ci --prefix server --silent

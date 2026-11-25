@@ -6,6 +6,7 @@ import type { ClientMessage, MatchMessage, ServerMessage } from './pvpProtocol';
 import { PVP_PROTOCOL } from './pvpProtocol';
 import { mockPvpMatchLink, type PvpMatchLink } from './pvpMatchLink';
 import { PvpLobbyMock } from './pvpLobbyMock';
+import { isPvpAvailable, pvpServerUrl } from './pvpConfig';
 
 const TOKEN_KEY = 'boomerang-pvp-token';
 const UNAVAILABLE: PvpChallengeResult = { ok: false, reason: 'network' };
@@ -13,13 +14,6 @@ const EMPTY_CODE: PvpCodeInfo = { code: null, expiresAt: null };
 const EMPTY_STATS: PvpNetStats = { rttMs: null, transport: 'ws' };
 const PING_TIMEOUT_MS = 6000;
 
-function serverUrl(): string {
-  if (import.meta.env.VITE_PVP_URL) return import.meta.env.VITE_PVP_URL;
-  const host = window.location.hostname;
-  return ['localhost', '127.0.0.1', '[::1]'].includes(host)
-    ? `ws://${host}:8787/ws`
-    : 'wss://pvp.biao.oinkvm.cn/ws';
-}
 
 function storedToken(): string | null {
   try { return localStorage.getItem(TOKEN_KEY); } catch { return null; }
@@ -207,10 +201,12 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
 
   private connect() {
     if (this.socket || this.reconnectTimer !== null || !this.wantsSocket()) return;
+    const url = pvpServerUrl();
+    if (!isPvpAvailable() || !url) return; // PvP switched off in this build (VITE_PVP_ENABLED / VITE_PVP_URL)
     this.setState(this.reconnectAttempts ? 'reconnecting' : 'connecting');
     let socket: WebSocket;
     try {
-      socket = new WebSocket(serverUrl());
+      socket = new WebSocket(url);
     } catch {
       this.scheduleReconnect();
       return;
