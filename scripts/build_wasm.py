@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Compile authoritative dart.hpp engine and all C++ bots in wasm/bots/ (official, community, sparring) into Emscripten WASM modules."""
+import argparse
 import concurrent.futures
 import os
 import subprocess
@@ -39,7 +40,6 @@ def build_engine():
         str(WASM_DIR / "engine_wasm.cpp"),
         *COMMON_FLAGS,
         "-sEXPORT_NAME=createEngineModule",
-        "-sEXPORTED_FUNCTIONS=[\"_engine_init\",\"_engine_init_with_spawn_seed\",\"_engine_init_training\",\"_engine_set_human_seat\",\"_engine_set_human_slash_ticks\",\"_engine_set_human_cliff_guard\",\"_engine_set_human_melee_assist\",\"_engine_set_human_dash_target\",\"_engine_last_error\",\"_engine_get_header\",\"_engine_get_obs\",\"_engine_step\",\"_engine_get_map_json\",\"_engine_get_state_json\"]",
         "-o", str(out_js),
     ]
     res = subprocess.run(cmd, capture_output=True, text=True)
@@ -70,9 +70,14 @@ def build_bot(cpp_path: Path):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--engine-only", action="store_true", help="skip building bots")
+    args = parser.parse_args()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
-    OUT_BOTS.mkdir(parents=True, exist_ok=True)
-    bot_files = sorted(BOTS_SRC.glob("*.cpp"))
+    bot_files = []
+    if not args.engine_only:
+        OUT_BOTS.mkdir(parents=True, exist_ok=True)
+        bot_files = sorted(BOTS_SRC.glob("*.cpp"))
     print(f"Building engine + {len(bot_files)} C++ bots to WASM...")
 
     failures = []

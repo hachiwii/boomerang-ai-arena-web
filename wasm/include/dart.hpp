@@ -1216,7 +1216,8 @@ struct Game {
     i64 t = 0;
     bool over = false;
     i64 winner = -2;         // 结束后：1v1 = 胜者座位，4v4 = 胜队，四人局 = 最后存活者；-1 = 平局 / 没人活；-2 = 未结束
-    int human_slash_seat = -1;  // 若 >= 0，该座位（真人）启用人类挥砍判定（砍镖与砍人窗口独立）
+    unsigned human_seats = 0;  // Bit k enables human rules for seat k.
+    bool is_human(int k) const { return (human_seats & (1u << k)) != 0; }
     i64 human_slash_ticks = 3;  // 人类砍镖窗口帧数：普通 3 帧 / 严格 2 帧（均含本步线段扫掠 ±60°）/ AI 0（原版 ±20° 单点）
     i64 human_melee_ticks = 2;  // 人类砍人/踢人窗口帧数：普通 2 帧 / 严格 0 / AI 0（0 = 1 帧前摇 + 1 帧，与 AI 相同）
     bool human_cliff_guard = false;  // 开启跌落防护时：人类冲刺若原本会坠崖，但末尾 25% 存在安全落点，则停在最远安全点
@@ -1525,8 +1526,8 @@ struct Game {
             const bool slash = D.st == D_HAND;
             P.st = slash ? S_SLASH : S_KICK;
             P.timer = slash ? cf.slash_pre : cf.kick_pre;
-            P.slash_win = (k == human_slash_seat && slash) ? human_slash_ticks : 0;
-            P.melee_win = (k == human_slash_seat) ? human_melee_ticks : 0;
+            P.slash_win = (is_human(k) && slash) ? human_slash_ticks : 0;
+            P.melee_win = (is_human(k)) ? human_melee_ticks : 0;
             P.slash_win_hits = 0;
             P.melee_win_used = (P.melee_win > 0) ? 1 : 0;
             P.block_win_used = (P.slash_win > 0) ? 1 : 0;
@@ -1627,7 +1628,7 @@ struct Game {
                 }
                 bool clamped_safe = false;
                 if (is_final_step &&
-                    k == human_slash_seat &&
+                    is_human(k) &&
                     human_cliff_guard &&
                     cell_of_point(cf, m, P.x, P.y, t) == C_PIT) {
                     // 人类开启跌落防护时：若原冲刺终点坠崖，沿本次冲刺总距离的末尾 25% 轨迹反向寻找最远安全落点
