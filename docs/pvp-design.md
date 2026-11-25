@@ -29,7 +29,7 @@ sends.
 ## Topology
 
 ```
-browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on) ──► origin server :8080 (Node, ws)
+browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on, secret x-pvp-origin-key header) ──► origin :8787 (Node, ws, systemd boomerang-pvp)
 ```
 
 - The client never contains the origin IP. URL: `import.meta.env.VITE_PVP_URL`, default
@@ -111,3 +111,12 @@ browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on) ─
 | Server | `server/**` | Network |
 | Shared contract | `src/net/pvpTypes.ts`, `src/game/types.ts`, this file | Integrator |
 | CDN, DNS, TLS, server deployment | Aliyun account, `aliyun_e0` | Integrator |
+
+## Operations
+
+- Deploy the relay: `scripts/deploy_pvp_server.sh` (builds `server/`, installs `/opt/boomerang-pvp` and the
+  `boomerang-pvp` unit). A restart drops lobby codes and running matches.
+- `/etc/boomerang-pvp.env` on the origin holds `PVP_ORIGIN_KEY`; the CDN sends the same value in
+  `x-pvp-origin-key`, so direct connections to the origin IP get 403.
+- TLS for `pvp.biao.oinkvm.cn` is a Let's Encrypt cert uploaded to the CDN; renew with `scripts/renew_pvp_cert.sh`
+  (expires 2027-02-23).
