@@ -16,6 +16,7 @@ export interface GifClipExportOptions {
   /** Graphics quality tier ('low' | 'high'). */
   graphicsQuality?: GraphicsQualityOption;
   edgeBeautify?: boolean;
+  dartOutline?: boolean;
   /** Granular cinematic camera toggles (killCam, finisherCam, winnerCam). */
   cinematic?: boolean | Partial<CinematicOptions>;
   sharedCharModelCache?: Map<string, VoxelModelData>;
@@ -208,7 +209,8 @@ export async function exportReplayClipToGif(
       { width: gifW, height: gifH },
       options.sharedCharModelCache,
       options.graphicsQuality ?? 'high',
-      options.edgeBeautify ?? false,
+      options.edgeBeautify ?? true,
+      options.dartOutline ?? true,
     );
 
     try {

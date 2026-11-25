@@ -405,7 +405,7 @@ export function buildVoxelDartMesh(colorHex: string, scale = 1.0, dualOutline = 
     slabs: [],
   };
 
-  const { mainGeo, outlineGeo } = buildVoxelPartGeometry(part, DART_CELL * scale, dualOutline ? 0 : 0.015);
+  const { mainGeo, outlineGeo } = buildVoxelPartGeometry(part, DART_CELL * scale, dualOutline ? 0 : 0.012);
   const group = new THREE.Group();
   const mat = new THREE.MeshLambertMaterial({
     vertexColors: true,
@@ -413,7 +413,10 @@ export function buildVoxelDartMesh(colorHex: string, scale = 1.0, dualOutline = 
     emissive: new THREE.Color('#ffffff'),
     emissiveIntensity: 0.14,
   });
-  group.add(new THREE.Mesh(mainGeo, mat));
+  const mainMesh = new THREE.Mesh(mainGeo, mat);
+  mainMesh.userData.ownedGeo = true;
+  mainMesh.userData.ownedMat = true;
+  group.add(mainMesh);
   if (dualOutline) {
     const k = scale / 1.42;
     const innerGeo = getDartRoundedShellGeo(scale, 0.046 * k, 0.022 * k, 0.002 * k);
@@ -421,9 +424,20 @@ export function buildVoxelDartMesh(colorHex: string, scale = 1.0, dualOutline = 
     group.add(new THREE.Mesh(innerGeo, getDartInnerOutlineMat()));
     group.add(new THREE.Mesh(outerGeo, getDartOuterRimMat(colorHex)));
   } else if (outlineGeo) {
-    group.add(new THREE.Mesh(outlineGeo, getOutlineMaterial()));
+    const outMesh = new THREE.Mesh(outlineGeo, getOutlineMaterial());
+    outMesh.userData.ownedGeo = true;
+    group.add(outMesh);
   }
   return group;
+}
+
+/** Dispose only uncached per-instance geometries/materials inside a group built by buildVoxelDartMesh. */
+export function disposeVoxelDartMesh(group: THREE.Group) {
+  for (const child of group.children) {
+    if (!(child instanceof THREE.Mesh)) continue;
+    if (child.userData.ownedGeo) child.geometry.dispose();
+    if (child.userData.ownedMat && child.material instanceof THREE.Material) child.material.dispose();
+  }
 }
 
 /**

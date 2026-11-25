@@ -103,7 +103,8 @@ export class GameRenderer {
   private activeMapData: EngineMapData | null = null;
   private activeThemeName = 'meadow';
   private graphicsQuality: GraphicsQualityOption = 'high';
-  private edgeBeautify = false;
+  private edgeBeautify = true;
+  private dartOutline = true;
   private rigs: CharacterRig[] = [];
   private fx: FXSystem | null = null;
   private countdownArrow: THREE.Group | null = null;
@@ -214,7 +215,8 @@ export class GameRenderer {
     fixedSize?: { width: number; height: number },
     sharedCharModelCache?: Map<string, VoxelModelData>,
     graphicsQuality: GraphicsQualityOption = 'high',
-    edgeBeautify = false,
+    edgeBeautify = true,
+    dartOutline = true,
   ) {
     this.canvas = canvas;
     this.sfx = sfx;
@@ -222,6 +224,7 @@ export class GameRenderer {
     this.charModelCache = sharedCharModelCache ?? new Map<string, VoxelModelData>();
     this.graphicsQuality = graphicsQuality;
     this.edgeBeautify = edgeBeautify;
+    this.dartOutline = dartOutline;
 
     const initW = this.fixedSize ? this.fixedSize.width : getLogicalViewport().width;
     const initH = this.fixedSize ? this.fixedSize.height : getLogicalViewport().height;
@@ -480,6 +483,14 @@ export class GameRenderer {
     this.invalidateShadowMap();
   }
 
+  public setDartOutline(enabled: boolean) {
+    if (this.dartOutline === enabled) return;
+    this.dartOutline = enabled;
+    for (const rig of this.rigs) {
+      rig.setDartOutline(enabled, this.scene);
+    }
+  }
+
   public setEdgeBeautify(enabled: boolean) {
     if (this.edgeBeautify === enabled) return;
     this.edgeBeautify = enabled;
@@ -592,7 +603,7 @@ export class GameRenderer {
     const models = await Promise.all(slots.map((s) => this.loadCharModel(s.charKey)));
     this.rigs = slots.map((slot, idx) => {
       const ringCol = slot.ringAccent || slot.color;
-      const rig = new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human', this.scene, hq);
+      const rig = new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human', this.scene, hq, this.dartOutline);
       rig.setSunDirection(this.sunDirVec.x, this.sunDirVec.y, this.sunDirVec.z);
       return rig;
     });

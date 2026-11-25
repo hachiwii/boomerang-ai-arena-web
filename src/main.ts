@@ -139,6 +139,7 @@ async function bootstrap() {
     undefined,
     settings.get().graphicsQuality,
     settings.get().edgeBeautify,
+    settings.get().dartOutline,
   );
   renderer.setKillFxEnabled(isKillFxEffective(settings.get()));
   input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
@@ -178,6 +179,7 @@ async function bootstrap() {
   let activeLockFps = settings.get().lockFps;
   let activeGraphicsQuality: GraphicsQualityOption = settings.get().graphicsQuality;
   let activeEdgeBeautify = settings.get().edgeBeautify;
+  let activeDartOutline = settings.get().dartOutline;
   let rafId = 0;
   let uncapChannel: MessageChannel | null = null;
   let uncapRunning = false;
@@ -762,6 +764,10 @@ async function bootstrap() {
       activeEdgeBeautify = s.edgeBeautify;
       renderer.setEdgeBeautify(s.edgeBeautify);
     }
+    if (s.dartOutline !== activeDartOutline) {
+      activeDartOutline = s.dartOutline;
+      renderer.setDartOutline(s.dartOutline);
+    }
     const cinematic = getCinematicOptions(s);
     renderer.setKillFxEnabled(cinematic.killFx);
     controller.setKillFxEnabled(cinematic.killFx);
@@ -853,6 +859,7 @@ async function bootstrap() {
         loadBgmBuffer: (trackId, ctx) => bgm.decodeTrackForContext(trackId, ctx),
         graphicsQuality: s.graphicsQuality,
         edgeBeautify: s.edgeBeautify,
+        dartOutline: s.dartOutline,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
@@ -872,6 +879,7 @@ async function bootstrap() {
         maxDurationSec: 10.0,
         graphicsQuality: s.graphicsQuality,
         edgeBeautify: s.edgeBeautify,
+        dartOutline: s.dartOutline,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
@@ -965,6 +973,7 @@ async function bootstrap() {
         loadBgmBuffer: (trackId, ctx) => bgm.decodeTrackForContext(trackId, ctx),
         graphicsQuality: s.graphicsQuality,
         edgeBeautify: s.edgeBeautify,
+        dartOutline: s.dartOutline,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,

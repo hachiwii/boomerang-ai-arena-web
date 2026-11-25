@@ -446,6 +446,7 @@ export class SettingsModal {
       edgeAvail && s.edgeBeautify,
       edgeAvail ? (s.edgeBeautify ? '已开启' : '已关闭') : '不可用',
     );
+    setSwitch('#settings-dart-outline-toggle', s.dartOutline, s.dartOutline ? '已开启' : '已关闭');
 
     setSwitch('#settings-lock-fps-toggle', s.lockFps, s.lockFps ? '显示器帧率' : '无上限');
     setSwitch('#settings-killcam-toggle', s.killCam, s.killCam ? '已开启' : '已关闭');
@@ -692,6 +693,23 @@ export class SettingsModal {
                 </button>
               </div>`;
               })()}
+
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">飞镖描边</div>
+                  <div class="settings-toggle-desc">为飞行与落地飞镖添加黑内亮队色双层描边，提升战场辨识度</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${s.dartOutline ? 'is-on' : ''}"
+                  id="settings-dart-outline-toggle"
+                  role="switch"
+                  aria-checked="${s.dartOutline}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${s.dartOutline ? '已开启' : '已关闭'}</span>
+                </button>
+              </div>
 
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
@@ -1111,6 +1129,12 @@ export class SettingsModal {
       const cur = this.store.get();
       if (!isEdgeBeautifyAvailable(cur)) return;
       this.store.setEdgeBeautify(!cur.edgeBeautify);
+      this.syncControlsInPlace();
+    });
+
+    // Dart outline toggle (dual-layer dark ink + bright team rim on flying/ground darts)
+    this.body.querySelector('#settings-dart-outline-toggle')?.addEventListener('click', () => {
+      this.store.setDartOutline(!this.store.get().dartOutline);
       this.syncControlsInPlace();
     });
 

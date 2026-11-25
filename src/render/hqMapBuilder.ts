@@ -447,7 +447,7 @@ export class HqArenaMap3D implements IArenaMap {
   private readonly waveMaxDist = new Map<number, number>();
   private lastShadowBakeGt = -9999;
 
-  constructor(mapData: EngineMapData, themeName: string, edgeBeautify = false) {
+  constructor(mapData: EngineMapData, themeName: string, edgeBeautify = true) {
     this.mapData = mapData;
     this.hqTheme = getHqTheme(themeName);
     this.edgeBeautify = edgeBeautify;

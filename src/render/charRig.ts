@@ -6,6 +6,7 @@ import {
   buildVoxelPartGeometry,
   CHAR_SCALE,
   createVoxelMaterial,
+  disposeVoxelDartMesh,
   getOutlineMaterial,
   VOX_U,
   VoxelModelData,
@@ -99,13 +100,13 @@ function getSoftShadowTexture(): THREE.CanvasTexture {
  * Exact port of chars.py make_blur_disc: translucent radial disc with 3 brighter sector wedges
  * rendered just beneath a flying boomerang in high graphics quality.
  */
-function buildDartBlurDiscMesh(colorHex: string, r = 0.55): THREE.Mesh {
+function buildDartBlurDiscMesh(colorHex: string, r = 0.56, alphaScale = 1.0): THREE.Mesh {
   const seg = 56;
   const col = new THREE.Color(colorHex).lerp(new THREE.Color('#ffffff'), 0.45);
   const radii: [number, number][] = [
     [0.14, 0.0],
-    [0.5, 0.13],
-    [0.85, 0.17],
+    [0.5, 0.26 * alphaScale],
+    [0.85, 0.34 * alphaScale],
     [1.0, 0.0],
   ];
   const pos: number[] = [];
@@ -174,14 +175,15 @@ export class CharacterRig {
   public readonly root = new THREE.Group();
   public readonly rigRoot = new THREE.Group();
   public readonly heldDart: THREE.Group;
-  public readonly flyingDart: THREE.Group;
-  public readonly dartBlurDisc: THREE.Mesh;
+  public flyingDart: THREE.Group;
+  public dartBlurDisc: THREE.Mesh;
   public readonly groundRing: THREE.Mesh;
   public readonly shadowBlob: THREE.Mesh;
   public readonly shadowBlob2: THREE.Mesh;
   public readonly dashCdRing: THREE.Mesh;
 
   private highQuality: boolean;
+  private dartOutline: boolean;
   private parts = new Map<string, THREE.Group>();
   private restPos = new Map<string, THREE.Vector3>();
   private partMaterials: THREE.MeshLambertMaterial[] = [];
@@ -245,12 +247,14 @@ export class CharacterRig {
     isHuman: boolean,
     parentScene: THREE.Scene,
     highQuality = true,
+    dartOutline = true,
   ) {
     this.seat = seat;
     this.model = model;
     this.color = model.color;
     this.ringColor = ringColor;
     this.highQuality = highQuality;
+    this.dartOutline = dartOutline;
 
     const baseScale = CHAR_SCALE * (model.scale || 1.0);
     this.rigRoot.scale.setScalar(baseScale);
@@ -325,8 +329,8 @@ export class CharacterRig {
       this.rigRoot.add(this.heldDart);
     }
 
-    // World-space flying / ground boomerang (with high-contrast dual outline) + HQ spinning motion-blur disc
-    this.flyingDart = buildVoxelDartMesh(this.color, 1.42, true);
+    // World-space flying / ground boomerang + HQ spinning motion-blur disc
+    this.flyingDart = buildVoxelDartMesh(this.color, 1.42, this.dartOutline);
     this.flyingDart.visible = false;
     const dartFirstMesh = this.flyingDart.children[0] as THREE.Mesh | undefined;
     if (dartFirstMesh && dartFirstMesh.material instanceof THREE.MeshLambertMaterial) {
@@ -334,7 +338,11 @@ export class CharacterRig {
     }
     parentScene.add(this.flyingDart);
 
-    this.dartBlurDisc = buildDartBlurDiscMesh(this.color, 0.55);
+    this.dartBlurDisc = buildDartBlurDiscMesh(
+      this.color,
+      this.dartOutline ? 0.55 : 0.56,
+      this.dartOutline ? 0.5 : 1.0,
+    );
     parentScene.add(this.dartBlurDisc);
 
     // Sun-aligned soft radial ground shadows (blob + blob2 for separated upper sliced half!)
@@ -396,6 +404,44 @@ export class CharacterRig {
       this.dartBlurDisc.visible = false;
       this.shadowBlob2.visible = false;
     }
+  }
+
+  public setDartOutline(enabled: boolean, parentScene: THREE.Scene) {
+    if (this.dartOutline === enabled) return;
+    this.dartOutline = enabled;
+
+    const prevDart = this.flyingDart;
+    const prevDisc = this.dartBlurDisc;
+
+    const nextDart = buildVoxelDartMesh(this.color, 1.42, enabled);
+    nextDart.visible = prevDart.visible;
+    nextDart.position.copy(prevDart.position);
+    nextDart.rotation.copy(prevDart.rotation);
+    nextDart.scale.copy(prevDart.scale);
+    const firstMesh = nextDart.children[0] as THREE.Mesh | undefined;
+    const nextMat =
+      firstMesh && firstMesh.material instanceof THREE.MeshLambertMaterial ? firstMesh.material : null;
+    if (nextMat && this.flyingDartMat) {
+      nextMat.emissiveIntensity = this.flyingDartMat.emissiveIntensity;
+    }
+
+    const nextDisc = buildDartBlurDiscMesh(this.color, enabled ? 0.55 : 0.56, enabled ? 0.5 : 1.0);
+    nextDisc.visible = prevDisc.visible;
+    nextDisc.position.copy(prevDisc.position);
+    nextDisc.rotation.copy(prevDisc.rotation);
+    nextDisc.scale.copy(prevDisc.scale);
+
+    parentScene.remove(prevDart);
+    parentScene.remove(prevDisc);
+    disposeVoxelDartMesh(prevDart);
+    prevDisc.geometry.dispose();
+    (prevDisc.material as THREE.Material).dispose();
+
+    this.flyingDart = nextDart;
+    this.flyingDartMat = nextMat;
+    this.dartBlurDisc = nextDisc;
+    parentScene.add(nextDart);
+    parentScene.add(nextDisc);
   }
 
   /** Aligns the character's soft ground shadow with the active map's directional sun ray. */
@@ -1100,10 +1146,10 @@ export class CharacterRig {
       const sc = !hq && currD.st === DState.BACK && currD.age < 3 ? 1.08 + 0.08 * Math.sin(gt * 2.5) : 1.0;
       this.flyingDart.scale.setScalar(sc);
 
-      // HQ spinning translucent blur disc positioned cleanly beneath the boomerang & its dual outline shells
+      // HQ spinning translucent blur disc (positioned cleanly beneath dual outline shells when enabled)
       if (hq) {
         this.dartBlurDisc.visible = true;
-        this.dartBlurDisc.position.set(x, y - 0.098, z);
+        this.dartBlurDisc.position.set(x, y - (this.dartOutline ? 0.098 : 0.01), z);
         this.dartBlurDisc.rotation.set(0, spin * 0.37, 0);
       } else {
         this.dartBlurDisc.visible = false;
@@ -1140,7 +1186,7 @@ export class CharacterRig {
         this.flyingDart.rotation.set(tilt, spin, tilt * 0.6);
         this.flyingDart.scale.setScalar(0.84);
       } else {
-        this.flyingDart.position.set(x, 0.12, z);
+        this.flyingDart.position.set(x, this.dartOutline ? 0.12 : 0.08, z);
         const settleSpin = hq && this.lastDartLandTick > -900 ? 2.15 * this.lastDartLandTick + this.seat * 1.3 + 6.0 : this.seat * 1.1;
         this.flyingDart.rotation.set(0.12, settleSpin, 0);
         this.flyingDart.scale.setScalar(hq ? 0.84 : 0.92);
@@ -1527,7 +1573,8 @@ export class CharacterRig {
     if (this.slicedUpper) parentScene.remove(this.slicedUpper);
     if (this.slicedLower) parentScene.remove(this.slicedLower);
     if (this.slicedMat) this.slicedMat.dispose();
-    if (this.flyingDartMat) this.flyingDartMat.dispose();
+    disposeVoxelDartMesh(this.flyingDart);
+    disposeVoxelDartMesh(this.heldDart);
     for (const m of this.partMaterials) m.dispose();
   }
 }
