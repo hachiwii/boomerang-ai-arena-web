@@ -1743,6 +1743,7 @@ body.ui-hidden .lobby-overlay {
 .pk-chip-official { background: rgba(255, 180, 50, 0.2); color: #ffd98a; }
 .pk-chip-sparring { background: rgba(255, 255, 255, 0.11); color: #c4cee2; }
 .pk-chip-custom { background: rgba(168, 112, 255, 0.24); color: #dcc6ff; }
+.pk-chip-community { background: rgba(236, 231, 246, 0.2); box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45); color: #ffffff; }
 
 .pk-sub {
   font-size: 11px;
@@ -1913,6 +1914,12 @@ body.ui-hidden .lobby-overlay {
 .pm-rank-custom {
   background: rgba(168, 112, 255, 0.24);
   color: #dcc6ff;
+}
+
+.pm-rank-community {
+  background: rgba(236, 231, 246, 0.2);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.45);
+  color: #ffffff;
 }
 
 .pm-name {
@@ -5580,6 +5587,12 @@ body.is-dnd-dragging .cricket-card:hover {
   border-color: rgba(186, 140, 255, 0.4);
   color: #dcc6ff;
   font-size: 10px;
+}
+
+.cc-elo.is-community {
+  background: rgba(236, 231, 246, 0.16);
+  border-color: rgba(255, 255, 255, 0.5);
+  color: #ffffff;
 }
 
 /* More bots than the board was designed for (16): 抽签 / 落选 are fixed-size scroll areas (height set in JS on

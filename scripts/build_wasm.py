@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compile authoritative dart.hpp engine and all 16 C++ bots into Emscripten WASM modules."""
+"""Compile authoritative dart.hpp engine and all C++ bots in wasm/bots/ (official, community, sparring) into Emscripten WASM modules."""
 import concurrent.futures
 import os
 import subprocess

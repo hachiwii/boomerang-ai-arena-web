@@ -182,6 +182,20 @@
     "avatar": "/assets/avatars/doubao.png"
   },
   {
+    "id": "astra-rlhf",
+    "seat": "astra_rlhf",
+    "charKey": "dragon_girl",
+    "name": "Astra RLHF",
+    "shortName": "Astra RLHF",
+    "rank": null,
+    "rating": 1749,
+    "category": "community",
+    "duelRating": 1893,
+    "ffaRating": 1605,
+    "color": "#FFFFFF",
+    "avatar": "/assets/avatars/dragon_girl.svg"
+  },
+  {
     "id": "sparring-strong",
     "seat": "strong",
     "charKey": "demo_red",

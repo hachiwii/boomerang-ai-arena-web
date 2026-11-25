@@ -77,7 +77,9 @@ export interface RosterEntry {
   rating: number | null;
   duelRating: number | null;
   ffaRating: number | null;
-  category: 'official' | 'sparring' | 'custom'; // custom = compiled in the browser by the user (no ELO, never ranked)
+  // official = the 13 contest bots (ranked); community = built-in bots outside the contest (fixed ELO shown, never
+  // ranked); sparring = practice bots; custom = compiled in the browser by the user (no ELO, never ranked)
+  category: 'official' | 'community' | 'sparring' | 'custom';
   color: string;
   avatar: string | null;
 }

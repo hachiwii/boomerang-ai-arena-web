@@ -34,7 +34,7 @@ export class CricketStore {
     this.state = this.load();
   }
 
-  /** New bots join the lottery (official / custom) or the excluded zone (sparring). */
+  /** New bots join the lottery (official / community / custom) or the excluded zone (sparring). */
   private static defaultTierFor(r: RosterEntry): CricketTier {
     return r.category === 'sparring' ? 'excluded' : 'lottery';
   }
@@ -65,6 +65,7 @@ export class CricketStore {
       .filter((r) => r.category === 'official')
       .sort((a, b) => (b.rating ?? 0) - (a.rating ?? 0))
       .map((r) => r.id);
+    const community = this.roster.filter((r) => r.category === 'community').map((r) => r.id);
     const custom = this.roster.filter((r) => r.category === 'custom').map((r) => r.id);
     const sparring = this.roster.filter((r) => r.category === 'sparring').map((r) => r.id);
     return {
@@ -72,7 +73,7 @@ export class CricketStore {
       mapPool: this.maps.map((m) => m.id),
       tiers: {
         invited: [],
-        lottery: [...official, ...custom],
+        lottery: [...official, ...community, ...custom],
         excluded: sparring,
       },
       stats: {},
@@ -316,7 +317,7 @@ export class CricketStore {
   }
 
   public getFixedElo(entry: RosterEntry): number | null {
-    if (entry.category !== 'official') return null;
+    if (entry.category !== 'official' && entry.category !== 'community') return null;
     if (this.state.format === '1v1') return entry.duelRating ?? entry.rating;
     return entry.ffaRating ?? entry.rating;
   }

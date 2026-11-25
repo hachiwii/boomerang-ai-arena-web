@@ -137,6 +137,14 @@ function drawMiniMap(canvas: HTMLCanvasElement, map: MapMeta) {
   }
 }
 
+/** Bot groups in the custom-match character picker, in display order (after 玩家); empty groups are not shown. */
+const BOT_GROUPS: { category: RosterEntry['category']; label: string }[] = [
+  { category: 'custom', label: '自定义' },
+  { category: 'community', label: '社区' },
+  { category: 'official', label: '原版' },
+  { category: 'sparring', label: '陪练' },
+];
+
 function avatarForBotEntry(entry: RosterEntry): string {
   if (entry.avatar) return entry.avatar;
   if (entry.charKey === 'demo_red') return makeHoodieAvatarDataUrl('#E8483D', '#4A3328');
@@ -743,8 +751,9 @@ export class LobbyUI {
     this.container.querySelectorAll('.picker-trigger.open').forEach((el) => el.classList.remove('open'));
   }
 
+  /** Fixed ELO for the custom-match picker: official and community bots (2 players = duel, 4 = FFA). */
   private officialBotScoreForCustom(b: RosterEntry): number | null {
-    if (b.category !== 'official') return null;
+    if (b.category !== 'official' && b.category !== 'community') return null;
     if (this.drafts.length === 2) return b.duelRating ?? b.rating;
     if (this.drafts.length === 4) return b.ffaRating ?? b.rating;
     return b.rating;
@@ -765,10 +774,6 @@ export class LobbyUI {
     const humanSelectedHere = currentDraft.kind === 'human';
     const humanAvatar = makeHoodieAvatarDataUrl('#3B78F0', '#262A33');
 
-    const officialBots = this.roster.filter((r) => r.category === 'official');
-    const sparringBots = this.roster.filter((r) => r.category === 'sparring');
-    const customBots = this.roster.filter((r) => r.category === 'custom');
-
     const renderBotItem = (b: RosterEntry) => {
       const selected = currentDraft.kind === 'bot' && currentDraft.botId === b.id;
       const isOfficial = b.category === 'official';
@@ -777,8 +782,10 @@ export class LobbyUI {
           ? `<span class="pm-rank">#${b.rank}</span>`
           : b.category === 'custom'
             ? `<span class="pm-rank pm-rank-custom">自定义</span>`
-            : `<span class="pm-rank pm-rank-sp">陪练</span>`;
-      const score = isOfficial ? this.officialBotScoreForCustom(b) : null;
+            : b.category === 'community'
+              ? `<span class="pm-rank pm-rank-community">社区</span>`
+              : `<span class="pm-rank pm-rank-sp">陪练</span>`;
+      const score = this.officialBotScoreForCustom(b);
       const scoreHtml = score !== null ? `<span class="pm-score elo-zero">${score}</span>` : '';
       return `
         <button type="button" class="pm-item ${selected ? 'is-selected' : ''}" data-pick-kind="bot" data-pick-id="${b.id}" role="option" aria-selected="${selected}">
@@ -817,12 +824,10 @@ export class LobbyUI {
         <span class="pm-check">${humanSelectedHere ? '✓' : ''}</span>
       </button>
 
-      <div class="pm-section-label">官方 AI</div>
-      ${officialBots.map(renderBotItem).join('')}
-
-      <div class="pm-section-label">陪练</div>
-      ${sparringBots.map(renderBotItem).join('')}
-      ${customBots.length > 0 ? `<div class="pm-section-label">自定义 Bot</div>${customBots.map(renderBotItem).join('')}` : ''}
+      ${BOT_GROUPS.map(({ category, label }) => {
+        const bots = this.roster.filter((r) => r.category === category);
+        return bots.length > 0 ? `<div class="pm-section-label">${label}</div>${bots.map(renderBotItem).join('')}` : '';
+      }).join('')}
     `;
 
     const rect = rectToLogical(triggerEl.getBoundingClientRect());
@@ -1145,13 +1150,14 @@ export class LobbyUI {
     const kdNum = st.deaths === 0 ? st.kills : st.kills / st.deaths;
     const kdStr = hasGames ? kdNum.toFixed(2) : '--';
     const isCustom = entry.category === 'custom';
+    const isCommunity = entry.category === 'community';
     const eloHtml =
       elo !== null
-        ? `<span class="cc-elo" title="固定 ELO 分数">${elo}</span>`
+        ? `<span class="cc-elo ${isCommunity ? 'is-community' : ''}" title="${isCommunity ? '社区 Bot · 固定 ELO 分数（不进入排位）' : '固定 ELO 分数'}">${elo}</span>`
         : isCustom
           ? `<span class="cc-elo is-custom" title="自定义 Bot（没有 ELO 分数）">自定义</span>`
           : `<span class="cc-elo is-sparring" title="陪练角色">陪练</span>`;
-    const tooltip = `${escapeHtml(entry.name)}${elo !== null ? ` · 固定 ELO ${elo}` : isCustom ? ' · 自定义 Bot' : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
+    const tooltip = `${escapeHtml(entry.name)}${isCommunity ? ' · 社区' : ''}${elo !== null ? ` · 固定 ELO ${elo}` : isCustom ? ' · 自定义 Bot' : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
 
     return `
       <div
@@ -1866,14 +1872,16 @@ export class LobbyUI {
                 const isHuman = slot.kind === 'human';
                 const botEntry = !isHuman && slot.botId ? rosterById.get(slot.botId) : undefined;
                 const isOfficial = !isHuman && botEntry?.category === 'official';
-                const officialScore = isOfficial && botEntry ? this.officialBotScoreForCustom(botEntry) : null;
+                const officialScore = !isHuman && botEntry ? this.officialBotScoreForCustom(botEntry) : null;
                 const roleChip = isHuman
                   ? `<span class="pk-chip pk-chip-human">真人</span>`
                   : isOfficial && botEntry?.rank !== null && botEntry?.rank !== undefined
                     ? `<span class="pk-chip pk-chip-official">#${botEntry.rank} AI</span>`
                     : botEntry?.category === 'custom'
                       ? `<span class="pk-chip pk-chip-custom">自定义</span>`
-                      : `<span class="pk-chip pk-chip-sparring">陪练</span>`;
+                      : botEntry?.category === 'community'
+                        ? `<span class="pk-chip pk-chip-community">社区</span>`
+                        : `<span class="pk-chip pk-chip-sparring">陪练</span>`;
                 const subHtml = isOfficial ? `<div class="pk-sub">${slot.baseName}</div>` : '';
                 const scoreHtml =
                   officialScore !== null ? `<span class="pk-score elo-zero">${officialScore}</span>` : '';

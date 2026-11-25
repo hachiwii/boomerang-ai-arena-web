@@ -197,6 +197,11 @@ def export_characters():
     (OUT_CHARS / "roster.json").write_text(json.dumps(roster, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Exported {len(char_colors)} voxel characters and roster.json.")
 
+    # Community bots (not from the source repo): model, avatar and roster entries before the sparring bots
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import export_community  # noqa: E402
+    export_community.main()
+
 
 def export_avatars():
     import subprocess
