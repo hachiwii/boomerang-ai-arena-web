@@ -1,4 +1,4 @@
-import { NEUTRAL, withoutAct, type Action, type ActionPair, type InputRow, type Seat } from './pvpProtocol.ts';
+import { NEUTRAL, PVP_MAX_FRAMES, PVP_TICK_MS, withoutAct, type Action, type ActionPair, type InputRow, type Seat } from './pvpProtocol.ts';
 
 export const PVP_ROLLBACK_SLOTS = 32;
 
@@ -15,6 +15,17 @@ function equal(a: Action, b: Action) {
 
 function samePair(a: ActionPair, b: ActionPair) {
   return equal(a[0], b[0]) && equal(a[1], b[1]);
+}
+
+/** Number of steps due. Frame zero produces tick one at startAt. */
+export function pvpTargetTick(elapsedMs: number, previousTarget: number): number {
+  return Math.max(previousTarget, Math.min(PVP_MAX_FRAMES, Math.floor(elapsedMs / PVP_TICK_MS) + 1));
+}
+
+/** Sample once for the newest due frame, even when catching up several steps. */
+export function pvpSampleFrame(previousTarget: number, targetT: number, delay: number): number | null {
+  const frame = targetT - 1 + delay;
+  return targetT > previousTarget && frame < PVP_MAX_FRAMES ? frame : null;
 }
 
 /** Canonical frame f produces the state at tick f + 1. */

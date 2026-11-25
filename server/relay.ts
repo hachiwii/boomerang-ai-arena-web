@@ -8,7 +8,7 @@ import {
   PVP_CODE_TTL_MS, type PvpChallengeFailReason, type PvpMatchInfo, type PvpRematchChoice,
 } from '../src/net/pvpTypes.ts';
 import {
-  PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_PROTOCOL, PVP_TICK_MS, NEUTRAL, isAction,
+  PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_PROTOCOL, PVP_TICK_MS, NEUTRAL, isAction, pvpInputDelayFrames,
   type Action, type ClientMessage, type Go, type InputRow, type MatchEnd, type MatchTerminal,
   type Seat, type ServerMessage,
 } from '../src/net/pvpProtocol.ts';
@@ -477,9 +477,11 @@ function onMessage(conn: Connection, raw: string) {
     match.ready[seat] = true;
     if (!match.go && match.ready.every(Boolean)) {
       const rtt = Math.max(...match.players.map(({ conn }) => Math.max(conn?.wsRtt ?? 0, conn?.appRtt ?? 0)));
-      const delay = Math.max(2, Math.min(4, Math.ceil((rtt / 2 + PVP_TICK_MS) / PVP_TICK_MS)));
+      const delay = pvpInputDelayFrames(rtt);
       match.go = { startAt: time + PVP_COUNTDOWN_MS, delay };
       broadcast(match, { type: 'go', matchId, ...match.go });
+      // Frames before the first possible sample are canonical during countdown.
+      finalizeThrough(match, delay - 1);
     }
     return;
   }

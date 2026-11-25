@@ -7,6 +7,15 @@ export const PVP_INPUT_GRACE_MS = 125;
 export const PVP_MAX_FRAMES = 800;
 export const PVP_COUNTDOWN_MS = 3000;
 
+const ZERO_DELAY_MAX_RTT_MS = 80;
+const ONE_FRAME_MAX_RTT_MS = 160;
+
+export function pvpInputDelayFrames(maxRttMs: number): 0 | 1 | 2 {
+  if (maxRttMs <= ZERO_DELAY_MAX_RTT_MS) return 0;
+  if (maxRttMs <= ONE_FRAME_MAX_RTT_MS) return 1;
+  return 2;
+}
+
 export type Seat = 0 | 1;
 export type Action = readonly [mx: number, my: number, act: number, ax: number, ay: number, msg: number];
 export type ActionPair = readonly [Action, Action];

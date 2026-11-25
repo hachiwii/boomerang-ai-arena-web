@@ -4,9 +4,9 @@ import type { EngineMapData, MatchConfig, TickSnapshot } from './types';
 import type { PvpSimulationResult } from '../workers/pvpSimulation';
 import type { PvpMatchLink } from '../net/pvpMatchLink';
 import {
-  PVP_MAX_FRAMES, PVP_TICK_MS, type Go, type MatchMessage, type MatchTerminal, type Seat,
+  PVP_TICK_MS, type Go, type MatchMessage, type MatchTerminal, type Seat,
 } from '../net/pvpProtocol';
-import { PvpEventDedup, PvpTimeline } from '../net/pvpTimeline';
+import { PvpEventDedup, PvpTimeline, pvpSampleFrame, pvpTargetTick } from '../net/pvpTimeline';
 import { PVP_FIXED_RULES } from '../net/pvpTypes';
 
 interface PvpCallbacks extends MatchCallbacks {
@@ -34,7 +34,6 @@ export class PvpMatchController {
   private inputsChanged = false;
   private targetT = 0;
   private confirmedT = 0;
-  private lastSampled = -1;
   private history: TickSnapshot[] = [];
   private resultNote?: string;
 
@@ -198,23 +197,19 @@ export class PvpMatchController {
       const go = this.go;
       const elapsed = go ? this.link.serverNow() - go.startAt : -Infinity;
       if (terminalT === undefined && elapsed < 0) {
+        this.inputsChanged = false; // Countdown rows stay in the timeline until frame zero is due.
         if (go) this.setStage(Math.min(3, Math.ceil(-elapsed / 1000)) as CountdownStage);
         return;
       }
       this.setStage(terminal ? null : elapsed < 600 ? 'GO' : null);
-      const targetT = terminalT ?? Math.max(this.targetT, Math.min(PVP_MAX_FRAMES, Math.floor(elapsed / PVP_TICK_MS) + 1));
-      const frame = targetT - 1;
-      if (go && !terminal && !this.quitRequested && frame > this.lastSampled) {
-        if (this.lastSampled < 0) this.input.setInputMode('active');
-        this.lastSampled = frame;
-        const localFrame = frame + go.delay;
-        if (localFrame < PVP_MAX_FRAMES) {
-          // A woken tab samples the present once. The relay fills elapsed frames.
-          const { mx, my, act, ax, ay, msg } = this.input.sampleAction(current, this.seat);
-          const action = [mx, my, act, ax, ay, msg] as const;
-          this.timeline.sample(localFrame, action);
-          this.link.input(localFrame, action);
-        }
+      const targetT = terminalT ?? pvpTargetTick(elapsed, this.targetT);
+      const localFrame = go && !terminal && !this.quitRequested ? pvpSampleFrame(this.targetT, targetT, go.delay) : null;
+      if (localFrame !== null) {
+        if (this.targetT === 0) this.input.setInputMode('active');
+        const { mx, my, act, ax, ay, msg } = this.input.sampleAction(current, this.seat);
+        const action = [mx, my, act, ax, ay, msg] as const;
+        this.timeline.sample(localFrame, action);
+        this.link.input(localFrame, action);
       }
       if (!this.inputsChanged && targetT === this.targetT && !terminal) return;
       this.inputsChanged = false;
