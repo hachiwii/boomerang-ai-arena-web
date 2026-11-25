@@ -41,6 +41,7 @@ export class PlatformManager {
   private mobile: boolean;
   private autoSwitchAllowed = true;
   private userExitedFullscreen = false;
+  private autoFullscreenSuspended = false;
   /** Touch devices start on the launch page; landscape forcing waits until the player picks a mode. */
   private launchDone = !detectTouchPrimary();
 
@@ -74,7 +75,16 @@ export class PlatformManager {
     // player explicitly left fullscreen through our own toggle button.
     // (Desktop browsers switched to mobile mode by hand only go fullscreen via the lobby button.)
     const onGesture = () => {
-      if (!this.launchDone || !this.mobile || !this.autoGuess || this.userExitedFullscreen || this.isFullscreen()) return;
+      if (
+        !this.launchDone ||
+        !this.mobile ||
+        !this.autoGuess ||
+        this.userExitedFullscreen ||
+        this.autoFullscreenSuspended ||
+        this.isFullscreen()
+      ) {
+        return;
+      }
       void this.enterImmersive();
     };
     window.addEventListener('touchend', onGesture, { capture: true, passive: true });
@@ -211,6 +221,25 @@ export class PlatformManager {
     }
     await this.lockLandscape();
     return this.isFullscreen();
+  }
+
+  /** Temporarily suspends auto re-entry into fullscreen (e.g. while an export/save dialog is open). */
+  public setAutoFullscreenSuspended(suspended: boolean) {
+    this.autoFullscreenSuspended = suspended;
+  }
+
+  /**
+   * Exits DOM fullscreen temporarily (e.g. before mobile video/GIF export) without marking
+   * `userExitedFullscreen` as a permanent manual opt-out.
+   */
+  public async exitFullscreenTemporarily(): Promise<void> {
+    const d = document as FullscreenCapableDocument;
+    try {
+      if (d.fullscreenElement && d.exitFullscreen) await d.exitFullscreen();
+      else if (d.webkitFullscreenElement && d.webkitExitFullscreen) await d.webkitExitFullscreen();
+    } catch {
+      // ignore
+    }
   }
 
   public async exitImmersive() {

@@ -57,6 +57,9 @@ export interface HudCallbacks {
     signal: AbortSignal,
     onProgress: (progress01: number, phaseText: string) => void,
   ) => Promise<GifClipExportResult>;
+  /** Mobile / tablet: exits fullscreen and opens the dedicated progress + save/share modal. */
+  onMobileReplayExportMp4?: (bundle: MatchReplayBundle) => void;
+  onMobileReplayExportGif?: (bundle: MatchReplayBundle, endTickIndex: number) => void;
 }
 
 function causeLabel(cause: number, killerName?: string): string {
@@ -1135,13 +1138,14 @@ export class HudUI {
   }
 
   private startReplayHudExport() {
-    if (
-      !this.isReplayMode ||
-      !this.replayBundle ||
-      this.replayComputing ||
-      this.replayExportAbort ||
-      !this.callbacks.onReplayExportMp4
-    ) {
+    if (!this.isReplayMode || !this.replayBundle || this.replayComputing || this.replayExportAbort) {
+      return;
+    }
+    if (this.mobile && this.callbacks.onMobileReplayExportMp4) {
+      this.callbacks.onMobileReplayExportMp4(this.replayBundle);
+      return;
+    }
+    if (!this.callbacks.onReplayExportMp4) {
       return;
     }
     const bundle = this.replayBundle;
@@ -1212,13 +1216,20 @@ export class HudUI {
   }
 
   private startReplayGifExport() {
-    if (!this.isReplayMode || !this.replayBundle || this.replayExportAbort || !this.callbacks.onReplayExportGif) {
+    if (!this.isReplayMode || !this.replayBundle || this.replayExportAbort) {
       return;
     }
     const bundle = this.replayBundle;
     const endTickIndex = this.replayCurrentTickIndex;
     if (endTickIndex < 2) {
       this.showReplayExportResultBanner('当前处于回放起点，请先播放一段后再截取 10s GIF', false);
+      return;
+    }
+    if (this.mobile && this.callbacks.onMobileReplayExportGif) {
+      this.callbacks.onMobileReplayExportGif(bundle, endTickIndex);
+      return;
+    }
+    if (!this.callbacks.onReplayExportGif) {
       return;
     }
 

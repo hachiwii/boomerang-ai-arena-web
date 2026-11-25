@@ -1106,7 +1106,9 @@ export function triggerMp4Download(blob: Blob, filename: string) {
   a.style.display = 'none';
   document.body.appendChild(a);
   a.click();
-  document.body.removeChild(a);
+  window.setTimeout(() => {
+    a.remove();
+  }, 1000);
   window.setTimeout(() => {
     URL.revokeObjectURL(url);
   }, 60_000);

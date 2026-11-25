@@ -14,6 +14,7 @@ import { PlatformManager } from './game/platform';
 import { ReplayController } from './game/replayController';
 import { createTrainingConfig } from './game/training';
 import {
+  formatExportPresetLabel,
   formatPrimaryBind,
   getCinematicOptions,
   getSlashJudgmentTicks,
@@ -44,6 +45,7 @@ import { AutoFitter } from './ui/autoFit';
 import { showLaunchScreen } from './ui/launchScreen';
 import { LobbyUI, makeHoodieAvatarDataUrl, resolveSlots } from './ui/lobbyUI';
 import { MobileControls, MobileLayoutEditor } from './ui/mobileControls';
+import { MobileExportModal } from './ui/mobileExportModal';
 import { SettingsModal } from './ui/settingsUI';
 import { TrainingPanel } from './ui/trainingUI';
 
@@ -256,11 +258,13 @@ async function bootstrap() {
     }
   };
 
-  // External pause reasons: Settings modal open
+  // External pause reasons: Settings modal or Mobile Export modal open
   let settingsOpen = false;
+  let mobileExportOpen = false;
   let externalPaused = false;
+  let resumeAutoFullscreenTimer: number | null = null;
   const syncExternalPause = () => {
-    const want = settingsOpen;
+    const want = settingsOpen || mobileExportOpen;
     if (want === externalPaused) return;
     externalPaused = want;
     input.setPaused(want);
@@ -273,6 +277,168 @@ async function bootstrap() {
       else resumeMatchOverTimer();
     } else if (mode === 'replay') {
       replayController.setExternalPaused(want);
+    }
+  };
+
+  const mobileExportModal = new MobileExportModal({
+    onOpenChange: (open) => {
+      mobileExportOpen = open;
+      if (resumeAutoFullscreenTimer !== null) {
+        window.clearTimeout(resumeAutoFullscreenTimer);
+        resumeAutoFullscreenTimer = null;
+      }
+      if (open) {
+        platform.setAutoFullscreenSuspended(true);
+      } else {
+        // Delay re-enabling auto-fullscreen briefly so the Close tap itself never snaps back to fullscreen
+        resumeAutoFullscreenTimer = window.setTimeout(() => {
+          resumeAutoFullscreenTimer = null;
+          if (!mobileExportOpen) platform.setAutoFullscreenSuspended(false);
+        }, 180);
+      }
+      syncExternalPause();
+    },
+  });
+
+  const renderMp4ForBundle = (
+    bundle: MatchReplayBundle,
+    signal: AbortSignal,
+    onProgress: (progress01: number, phaseText: string) => void,
+  ) => {
+    const s = settings.get();
+    return exportReplayToMp4(bundle, {
+      resolution: s.exportResolution,
+      bitrateMbps: s.exportBitrateMbps,
+      speed: s.exportSpeed,
+      soundEnabled: s.exportSoundEnabled,
+      volumePct: 100,
+      bgmEnabled: s.exportBgmEnabled,
+      bgmVolumePct: 70,
+      bossMusicEnabled: s.bossMusicEnabled,
+      loadBgmBuffer: (trackId, ctx) => bgm.decodeTrackForContext(trackId, ctx),
+      graphicsQuality: s.graphicsQuality,
+      edgeBeautify: s.edgeBeautify,
+      dartOutline: s.dartOutline,
+      cinematic: getCinematicOptions(s),
+      sharedCharModelCache: renderer.getCharModelCache(),
+      signal,
+      onProgress,
+    });
+  };
+
+  const renderGifForBundle = (
+    bundle: MatchReplayBundle,
+    endTickIndex: number,
+    signal: AbortSignal,
+    onProgress: (progress01: number, phaseText: string) => void,
+  ) => {
+    const s = settings.get();
+    const frozenBundle: MatchReplayBundle = {
+      ...bundle,
+      replay: { ...bundle.replay, ticks: bundle.replay.ticks.slice() },
+    };
+    return exportReplayClipToGif(frozenBundle, {
+      endTickIndex,
+      maxDurationSec: 10.0,
+      graphicsQuality: s.graphicsQuality,
+      edgeBeautify: s.edgeBeautify,
+      dartOutline: s.dartOutline,
+      cinematic: getCinematicOptions(s),
+      sharedCharModelCache: renderer.getCharModelCache(),
+      signal,
+      onProgress,
+    });
+  };
+
+  const runMobileMp4Export = async (bundle: MatchReplayBundle) => {
+    if (mobileExportModal.isExporting()) return;
+    const abortCtrl = new AbortController();
+    const presetLabel = formatExportPresetLabel(settings.get());
+    platform.setAutoFullscreenSuspended(true);
+    const seq = mobileExportModal.openProgress({
+      kind: 'mp4',
+      subtitle: `《${bundle.summary.mapTitle}》 · ${presetLabel}`,
+      abortController: abortCtrl,
+    });
+    await platform.exitFullscreenTemporarily();
+    lobbyUI.refreshPlatformButtons();
+    if (abortCtrl.signal.aborted) {
+      mobileExportModal.close();
+      return;
+    }
+
+    try {
+      const res = await renderMp4ForBundle(bundle, abortCtrl.signal, (p01, phaseText) => {
+        mobileExportModal.updateProgress(seq, p01, phaseText);
+      });
+      const audioTag =
+        res.hasSfx && res.hasBgm
+          ? '含音效与 BGM'
+          : res.hasBgm
+            ? '含 BGM'
+            : res.hasSfx
+              ? '含音效'
+              : '无音轨';
+      mobileExportModal.showReady(seq, {
+        kind: 'mp4',
+        blob: res.blob,
+        filename: res.filename,
+        metaText: `${res.width}×${res.height} · ${audioTag}`,
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        mobileExportModal.close();
+      } else {
+        mobileExportModal.showError(seq, err instanceof Error ? err.message : String(err));
+      }
+    }
+  };
+
+  const runMobileMp4ExportById = async (matchId: string) => {
+    if (mobileExportModal.isExporting()) return;
+    const bundle = await matchHistory.getReplayBundle(matchId);
+    if (!bundle) {
+      alert('未找到该场对局的回放数据（可能已被清理）。');
+      return;
+    }
+    await runMobileMp4Export(bundle);
+  };
+
+  const runMobileGifExport = async (bundle: MatchReplayBundle, endTickIndex: number) => {
+    if (mobileExportModal.isExporting()) return;
+    const abortCtrl = new AbortController();
+    const endSec = endTickIndex / 20;
+    const startSec = Math.max(0, endSec - 10);
+    const rangeLabel = `${startSec.toFixed(1)}s–${endSec.toFixed(1)}s · 24fps GIF`;
+    platform.setAutoFullscreenSuspended(true);
+    const seq = mobileExportModal.openProgress({
+      kind: 'gif',
+      subtitle: `《${bundle.summary.mapTitle}》 · ${rangeLabel}`,
+      abortController: abortCtrl,
+    });
+    await platform.exitFullscreenTemporarily();
+    lobbyUI.refreshPlatformButtons();
+    if (abortCtrl.signal.aborted) {
+      mobileExportModal.close();
+      return;
+    }
+
+    try {
+      const res = await renderGifForBundle(bundle, endTickIndex, abortCtrl.signal, (p01, phaseText) => {
+        mobileExportModal.updateProgress(seq, p01, phaseText);
+      });
+      mobileExportModal.showReady(seq, {
+        kind: 'gif',
+        blob: res.blob,
+        filename: res.filename,
+        metaText: `${res.durationSec.toFixed(1)}s · ${res.width}×${res.height} @ ${res.fps}fps`,
+      });
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') {
+        mobileExportModal.close();
+      } else {
+        mobileExportModal.showError(seq, err instanceof Error ? err.message : String(err));
+      }
     }
   };
 
@@ -858,7 +1024,7 @@ async function bootstrap() {
   const startRenderLoop = () => {
     stopRenderLoop();
     const tickRender = () => {
-      platform.setAutoSwitchAllowed(mode === 'lobby' && !settingsOpen && !cricketBatchModal.isOpen());
+      platform.setAutoSwitchAllowed(mode === 'lobby' && !settingsOpen && !cricketBatchModal.isOpen() && !mobileExportOpen);
       renderer.renderFrame(input);
       const now = performance.now();
       if (mode === 'playing' && now - lastTelemetryUpdateMs >= 200) {
@@ -1022,47 +1188,20 @@ async function bootstrap() {
     },
     onReplayToggleFavorite: (bundle, nextFavorite) => toggleBundleFavorite(bundle, nextFavorite),
     onReplayExportMp4: async (bundle, signal, onProgress) => {
-      const s = settings.get();
-      const result = await exportReplayToMp4(bundle, {
-        resolution: s.exportResolution,
-        bitrateMbps: s.exportBitrateMbps,
-        speed: s.exportSpeed,
-        soundEnabled: s.exportSoundEnabled,
-        volumePct: 100,
-        bgmEnabled: s.exportBgmEnabled,
-        bgmVolumePct: 70,
-        bossMusicEnabled: s.bossMusicEnabled,
-        loadBgmBuffer: (trackId, ctx) => bgm.decodeTrackForContext(trackId, ctx),
-        graphicsQuality: s.graphicsQuality,
-        edgeBeautify: s.edgeBeautify,
-        dartOutline: s.dartOutline,
-        cinematic: getCinematicOptions(s),
-        sharedCharModelCache: renderer.getCharModelCache(),
-        signal,
-        onProgress,
-      });
+      const result = await renderMp4ForBundle(bundle, signal, onProgress);
       triggerMp4Download(result.blob, result.filename);
       return result;
     },
     onReplayExportGif: async (bundle, endTickIndex, signal, onProgress) => {
-      const s = settings.get();
-      const frozenBundle: MatchReplayBundle = {
-        ...bundle,
-        replay: { ...bundle.replay, ticks: bundle.replay.ticks.slice() },
-      };
-      const result = await exportReplayClipToGif(frozenBundle, {
-        endTickIndex,
-        maxDurationSec: 10.0,
-        graphicsQuality: s.graphicsQuality,
-        edgeBeautify: s.edgeBeautify,
-        dartOutline: s.dartOutline,
-        cinematic: getCinematicOptions(s),
-        sharedCharModelCache: renderer.getCharModelCache(),
-        signal,
-        onProgress,
-      });
+      const result = await renderGifForBundle(bundle, endTickIndex, signal, onProgress);
       triggerGifDownload(result.blob, result.filename);
       return result;
+    },
+    onMobileReplayExportMp4: (bundle) => {
+      void runMobileMp4Export(bundle);
+    },
+    onMobileReplayExportGif: (bundle, endTickIndex) => {
+      void runMobileGifExport(bundle, endTickIndex);
     },
   });
   renderer.setNameplateLayer(hudUI.nameplateLayer);
@@ -1139,27 +1278,12 @@ async function bootstrap() {
       if (!bundle) {
         throw new Error('未找到该场对局的回放数据');
       }
-      const s = settings.get();
-      const result = await exportReplayToMp4(bundle, {
-        resolution: s.exportResolution,
-        bitrateMbps: s.exportBitrateMbps,
-        speed: s.exportSpeed,
-        soundEnabled: s.exportSoundEnabled,
-        volumePct: 100,
-        bgmEnabled: s.exportBgmEnabled,
-        bgmVolumePct: 70,
-        bossMusicEnabled: s.bossMusicEnabled,
-        loadBgmBuffer: (trackId, ctx) => bgm.decodeTrackForContext(trackId, ctx),
-        graphicsQuality: s.graphicsQuality,
-        edgeBeautify: s.edgeBeautify,
-        dartOutline: s.dartOutline,
-        cinematic: getCinematicOptions(s),
-        sharedCharModelCache: renderer.getCharModelCache(),
-        signal,
-        onProgress,
-      });
+      const result = await renderMp4ForBundle(bundle, signal, onProgress);
       triggerMp4Download(result.blob, result.filename);
       return result;
+    },
+    onMobileExportMp4: (matchId) => {
+      void runMobileMp4ExportById(matchId);
     },
     onOpenSettings: () => {
       settingsModal.open();
@@ -1401,7 +1525,7 @@ async function bootstrap() {
 
   // Match & Replay keyboard/mouse shortcuts
   window.addEventListener('keydown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen() || mobileExportModal.isOpen()) return;
     if (!e.repeat && !isTextEditableTarget(e.target) && matchesActionKeyEvent(settings.get().keybindings, 'toggleHideUi', e)) {
       e.preventDefault();
       setUiHidden(!uiHidden, true);
@@ -1464,7 +1588,7 @@ async function bootstrap() {
   });
 
   window.addEventListener('mousedown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen() || mobileExportModal.isOpen()) return;
     const code = `Mouse${e.button}`;
     if (isBoundToAction(settings.get().keybindings, 'toggleHideUi', code)) {
       e.preventDefault();

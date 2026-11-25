@@ -21,6 +21,8 @@ export interface HistoryModalCallbacks {
     signal: AbortSignal,
     onProgress: (progress01: number, phaseText: string) => void,
   ) => Promise<Mp4ExportResult>;
+  /** Mobile / tablet: exits fullscreen and opens the dedicated progress + save/share modal. */
+  onMobileExportMp4?: (matchId: string) => void;
   onOpenSettings: () => void;
   onOpenChange?: (open: boolean) => void;
   /** Mobile: paginate the list so every page fits a landscape phone without scrolling. */
@@ -524,6 +526,10 @@ export class HistoryModal {
 
   private startExport(summary: MatchHistorySummary) {
     if (this.activeExport || this.loadingReplayId !== null) return;
+    if (this.callbacks.isMobile?.() && this.callbacks.onMobileExportMp4) {
+      this.callbacks.onMobileExportMp4(summary.id);
+      return;
+    }
     const controller = new AbortController();
     const presetLabel = this.getExportPresetLabel();
     this.statusNotice = null;
