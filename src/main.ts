@@ -1378,8 +1378,8 @@ async function bootstrap() {
         mobileControls?.hide();
       }
     },
-    onTick: (prev, next, tickDurationMs) => {
-      renderer.pushTick(prev, next, tickDurationMs);
+    onTick: (prev, next, tickDurationMs, pvpRollback) => {
+      renderer.pushTick(prev, next, tickDurationMs, pvpRollback);
       bgm.updateMatchTick(next);
       hudUI.updateTick(next, activeMapData?.colStart, activeMapData?.colEvery);
       mobileControls?.onTick(next, tickDurationMs);

@@ -245,7 +245,7 @@ export class PvpMatchController {
       this.current = display;
       if (display.t !== current.t || update.prediction || events.length || ended) {
         const previous = display.t <= current.t ? display : current;
-        this.callbacks.onTick(previous, display, PVP_TICK_MS);
+        this.callbacks.onTick(previous, display, PVP_TICK_MS, Boolean(update.rollbackFrames));
       }
       if (ended) {
         // An administrative close can arrive after an already confirmed game over.

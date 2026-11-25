@@ -31,7 +31,7 @@ export interface MatchCallbacks {
     initialState: TickSnapshot,
     director?: CinematicDirector | null,
   ) => Promise<void> | void;
-  onTick: (prevState: TickSnapshot, nextState: TickSnapshot, tickDurationMs: number) => void;
+  onTick: (prevState: TickSnapshot, nextState: TickSnapshot, tickDurationMs: number, pvpRollback?: boolean) => void;
   onMatchOver: (finalState: TickSnapshot, director?: CinematicDirector | null) => void;
   onCountdown?: (stage: CountdownStage) => void;
   onStatus?: (msg: string) => void;

@@ -20,6 +20,7 @@ import {
 } from '../game/types';
 import { CharacterRig, PitFallKind, RigDeathEffectCallbacks, WINNER_CELEBRATE_DELAY_TICKS } from './charRig';
 import { buildCustomCharModel, CUSTOM_CHAR_TEMPLATE } from './customChar';
+import { PvpCorrectionSmoothing } from './pvpCorrectionSmoothing';
 import { FXSystem } from './fxSystem';
 import { ArenaMover, HqArenaMap3D, IArenaMap } from './hqMapBuilder';
 import { getHqTheme } from './hqThemes';
@@ -117,6 +118,7 @@ export class GameRenderer {
   // Logic tick interpolation state pair
   private prevState: TickSnapshot | null = null;
   private currState: TickSnapshot | null = null;
+  private pvpSmoothing: PvpCorrectionSmoothing | null = null;
   private tickReceivedAtMs = 0;
   private tickIntervalMs = LOGIC_DT_MS;
   private gameSpeed = 1.0;
@@ -624,6 +626,7 @@ export class GameRenderer {
     // Build floating nameplates
     this.rebuildNameplates();
 
+    this.pvpSmoothing = null;
     this.prevState = initialState;
     this.currState = initialState;
     this.tickReceivedAtMs = performance.now();
@@ -926,7 +929,13 @@ export class GameRenderer {
     }
   }
 
-  public pushTick(prev: TickSnapshot, next: TickSnapshot, tickDurationMs?: number) {
+  public pushTick(prev: TickSnapshot, next: TickSnapshot, tickDurationMs?: number, pvpRollback?: boolean) {
+    if (pvpRollback !== undefined && this.currState) {
+      this.pvpSmoothing ??= new PvpCorrectionSmoothing(1 - this.humanSeat, this.currState);
+      this.pvpSmoothing.tick(this.currState, next, pvpRollback, performance.now());
+    } else {
+      this.pvpSmoothing = null;
+    }
     if (this.trainingMode) prev = this.applyTrainingTransitions(prev, next);
     this.prevState = prev;
     this.currState = next;
@@ -1955,16 +1964,19 @@ export class GameRenderer {
         ? this.pausedAlpha
         : Math.max(0, (tWork0 - this.tickReceivedAtMs) / this.tickIntervalMs);
       const humanDisp = this.computeHumanDisplayPose(alpha, rawAlpha, input, frameDt);
-      const fxPrevState = humanDisp ? this.withPlayer(this.prevState, this.humanSeat, humanDisp.prevP) : this.prevState;
-      const fxCurrState = humanDisp ? this.withPlayer(this.currState, this.humanSeat, humanDisp.currP) : this.currState;
+      const remotePose = this.pvpSmoothing?.draw(this.prevState, this.currState, alpha, tWork0);
+      const visualPrev = remotePose?.prev ?? this.prevState;
+      const visualNext = remotePose?.next ?? this.currState;
+      const fxPrevState = humanDisp ? this.withPlayer(visualPrev, this.humanSeat, humanDisp.prevP) : visualPrev;
+      const fxCurrState = humanDisp ? this.withPlayer(visualNext, this.humanSeat, humanDisp.currP) : visualNext;
 
       // Update character rigs & floating nameplates
       const { width: screenW, height: screenH } = getLogicalViewport();
       for (let k = 0; k < this.rigs.length; k++) {
-        const prevP = humanDisp && k === this.humanSeat ? humanDisp.prevP : this.prevState.players[k];
-        const currP = humanDisp && k === this.humanSeat ? humanDisp.currP : this.currState.players[k];
-        const prevD = this.prevState.darts[k];
-        const currD = this.currState.darts[k];
+        const prevP = fxPrevState.players[k];
+        const currP = fxCurrState.players[k];
+        const prevD = fxPrevState.darts[k];
+        const currD = fxCurrState.darts[k];
 
         // Visibility rule: if Human is playing & alive, hide enemies that Human cannot see in grass!
         const hiddenFromHuman = this.isPlayerHiddenFromHuman(this.currState, k);
