@@ -117,6 +117,8 @@ export class HudUI {
   private netStats: PvpNetStats | null = null;
   /** PvP: the running / finished match (rematch states for other matches are ignored). */
   private pvpMatchId: string | null = null;
+  /** Map of the match on screen (PvP result title bar). */
+  private mapTitle = '';
   /** PvP result card with 再来一局 / 退出 is up. */
   private pvpRematchOpen = false;
   private pvpRematchState: PvpRematchState | null = null;
@@ -275,6 +277,7 @@ export class HudUI {
     this.localSeat = humanSeat;
     // A new match (also a rematch started from the result screen) drops the previous result card's state
     this.pvpMatchId = isPvp && config.pvp ? config.pvp.matchId : null;
+    this.mapTitle = config.mapMeta?.title ?? '';
     this.pvpRematchOpen = false;
     this.pvpRematchState = null;
     this.setCountdown(null);
@@ -1789,8 +1792,8 @@ export class HudUI {
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
 
     let remainSec = 4;
-    // PvP rematch series: the tally takes the middle of the card (the outcome is already in the header and the
-    // winner is the gold #1 row), which keeps the card within a 360 px tall phone screen
+    // PvP: title bar (map · game time · 收藏), a big 胜利 / 失败 / 平局, an optional note and the series tally —
+    // no 本局胜者 hero and no ranking rows
     const seriesHtml = isPvp && opts?.pvpSeries && opts.pvpSeries.games > 0 ? this.renderPvpSeriesHtml(opts.pvpSeries) : '';
     const cornerActionsHtml =
       canWatchReplay || canToggleFav
@@ -1816,11 +1819,11 @@ export class HudUI {
         : '';
     this.resultOverlay.innerHTML = `
       <div class="result-card ${cornerActionsHtml && !isPvp ? 'has-corner-actions' : ''} ${isPvp ? 'is-pvp-result' : ''}">
-        ${isPvp ? this.renderPvpOutcomeHtml(finalState, cornerActionsHtml, opts?.note) : cornerActionsHtml}
         ${
-          seriesHtml
-            ? seriesHtml
-            : `<div class="result-kicker">${winner ? '本局胜者' : '平局结束'}</div>
+          isPvp
+            ? `${this.renderPvpHeadHtml(finalState, cornerActionsHtml, opts?.note)}${seriesHtml}`
+            : `${cornerActionsHtml}
+              <div class="result-kicker">${winner ? '本局胜者' : '平局结束'}</div>
               ${
                 winner
                   ? `<div class="result-winner">
@@ -1828,23 +1831,23 @@ export class HudUI {
                       <div class="result-wname" style="color:${winner.ringAccent || winner.color}">${winner.displayName}</div>
                     </div>`
                   : `<div class="result-wname">平局 (Draw)</div>`
-              }`
+              }
+              <div class="result-table">
+                ${rows
+                  .map(({ slot, p }) => {
+                    const killerName = p.killer >= 0 && this.slots[p.killer] ? this.slots[p.killer].displayName : undefined;
+                    return `
+                    <div class="result-row ${p.rank === 1 && winner ? 'is-first' : ''}">
+                      <span class="r-rank">#${p.rank}</span>
+                      <img class="r-av" src="${slot.avatar || ''}" alt="" />
+                      <span class="r-name">${slot.displayName}</span>
+                      <span class="r-kills">${p.kills} 击杀</span>
+                      <span class="r-cause">${p.alive ? '存活至终场' : causeLabel(p.cause, killerName)}</span>
+                    </div>`;
+                  })
+                  .join('')}
+              </div>`
         }
-        <div class="result-table">
-          ${rows
-            .map(({ idx, slot, p }) => {
-              const killerName = p.killer >= 0 && this.slots[p.killer] ? this.slots[p.killer].displayName : undefined;
-              return `
-              <div class="result-row ${p.rank === 1 && winner ? 'is-first' : ''} ${isPvp && idx === this.humanSeat ? 'is-human-row' : ''}">
-                <span class="r-rank">#${p.rank}</span>
-                <img class="r-av" src="${slot.avatar || ''}" alt="" />
-                <span class="r-name">${slot.displayName}</span>
-                <span class="r-kills">${p.kills} 击杀</span>
-                <span class="r-cause">${p.alive ? '存活至终场' : causeLabel(p.cause, killerName)}</span>
-              </div>`;
-            })
-            .join('')}
-        </div>
         ${
           rematchCard
             ? `<div class="result-pvp-btns">
@@ -1970,22 +1973,29 @@ export class HudUI {
       </div>`;
   }
 
-  /** PvP result header: outcome from the local player's side (+ optional server note such as a forfeit). */
-  private renderPvpOutcomeHtml(finalState: TickSnapshot, actionsHtml: string, note?: string): string {
+  /**
+   * PvP result top: title bar (PvP 对战 · map · game time, 收藏 / 回放 on the right), the outcome from your side as
+   * a big 胜利 / 失败 / 平局, and an optional server note (e.g. 对方已弃权) under it.
+   */
+  private renderPvpHeadHtml(finalState: TickSnapshot, actionsHtml: string, note?: string): string {
     const me = this.humanSeat;
     const won = finalState.winner >= 0 && finalState.winner === me;
     const draw = finalState.winner < 0;
     const cls = won ? 'is-win' : draw ? 'is-draw' : 'is-loss';
-    const text = won ? '🏆 你赢了' : draw ? '🤝 平局' : '💥 你输了';
+    const text = won ? '胜利' : draw ? '平局' : '失败';
     const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] || c);
+    // Game time of the match (final tick × 50 ms)
+    const secs = (Math.max(0, finalState.t) * 50) / 1000;
+    const meta = [this.mapTitle, `${secs.toFixed(1)}s`].filter(Boolean).join(' · ');
     return `
       <div class="result-pvp-head">
         <div class="result-pvp-head-left">
           <span class="result-pvp-badge">PvP 对战</span>
-          <span class="result-pvp-outcome ${cls}">${text}</span>
+          <span class="result-pvp-meta">${esc(meta)}</span>
         </div>
         ${actionsHtml}
       </div>
+      <div class="result-pvp-verdict ${cls}">${text}</div>
       ${note ? `<div class="result-pvp-note">${esc(note)}</div>` : ''}`;
   }
 

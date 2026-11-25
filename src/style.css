@@ -9619,13 +9619,13 @@ body.is-mobile .start-btn.pvp-fight-btn {
 .m-hud-perf .hud-net .net-bars i:nth-child(3) { height: 6px; }
 .m-hud-perf .hud-net .net-bars i:nth-child(4) { height: 8px; }
 
-/* ---------- PvP result card: outcome from your side + replay / favourite on one header row ---------- */
+/* ---------- PvP result card: title bar (badge · map · game time | 收藏), big 胜利 / 失败 / 平局, series ---------- */
 .result-pvp-head {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px 10px;
-  margin-bottom: 14px;
+  margin-bottom: 10px;
   text-align: left;
 }
 
@@ -9653,26 +9653,48 @@ body.is-mobile .start-btn.pvp-fight-btn {
   color: #bcd9ff;
 }
 
-.result-pvp-outcome {
-  font-size: 15px;
-  font-weight: 900;
-  letter-spacing: 0.3px;
+.result-pvp-meta {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #cfdaf0;
+  font-size: 12.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
 }
 
-.result-pvp-outcome.is-win { color: #ffd970; }
-.result-pvp-outcome.is-draw { color: #b9d4ff; }
-.result-pvp-outcome.is-loss { color: #ff9d9d; }
+.result-pvp-verdict {
+  margin: 2px 0 12px;
+  font-size: 44px;
+  font-weight: 900;
+  line-height: 1.1;
+  letter-spacing: 10px;
+  /* letter-spacing trails the last glyph: shift it back so the word stays optically centred */
+  text-indent: 10px;
+  text-align: center;
+}
+
+.result-pvp-verdict.is-win {
+  color: #ffd970;
+  text-shadow: 0 0 22px rgba(255, 196, 61, 0.45), 0 3px 0 rgba(120, 70, 0, 0.5);
+}
+
+.result-pvp-verdict.is-loss {
+  color: #ff7d7d;
+  text-shadow: 0 0 22px rgba(255, 80, 80, 0.35), 0 3px 0 rgba(90, 10, 10, 0.5);
+}
+
+.result-pvp-verdict.is-draw {
+  color: #b9d4ff;
+  text-shadow: 0 0 22px rgba(110, 168, 255, 0.35), 0 3px 0 rgba(10, 30, 80, 0.5);
+}
 
 .result-pvp-note {
   margin: -6px 0 12px;
-  padding: 6px 10px;
-  border-radius: 9px;
-  background: rgba(255, 196, 61, 0.1);
-  border: 1px solid rgba(255, 210, 110, 0.28);
-  color: #ffe08a;
-  font-size: 12px;
+  color: #f3d98c;
+  font-size: 12.5px;
   font-weight: 700;
-  text-align: left;
+  text-align: center;
 }
 
 /* ---------- PvP in match history ---------- */
@@ -9821,17 +9843,9 @@ body.is-mobile .result-card.is-pvp-result .result-pvp-head {
   margin-bottom: 10px;
 }
 
-body.is-mobile .result-card.is-pvp-result .result-winner {
+body.is-mobile .result-card.is-pvp-result .result-pvp-verdict {
   margin-bottom: 10px;
-}
-
-body.is-mobile .result-card.is-pvp-result .result-avatar {
-  width: 44px;
-  height: 44px;
-}
-
-body.is-mobile .result-card.is-pvp-result .result-table {
-  margin-bottom: 10px;
+  font-size: 40px;
 }
 
 body.is-mobile .result-card.is-pvp-result .start-btn.result-pvp-again-btn,
