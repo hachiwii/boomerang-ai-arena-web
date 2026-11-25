@@ -111,17 +111,27 @@ const ev = (st, name) => st.events.find((e) => e.name === name);
   h.input.setVirtualMove(0.08, 0);
   ({ act } = h.step());
   assert.equal(act.mx, 1000, `past 6% deadzone must immediately reach full speed (mx=${act.mx})`);
-  // Aiming throw → capped to 50% speed (500)
+  // Aiming throw with bulletTime ON (default) → capped to 50% speed (500)
+  assert.equal(h.input['settings'].get().bulletTime, true, 'bulletTime defaults to true');
   h.input.setVirtualAiming(true);
   h.input.setVirtualMove(1, 0);
   ({ act } = h.step());
-  assert.equal(act.mx, 500, `while aiming throw, movement speed must be capped at 50% (mx=${act.mx})`);
+  assert.equal(act.mx, 500, `while aiming with bulletTime ON, movement speed must be capped at 50% (mx=${act.mx})`);
+  assert.deepEqual(h.input.getTouchMoveIntent(), [500, 0]);
+  // Turn bulletTime OFF → aiming NO LONGER slows movement speed (stays full 1000)
+  h.input['settings'].setBulletTime(false);
+  ({ act } = h.step());
+  assert.equal(act.mx, 1000, `while aiming with bulletTime OFF, movement speed must stay 100% (mx=${act.mx})`);
+  assert.deepEqual(h.input.getTouchMoveIntent(), [1000, 0]);
+  // Persists across reload and resets to true on resetAll()
+  assert.equal(new SettingsStore().get().bulletTime, false, 'bulletTime=false persists in localStorage');
+  h.input['settings'].setBulletTime(true);
   h.input.setVirtualAiming(false);
   // Inside 6% deadzone → stop
   h.input.setVirtualMove(0.05, 0);
   ({ act } = h.step());
   assert.equal(act.mx, 0, 'inside 6% dead zone → stop');
-  console.log('  [TEST 1 PASS] left stick: 6% deadzone / instant full speed / 50% aiming speed cap');
+  console.log('  [TEST 1 PASS] left stick: 6% deadzone / instant full speed / bulletTime ON 50% cap vs OFF 100% speed');
 }
 
 // ---------- 2. Dash button toward held stick direction ----------

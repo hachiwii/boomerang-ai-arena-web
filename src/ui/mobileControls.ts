@@ -202,7 +202,14 @@ export class MobileControls {
     this.bindButton('slash', () => this.input.queueVirtualMelee());
     this.bindButton('dash', () => this.input.queueVirtualDash());
 
-    settings.onChange(() => {
+    settings.onChange((s) => {
+      if (!s.bulletTime) {
+        this.clearSlowmoTimer();
+        if (this.slowmoOn) {
+          this.slowmoOn = false;
+          this.callbacks.onAimSlowmo(false);
+        }
+      }
       if (this.visible) this.applyLayout();
     });
     window.addEventListener('resize', () => {
@@ -575,14 +582,14 @@ export class MobileControls {
     this.aimPhase = 'aiming';
     this.els.aim.classList.add('is-aiming');
     this.setCancelVisible(true);
-    // Restrict movement speed to 50% immediately while aiming a throw
+    // Restrict movement speed to 50% while aiming only when bulletTime is enabled (enforced in HumanInputController)
     this.input.setVirtualAiming(true);
-    // Delay 0.1x slow-mo slightly so quick flick throws never flicker slow-mo
+    // Delay 0.1x slow-mo slightly so quick flick throws never flicker slow-mo; skip entirely when bulletTime is OFF
     this.clearSlowmoTimer();
-    if (!this.slowmoOn) {
+    if (this.settings.get().bulletTime && !this.slowmoOn) {
       this.slowmoTimer = window.setTimeout(() => {
         this.slowmoTimer = null;
-        if (this.aimPhase === 'aiming' && !this.slowmoOn) {
+        if (this.aimPhase === 'aiming' && !this.slowmoOn && this.settings.get().bulletTime) {
           this.slowmoOn = true;
           this.callbacks.onAimSlowmo(true);
         }

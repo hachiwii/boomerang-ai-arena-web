@@ -135,6 +135,7 @@ export interface GameSettings {
   meleeAssist: boolean; // Auto-rotate slash/kick aim minimally to include reachable target when mouse cone misses
   cliffGuard: boolean; // Prevent walking off cliffs
   dashGuard: boolean; // Dash-tail 25% cliff save
+  bulletTime: boolean; // Mobile only: slow down game speed & move speed while aiming a throw
   slashJudgment: SlashJudgmentOption; // 'normal' (melee 2f / block 3f swept ±60°) | 'strict' (melee AI 1f+1f / block 2f swept ±60°) | 'ai' (AI exact)
   killCam: boolean; // Non-final kill slow-mo & eye-level camera (0.5x)
   killFx: boolean; // Upstream hit-stop + impact punch/VFX in replay/spectator (only available when graphicsQuality==='high' && !killCam)
@@ -290,6 +291,7 @@ export function defaultSettings(): GameSettings {
     meleeAssist: true,
     cliffGuard: true,
     dashGuard: true,
+    bulletTime: true,
     slashJudgment: 'normal',
     killCam: false,
     killFx: true,
@@ -531,6 +533,8 @@ export class SettingsStore {
         typeof parsed.cliffGuard === 'boolean' ? parsed.cliffGuard : def.cliffGuard;
       const dashGuard =
         typeof parsed.dashGuard === 'boolean' ? parsed.dashGuard : cliffGuard;
+      const bulletTime =
+        typeof parsed.bulletTime === 'boolean' ? parsed.bulletTime : def.bulletTime;
       const slashJudgment: SlashJudgmentOption =
         parsed.slashJudgment !== undefined && VALID_SLASH_JUDGMENT.has(parsed.slashJudgment)
           ? parsed.slashJudgment
@@ -605,6 +609,7 @@ export class SettingsStore {
         meleeAssist,
         cliffGuard,
         dashGuard,
+        bulletTime,
         slashJudgment,
         killCam,
         killFx,
@@ -727,6 +732,12 @@ export class SettingsStore {
   public setDashGuard(enabled: boolean) {
     if (this.settings.dashGuard === enabled) return;
     this.settings.dashGuard = enabled;
+    this.emit();
+  }
+
+  public setBulletTime(enabled: boolean) {
+    if (this.settings.bulletTime === enabled) return;
+    this.settings.bulletTime = enabled;
     this.emit();
   }
 

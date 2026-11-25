@@ -453,6 +453,7 @@ export class SettingsModal {
     setSwitch('#settings-melee-assist-toggle', s.meleeAssist, s.meleeAssist ? '已开启' : '已关闭');
     setSwitch('#settings-cliff-guard-toggle', s.cliffGuard, s.cliffGuard ? '已开启' : '已关闭');
     setSwitch('#settings-dash-guard-toggle', s.dashGuard, s.dashGuard ? '已开启' : '已关闭');
+    setSwitch('#settings-bullet-time-toggle', s.bulletTime, s.bulletTime ? '已开启' : '已关闭');
 
     this.body.querySelectorAll<HTMLButtonElement>('[data-slash-judgment]').forEach((btn) => {
       const active = btn.dataset.slashJudgment === s.slashJudgment;
@@ -826,6 +827,29 @@ export class SettingsModal {
                 </button>
               </div>
 
+              ${
+                mobile
+                  ? `
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">子弹时间</div>
+                  <div class="settings-toggle-desc">瞄准时，降低游戏速度（关闭后不再降低游戏速度，也不再自我减速）</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${s.bulletTime ? 'is-on' : ''}"
+                  id="settings-bullet-time-toggle"
+                  role="switch"
+                  aria-checked="${s.bulletTime}"
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${s.bulletTime ? '已开启' : '已关闭'}</span>
+                </button>
+              </div>
+              `
+                  : ''
+              }
+
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">挥砍判定</div>
@@ -1066,6 +1090,10 @@ export class SettingsModal {
     });
     this.body.querySelector('#settings-dash-guard-toggle')?.addEventListener('click', () => {
       this.store.setDashGuard(!this.store.get().dashGuard);
+      this.syncControlsInPlace();
+    });
+    this.body.querySelector('#settings-bullet-time-toggle')?.addEventListener('click', () => {
+      this.store.setBulletTime(!this.store.get().bulletTime);
       this.syncControlsInPlace();
     });
     this.body.querySelectorAll<HTMLButtonElement>('[data-slash-judgment]').forEach((btn) => {

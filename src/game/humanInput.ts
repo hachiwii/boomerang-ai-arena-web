@@ -666,11 +666,11 @@ export class HumanInputController {
     return this.getVirtualMoveVector();
   }
 
-  /** Left stick → engine move vector: 6% deadzone, instant full speed beyond (50% while aiming throw). */
+  /** Left stick → engine move vector: 6% deadzone, instant full speed beyond (50% while aiming when bulletTime is ON). */
   private getVirtualMoveVector(): [number, number] {
     const m = Math.hypot(this.vMoveX, this.vMoveY);
     if (m < 0.06) return [0, 0];
-    const scale = this.vAiming ? 500 : 1000;
+    const scale = this.vAiming && this.settings.get().bulletTime ? 500 : 1000;
     return [Math.round((this.vMoveX / m) * scale), Math.round((this.vMoveY / m) * scale)];
   }
 
