@@ -1,4 +1,4 @@
-import type { PvpNetStats } from '../net/pvpTypes';
+import type { PvpNetStats, PvpRematchState } from '../net/pvpTypes';
 import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
 import { GifClipExportResult } from '../game/gifExporter';
 import { CountdownStage } from '../game/matchController';
@@ -34,6 +34,9 @@ export interface ReplayPlaylistState {
 
 export interface HudCallbacks {
   onReturnToLobby: (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => void;
+  /** PvP result screen: 再来一局 / 退出 (main.ts forwards them to the lobby client) */
+  onPvpRematch?: () => void;
+  onPvpExit?: () => void;
   onRestartMatch: () => void;
   /** Mirrors the PC quick-restart (R) availability; mobile shows the restart icon only when true. */
   canQuickRestart?: () => boolean;
@@ -1562,6 +1565,9 @@ export class HudUI {
   }
 
   /** PvP: latency to the relay server, shown at the end of the perf line (desktop & mobile); null removes it. */
+  /** PvP result screen: both players' 再来一局 / 退出 choices; null clears. TODO(UI): implement. */
+  public setPvpRematchState(_state: PvpRematchState | null): void {}
+
   public setNetStats(stats: PvpNetStats | null): void {
     this.netStats = stats ? { ...stats } : null;
     this.renderNetStats();
@@ -1645,7 +1651,7 @@ export class HudUI {
     finalState: TickSnapshot,
     eloResult: EloUpdateResult | null = null,
     initialFavorite = false,
-    opts?: { note?: string },
+    opts?: { note?: string; pvpRematch?: boolean },
   ) {
     this.clearTimers();
     const isRanked = this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa';

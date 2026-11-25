@@ -29,7 +29,7 @@ sends.
 ## Topology
 
 ```
-browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on) ──► origin server :8080 (Node, ws)
+browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on, secret x-pvp-origin-key header) ──► origin :8787 (Node, ws, systemd boomerang-pvp)
 ```
 
 - The client never contains the origin IP. URL: `import.meta.env.VITE_PVP_URL`, default
@@ -44,8 +44,10 @@ browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on) ─
 - `hello {buildId, token}` → `welcome {code, expiresAt, serverTime}`; `presence {present}` (present = on the PvP
   tab and `document.visibilityState === 'visible'`); `resetCode`; `ping {t}` → `pong {t, serverTime}` every 1 s in
   the lobby (also renews the code), every 0.5 s in a match.
-- `challenge {code, mapId, seed, spawnSeed, bgmSeed}` → `challengeResult`. The challenger's client picks a random
-  map among the **standard** maps (`category: 'standard'` in `public/assets/maps/manifest.json`) and the seeds.
+- `mapPool {ids}`: each client reports its PvP map pool (lobby 地图选择, empty = all maps in
+  `public/assets/maps/manifest.json`, standard and large). `challenge {code}` → `challengeResult`. **The relay** draws
+  the map at random from the **challenged** player's pool (ids validated against the manifest) and the seeds
+  (crypto random); clients no longer choose them.
 - Codes: uniformly random 6 digits, unique among reserved codes. Challenges are rate-limited per IP and per
   connection (codes are guessable). Different `buildId` → `version`.
 
@@ -58,6 +60,12 @@ browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on) ─
    Not ready within 20 s → match cancelled, both get a notice.
 3. Frame `f` (20 Hz) is due at `startAt + f × 50 ms` in server time; clients estimate server time from ping
    (minimum-RTT filter).
+4. **Result screen (PvP):** buttons 再来一局 / 退出, no auto-return countdown. The relay keeps the finished match in a
+   post-game state and broadcasts both choices (`PvpRematchState`: undecided / rematch / left; a disconnect or
+   leaving the page counts as left; undecided for 3 minutes counts as left). Both rematch → a new match with the same
+   seats, a new map drawn from the challenged player's pool and new seeds; `matchStart` (with `rematchOf`) fires on
+   both sides and main.ts starts it straight from the result screen. One side leaves → the other's 再来一局 is
+   disabled (退出 still works). 退出 returns to the PvP tab.
 
 ## Netcode: input delay + rollback, server-canonical inputs
 
@@ -99,7 +107,8 @@ browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on) ─
 
 | Area | Files | Owner |
 |---|---|---|
-| Lobby PvP tab, code display, input, latency, reject messages | `src/ui/lobbyUI.ts`, `src/style.css` | UI |
+| Lobby PvP tab, code display, input, latency, reject messages, PvP map pool (`setMapPool`) | `src/ui/lobbyUI.ts`, `src/style.css`, `src/game/settings.ts` | UI |
+| PvP result screen: 再来一局 / 退出 (`showMatchResult(..., { pvpRematch: true })`, `setPvpRematchState`, callbacks `onPvpRematch` / `onPvpExit`) | `src/ui/hudUI.ts` | UI |
 | Match config for PvP (names, colours, models) | `src/game/pvpConfig.ts` | UI |
 | HUD: P1/P2 + （YOU）, latency in the perf line (`setNetStats`), hide pause/restart/speed in PvP | `src/ui/hudUI.ts` | UI |
 | Mobile: `setBulletTimeAllowed(false)` | `src/ui/mobileControls.ts` | UI |
@@ -111,3 +120,12 @@ browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on) ─
 | Server | `server/**` | Network |
 | Shared contract | `src/net/pvpTypes.ts`, `src/game/types.ts`, this file | Integrator |
 | CDN, DNS, TLS, server deployment | Aliyun account, `aliyun_e0` | Integrator |
+
+## Operations
+
+- Deploy the relay: `scripts/deploy_pvp_server.sh` (builds `server/`, installs `/opt/boomerang-pvp` and the
+  `boomerang-pvp` unit). A restart drops lobby codes and running matches.
+- `/etc/boomerang-pvp.env` on the origin holds `PVP_ORIGIN_KEY`; the CDN sends the same value in
+  `x-pvp-origin-key`, so direct connections to the origin IP get 403.
+- TLS for `pvp.biao.oinkvm.cn` is a Let's Encrypt cert uploaded to the CDN; renew with `scripts/renew_pvp_cert.sh`
+  (expires 2027-02-23).

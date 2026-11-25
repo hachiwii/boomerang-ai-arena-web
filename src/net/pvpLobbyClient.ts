@@ -34,6 +34,11 @@ interface MatchConnection {
 }
 
 class RelayPvpLobbyClient implements PvpLobbyClient {
+  // TODO(pvp rematch/map pool): contract stubs added by the integrator; replace with the real implementation
+  setMapPool(_mapIds: string[]): void {}
+  requestRematch(): void {}
+  leaveRematch(): void {}
+
   private state: PvpConnState = 'idle';
   private code = EMPTY_CODE;
   private stats = EMPTY_STATS;
