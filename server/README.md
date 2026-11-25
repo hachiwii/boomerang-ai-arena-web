@@ -11,7 +11,8 @@ npm start --prefix server
 The bind settings are `HOST` (default `0.0.0.0`) and `PORT` (default `8787`).
 The health probe is `GET /healthz` and the WebSocket path is `/ws`.
 The development frontend on localhost uses `ws://<host>:8787/ws`. Set the frontend build variable
-`VITE_PVP_URL` for any other page; production builds also need `VITE_PVP_ENABLED=1` (see `.env.example`).
+`VITE_PVP_URL` when the relay is elsewhere. Without it the frontend connects to ws(s)://<page host>:8787/ws; PvP is on
+unless the build sets `VITE_PVP_ENABLED=0` (see `.env.example`).
 Play with two browser profiles to obtain two independent lobby tokens.
 
 Run the network and engine tests from the repository root after building the

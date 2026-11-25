@@ -1,11 +1,10 @@
 /**
  * Online PvP build configuration (Vite env vars, see .env.example):
- *   VITE_PVP_ENABLED  1/true/on to show PvP, 0/false/off to hide it. Unset: on in `vite dev`, off in production builds.
- *   VITE_PVP_URL      the relay WebSocket URL (wss://…/ws). Unset: ws://<page host>:8787/ws on localhost pages, otherwise
- *                     PvP stays unavailable even when enabled.
+ *   VITE_PVP_ENABLED  PvP is ON unless this is 0/false/off/no (the Cloudflare mirror build sets it to 0).
+ *   VITE_PVP_URL      the relay WebSocket URL (e.g. wss://pvp.example.com/ws). Unset: the relay is assumed on the same
+ *                     host as the page, port 8787 — ws:// on http pages, wss:// on https pages — which is what a
+ *                     self-hosted deployment running server/ next to the static files gets out of the box.
  */
-const LOCAL_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
-
 function parseFlag(raw: string | undefined): boolean | null {
   const v = raw?.trim().toLowerCase();
   if (!v) return null;
@@ -14,13 +13,15 @@ function parseFlag(raw: string | undefined): boolean | null {
   return null;
 }
 
-export const PVP_ENABLED: boolean = parseFlag(import.meta.env.VITE_PVP_ENABLED) ?? import.meta.env.DEV;
+export const PVP_ENABLED: boolean = parseFlag(import.meta.env.VITE_PVP_ENABLED) ?? true;
 
 export function pvpServerUrl(): string | null {
   const configured = import.meta.env.VITE_PVP_URL?.trim();
   if (configured) return configured;
-  const host = typeof window !== 'undefined' ? window.location.hostname : '';
-  return LOCAL_HOSTS.includes(host) ? `ws://${host}:8787/ws` : null;
+  if (typeof window === 'undefined') return null;
+  const { protocol, hostname } = window.location;
+  const host = hostname.includes(':') && !hostname.startsWith('[') ? `[${hostname}]` : hostname; // bare IPv6
+  return `${protocol === 'https:' ? 'wss' : 'ws'}://${host}:8787/ws`;
 }
 
 /** PvP is shown and may connect only when it is enabled and has a relay to talk to. */

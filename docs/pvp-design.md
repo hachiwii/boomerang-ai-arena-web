@@ -32,10 +32,10 @@ sends.
 browser ──wss://<relay domain>/ws──► Aliyun CDN (WebSocket on, secret x-pvp-origin-key header) ──► origin :8787 (Node, ws, systemd boomerang-pvp)
 ```
 
-- Build config (`src/net/pvpConfig.ts`, `.env.example`): `VITE_PVP_ENABLED` switches PvP on (default on in `vite dev`,
-  off in production builds — the Cloudflare mirror builds with it off) and `VITE_PVP_URL` is the relay URL (on
-  `localhost`/`127.0.0.1` pages it defaults to `ws://<host>:8787/ws`). Off, or no URL → no PvP tab, no connection.
-  The client never contains the origin IP.
+- Build config (`src/net/pvpConfig.ts`, `.env.example`): PvP is on unless `VITE_PVP_ENABLED=0` (the Cloudflare mirror
+  builds with it off → no PvP tab, no connection). `VITE_PVP_URL` is the relay URL; unset, the client connects to
+  `ws(s)://<page host>:8787/ws` (same machine as the site; wss on https pages). The client never contains the origin
+  IP when the relay sits behind a CDN.
 - Transport is WebSocket (TCP): the account has no UDP-capable CDN product enabled (DCDN/IPA), and the user
   accepted TCP. Keep the message layer independent of the socket so a datagram transport could be added later, but
   do not build one now.

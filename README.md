@@ -50,13 +50,14 @@ npm run build
 # 可选：填写后在主界面底部展示备案号并链接至工信部备案查询页；留空则不显示
 VITE_ICP_NUMBER=
 
-# 可选：在线 1v1（PvP）。生产构建默认关闭；开启需同时填写中转服务器的公网 WebSocket 地址
-# （放在 CDN 后面，不要填源站 IP）。本地 vite dev 默认开启并连接 ws://localhost:8787/ws
+# 可选：在线 1v1（PvP），默认开启，填 0 关闭（镜像站即如此）。
+# 中转服务器地址留空时默认连接与页面同一主机的 8787 端口：http 页面用 ws://，https 页面用 wss://。
+# 服务器放在 CDN / 反向代理后面时填其公网地址，例如 wss://pvp.example.com/ws
 VITE_PVP_ENABLED=
 VITE_PVP_URL=
 ```
 
-PvP 中转服务器代码在 [`server/`](server/README.md)，协议与联机设计见 [`docs/pvp-design.md`](docs/pvp-design.md)。
+PvP 中转服务器代码在 [`server/`](server/README.md)（`npm ci --prefix server && npm run build --prefix server && npm start --prefix server`，默认监听 8787），协议与联机设计见 [`docs/pvp-design.md`](docs/pvp-design.md)。和静态站点部署在同一台机器上时，前端无需额外配置即可联机。
 
 ### 4. 重新编译 WASM 或重新导出资源（可选）
 
