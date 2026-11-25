@@ -24,6 +24,7 @@ import {
   ICON_SKIP_START,
   iconStar,
 } from './icons';
+import { pvpNetDetail, pvpRttLevel, pvpRttMs } from './pvpNet';
 
 export interface ReplayPlaylistState {
   index: number;
@@ -108,6 +109,9 @@ export class HudUI {
   private slots: SlotConfig[] = [];
   private matchMode: MatchMode = 'custom';
   private humanSeat = -1;
+  /** Seat highlighted as "you" (PvP: config.pvp.mySeat — both PvP slots are kind 'human'). */
+  private localSeat = -1;
+  private netStats: PvpNetStats | null = null;
   private isReplayMode = false;
   private replayBundle: MatchReplayBundle | null = null;
   private lastTickState: TickSnapshot | null = null;
@@ -121,6 +125,7 @@ export class HudUI {
   private timerEl: HTMLElement | null = null;
   private collapseEl: HTMLElement | null = null;
   private perfEl: HTMLElement | null = null;
+  private netEl: HTMLElement | null = null;
   private cardEls: {
     card: HTMLElement;
     kills: HTMLElement | null;
@@ -232,7 +237,9 @@ export class HudUI {
       const humanSlot = this.humanSeat >= 0 ? this.slots[this.humanSeat] : null;
       const accent = humanSlot ? humanSlot.ringAccent || humanSlot.color : '#6bb8ff';
       const subHtml = humanSlot
-        ? `<div class="cd-sub"><span class="cd-dot" style="background:${accent}"></span>你在 <strong>P${this.humanSeat + 1}</strong> 位置 · 准备开战</div>`
+        ? this.matchMode === 'pvp'
+          ? `<div class="cd-sub"><span class="cd-dot" style="background:${accent}"></span>你是 <strong style="color:${accent}">P${this.humanSeat + 1}</strong> · 准备开战</div>`
+          : `<div class="cd-sub"><span class="cd-dot" style="background:${accent}"></span>你在 <strong>P${this.humanSeat + 1}</strong> 位置 · 准备开战</div>`
         : '';
       this.countdownOverlay.innerHTML = `
         <div class="cd-stage cd-num cd-n${stage}">
@@ -250,9 +257,14 @@ export class HudUI {
     this.isReplayMode = false;
     this.replayBundle = null;
     this.clearReplayRefs();
+    const isPvp = config.matchMode === 'pvp';
+    // PvP: both seats are kind 'human' — the local player is config.pvp.mySeat, not the first human slot
+    if (isPvp && config.pvp) humanSeat = config.pvp.mySeat;
+    if (!isPvp) this.netStats = null;
     this.slots = config.slots;
     this.matchMode = config.matchMode;
     this.humanSeat = humanSeat;
+    this.localSeat = humanSeat;
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
@@ -265,7 +277,9 @@ export class HudUI {
           ? `${config.mapMeta.title} · 混战排位`
           : config.matchMode === 'cricket'
             ? `${config.mapMeta.title} · 斗蛐蛐`
-            : `${config.mapMeta.title}${humanSeat < 0 ? ' · 观战' : ''}${Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${config.speed.toFixed(1)}x` : ''}`;
+            : isPvp
+              ? `${config.mapMeta.title} · PvP 对战`
+              : `${config.mapMeta.title}${humanSeat < 0 ? ' · 观战' : ''}${Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${config.speed.toFixed(1)}x` : ''}`;
 
     this.resetMobileReplayChrome();
     this.root.classList.toggle('is-mobile-hud', this.mobile);
@@ -286,7 +300,7 @@ export class HudUI {
         ${config.slots
           .map(
             (s, i) => `
-          <div class="hud-pcard ${s.kind === 'human' ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}">
+          <div class="hud-pcard ${this.isLocalSlot(i, s) ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}">
             <img class="hud-avatar" src="${s.avatar || ''}" alt="" />
             <div class="hud-pmeta">
               <div class="hud-pname">${s.displayName}</div>
@@ -310,15 +324,15 @@ export class HudUI {
       <div class="hud-actions">
         <div class="hud-action-btns">
           <button class="hud-btn" id="hud-settings" title="音效、辅助功能、帧率上限与键位设置">⚙️ 设置</button>
-          <button class="hud-btn hud-exit" id="hud-exit">主界面 (ESC)</button>
+          <button class="hud-btn hud-exit" id="hud-exit" ${isPvp ? 'title="PvP 中途退出视为认输，对方获胜"' : ''}>主界面 (ESC)</button>
         </div>
-        <div class="hud-perf" id="hud-perf">20Hz · --Hz</div>
+        <div class="hud-perf" id="hud-perf">${this.perfLineInnerHtml('20Hz · --Hz')}</div>
       </div>
     `;
 
     this.timerEl = this.topBar.querySelector('#hud-timer');
     this.collapseEl = this.topBar.querySelector('#hud-collapse');
-    this.perfEl = this.topBar.querySelector('#hud-perf');
+    this.bindPerfLine();
     this.cardEls = config.slots.map((_, i) => ({
       card: this.topBar.querySelector(`[data-pcard="${i}"]`)!,
       kills: this.topBar.querySelector(`[data-pkills="${i}"]`)!,
@@ -357,7 +371,7 @@ export class HudUI {
         ${slots
           .map(
             (s, i) => `
-          <div class="m-av ${s.kind === 'human' ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}" title="${s.displayName}">
+          <div class="m-av ${this.isLocalSlot(i, s) ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}" title="${s.displayName}">
             <img src="${s.avatar || ''}" alt="" draggable="false" />
           </div>`,
           )
@@ -373,12 +387,12 @@ export class HudUI {
              <button type="button" class="m-icon-btn m-exit-btn" id="hud-exit" aria-label="退出到主界面">${ICON_EXIT}</button>`
           }
         </div>
-        <div class="m-hud-perf" id="hud-perf"></div>
+        <div class="m-hud-perf" id="hud-perf">${this.perfLineInnerHtml('')}</div>
       </div>
     `;
     this.timerEl = null;
     this.collapseEl = null;
-    this.perfEl = this.topBar.querySelector('#hud-perf');
+    this.bindPerfLine();
     this.cardEls = slots.map((_, i) => ({
       card: this.topBar.querySelector<HTMLElement>(`[data-pcard="${i}"]`)!,
       kills: null,
@@ -400,10 +414,10 @@ export class HudUI {
     });
   }
 
-  /** Restart icon follows the PC "R" availability (eliminated / finished ranked / AI spectating). */
+  /** Restart icon follows the PC "R" availability (eliminated / finished ranked / AI spectating). Never in PvP. */
   public refreshRestartVisibility() {
     if (!this.mobile || !this.mRestartBtn) return;
-    const can = Boolean(this.callbacks.canQuickRestart?.());
+    const can = this.matchMode !== 'pvp' && Boolean(this.callbacks.canQuickRestart?.());
     this.mRestartBtn.classList.toggle('hidden', !can);
   }
 
@@ -853,6 +867,8 @@ export class HudUI {
     this.slots = summary.slots;
     this.matchMode = summary.matchMode;
     this.humanSeat = -1; // Spectator perspective
+    this.localSeat = summary.matchMode === 'pvp' ? summary.humanSeat : -1;
+    this.netStats = null;
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
@@ -869,7 +885,9 @@ export class HudUI {
             ? summary.slots.length === 2
               ? '1v1'
               : '4人混战'
-            : `自定义 ${matchSpeed.toFixed(1)}x`;
+            : summary.matchMode === 'pvp'
+              ? 'PvP 对战'
+              : `自定义 ${matchSpeed.toFixed(1)}x`;
     const replayBadge = this.replayIsLiveAi
       ? isCricket
         ? '🦗 斗蛐蛐'
@@ -889,7 +907,7 @@ export class HudUI {
         ${summary.slots
           .map(
             (s, i) => `
-          <div class="hud-pcard ${s.kind === 'human' ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}">
+          <div class="hud-pcard ${this.isLocalSlot(i, s) ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}">
             <img class="hud-avatar" src="${s.avatar || ''}" alt="" />
             <div class="hud-pmeta">
               <div class="hud-pname">${s.displayName}</div>
@@ -936,6 +954,7 @@ export class HudUI {
     this.timerEl = this.topBar.querySelector('#hud-timer');
     this.collapseEl = this.topBar.querySelector('#hud-collapse');
     this.perfEl = this.topBar.querySelector('#hud-perf');
+    this.netEl = null;
     this.replayFavBtn = this.topBar.querySelector('#hud-replay-fav');
     this.cardEls = summary.slots.map((_, i) => ({
       card: this.topBar.querySelector(`[data-pcard="${i}"]`)!,
@@ -1497,9 +1516,11 @@ export class HudUI {
       if (this.humanHintMove) this.humanHintMove.style.display = 'none';
       if (this.humanHintLeft) {
         this.humanHintLeft.innerHTML =
-          this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa'
-            ? `已出局观战中 · 按 <kbd>${rst}</kbd> 重新匹配下一局`
-            : `已出局观战中 · 按 <kbd>${rst}</kbd> 立即原配置重开`;
+          this.matchMode === 'pvp'
+            ? '已出局 · 等待对局结束'
+            : this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa'
+              ? `已出局观战中 · 按 <kbd>${rst}</kbd> 重新匹配下一局`
+              : `已出局观战中 · 按 <kbd>${rst}</kbd> 立即原配置重开`;
         this.humanHintLeft.classList.add('spectate-pill');
       }
       if (this.humanHintRight) this.humanHintRight.style.display = 'none';
@@ -1529,20 +1550,60 @@ export class HudUI {
     }
   }
 
-  /** PvP: latency to the relay server (shown in the perf line); null outside PvP. TODO(UI): implement. */
-  public setNetStats(_stats: PvpNetStats | null): void {}
+  /** Perf line = text span (updateTelemetry) + latency span (setNetStats, PvP only). */
+  private perfLineInnerHtml(initialText: string): string {
+    return `<span class="hud-perf-text" id="hud-perf-text">${initialText}</span><span class="hud-net hidden" id="hud-net" data-level="none"><span class="hud-net-sep">·</span><span class="net-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span><span class="hud-net-val"></span></span>`;
+  }
+
+  private bindPerfLine() {
+    this.perfEl = this.topBar.querySelector('#hud-perf-text') ?? this.topBar.querySelector('#hud-perf');
+    this.netEl = this.topBar.querySelector('#hud-net');
+    this.renderNetStats();
+  }
+
+  /** PvP: latency to the relay server, shown at the end of the perf line (desktop & mobile); null removes it. */
+  public setNetStats(stats: PvpNetStats | null): void {
+    this.netStats = stats ? { ...stats } : null;
+    this.renderNetStats();
+  }
+
+  private renderNetStats() {
+    const el = this.netEl;
+    if (!el) return;
+    const stats = this.isReplayMode ? null : this.netStats;
+    el.classList.toggle('hidden', !stats);
+    if (!stats) return;
+    const rtt = pvpRttMs(stats);
+    const level = pvpRttLevel(rtt);
+    if (el.dataset.level !== level) el.dataset.level = level;
+    const valEl = el.querySelector<HTMLElement>('.hud-net-val');
+    const text = `延迟 ${rtt === null ? '--' : `${rtt}ms`}`;
+    if (valEl && valEl.textContent !== text) valEl.textContent = text;
+    el.title = pvpNetDetail(stats);
+  }
 
   public updateTelemetry(logicHz: number, renderHz: number, frameWorkMs: number, botMaxMs: number, speed = 1.0) {
     if (!this.perfEl) return;
+    // PvP has no bots: the AI timing is replaced by the latency span that follows the text
+    const isPvp = this.matchMode === 'pvp';
     if (this.mobile) {
       const lg = logicHz < 10 ? logicHz.toFixed(1) : logicHz.toFixed(0);
-      this.perfEl.textContent = `逻辑 ${lg}Hz · 渲染 ${Math.round(renderHz)}Hz · ${frameWorkMs.toFixed(1)}ms · AI ${botMaxMs.toFixed(1)}ms`;
+      this.perfEl.textContent = isPvp
+        ? `逻辑 ${lg}Hz · 渲染 ${Math.round(renderHz)}Hz · ${frameWorkMs.toFixed(1)}ms`
+        : `逻辑 ${lg}Hz · 渲染 ${Math.round(renderHz)}Hz · ${frameWorkMs.toFixed(1)}ms · AI ${botMaxMs.toFixed(1)}ms`;
       return;
     }
     const capHz = frameWorkMs > 0.05 ? Math.min(999, Math.round(1000 / frameWorkMs)) : 999;
     const logicStr = logicHz < 10 ? logicHz.toFixed(1) : logicHz.toFixed(0);
     const spdTag = Math.abs(speed - 1) > 0.01 ? ` (${speed.toFixed(1)}x)` : '';
-    this.perfEl.textContent = `逻辑 ${logicStr}Hz${spdTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz · AI ${botMaxMs.toFixed(1)}ms)`;
+    this.perfEl.textContent = isPvp
+      ? `逻辑 ${logicStr}Hz · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz)`
+      : `逻辑 ${logicStr}Hz${spdTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz · AI ${botMaxMs.toFixed(1)}ms)`;
+  }
+
+  /** "You" in this match: PvP uses the local seat (both slots are human), other modes the human slot. */
+  private isLocalSlot(seat: number, slot: SlotConfig): boolean {
+    return this.matchMode === 'pvp' ? seat === this.localSeat : slot.kind === 'human';
   }
 
   private syncResultFavoriteBtn(btn: HTMLButtonElement, isFav: boolean) {
@@ -1577,10 +1638,14 @@ export class HudUI {
     });
   }
 
+  /**
+   * @param opts.note PvP: one short line under the outcome (e.g. 对方已断开，判你获胜).
+   */
   public showMatchResult(
     finalState: TickSnapshot,
     eloResult: EloUpdateResult | null = null,
     initialFavorite = false,
+    opts?: { note?: string },
   ) {
     this.clearTimers();
     const isRanked = this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa';
@@ -1588,6 +1653,7 @@ export class HudUI {
       this.showRankedMatchResult(finalState, eloResult, initialFavorite);
       return;
     }
+    const isPvp = this.matchMode === 'pvp';
 
     const winner = finalState.winner >= 0 ? this.slots[finalState.winner] : null;
     const rows = finalState.players
@@ -1598,18 +1664,17 @@ export class HudUI {
       }))
       .sort((a, b) => a.p.rank - b.p.rank || b.p.kills - a.p.kills);
 
-    const canRestart = this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive);
+    // PvP: no restart — a rematch is a new challenge from the PvP tab
+    const canRestart = !isPvp && (this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive));
     const canWatchReplay = this.humanSeat >= 0 && Boolean(this.callbacks.onWatchCurrentReplay);
     const canToggleFav = canWatchReplay && Boolean(this.callbacks.onToggleCurrentFavorite);
     const isFav = Boolean(initialFavorite);
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
 
     let remainSec = 4;
-    this.resultOverlay.innerHTML = `
-      <div class="result-card ${canWatchReplay || canToggleFav ? 'has-corner-actions' : ''}">
-        ${
-          canWatchReplay || canToggleFav
-            ? `<div class="result-corner-actions">
+    const cornerActionsHtml =
+      canWatchReplay || canToggleFav
+        ? `<div class="result-corner-actions">
                 ${
                   canWatchReplay
                     ? `<button type="button" class="result-replay-corner-btn" id="btn-result-replay" title="立即观看本局回放">🎬 回放</button>`
@@ -1628,8 +1693,10 @@ export class HudUI {
                     : ''
                 }
               </div>`
-            : ''
-        }
+        : '';
+    this.resultOverlay.innerHTML = `
+      <div class="result-card ${cornerActionsHtml && !isPvp ? 'has-corner-actions' : ''} ${isPvp ? 'is-pvp-result' : ''}">
+        ${isPvp ? this.renderPvpOutcomeHtml(finalState, cornerActionsHtml, opts?.note) : cornerActionsHtml}
         <div class="result-kicker">${winner ? '本局胜者' : '平局结束'}</div>
         ${
           winner
@@ -1641,10 +1708,10 @@ export class HudUI {
         }
         <div class="result-table">
           ${rows
-            .map(({ slot, p }) => {
+            .map(({ idx, slot, p }) => {
               const killerName = p.killer >= 0 && this.slots[p.killer] ? this.slots[p.killer].displayName : undefined;
               return `
-              <div class="result-row ${p.rank === 1 && winner ? 'is-first' : ''}">
+              <div class="result-row ${p.rank === 1 && winner ? 'is-first' : ''} ${isPvp && idx === this.humanSeat ? 'is-human-row' : ''}">
                 <span class="r-rank">#${p.rank}</span>
                 <img class="r-av" src="${slot.avatar || ''}" alt="" />
                 <span class="r-name">${slot.displayName}</span>
@@ -1712,6 +1779,25 @@ export class HudUI {
     });
 
     startAutoReturnCountdown(4);
+  }
+
+  /** PvP result header: outcome from the local player's side (+ optional server note such as a forfeit). */
+  private renderPvpOutcomeHtml(finalState: TickSnapshot, actionsHtml: string, note?: string): string {
+    const me = this.humanSeat;
+    const won = finalState.winner >= 0 && finalState.winner === me;
+    const draw = finalState.winner < 0;
+    const cls = won ? 'is-win' : draw ? 'is-draw' : 'is-loss';
+    const text = won ? '🏆 你赢了' : draw ? '🤝 平局' : '💥 你输了';
+    const esc = (t: string) => t.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c] || c);
+    return `
+      <div class="result-pvp-head">
+        <div class="result-pvp-head-left">
+          <span class="result-pvp-badge">PvP 对战</span>
+          <span class="result-pvp-outcome ${cls}">${text}</span>
+        </div>
+        ${actionsHtml}
+      </div>
+      ${note ? `<div class="result-pvp-note">${esc(note)}</div>` : ''}`;
   }
 
   private showRankedMatchResult(finalState: TickSnapshot, elo: EloUpdateResult, initialFavorite = false) {

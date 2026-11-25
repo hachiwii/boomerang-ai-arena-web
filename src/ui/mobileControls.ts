@@ -106,15 +106,13 @@ const LIFTOFF_MAX_AGE_MS = 95;
  * Mobile touch controls for live matches:
  * - Left stick: logical touch-down-as-center + dynamic follow-center beyond maxR (MOBA-style instant reversals),
  *   while the visual stick base stays anchored in place at its configured layout position;
- *   6% deadzone with instant 100% speed beyond (capped to 50% while actively aiming a throw when bulletTime is on).
+ *   6% deadzone with instant 100% speed beyond (capped to 50% while actively aiming a throw when bulletTime is on
+ *   and allowed — PvP disallows it via setBulletTimeAllowed(false)).
  * - Right stick: touch-down-as-center, lift-off drift stabilization, live indicator even in pending/locked
  *   states, seamless transition from in-flight dart into aiming, delayed 0.1x slow-mo, editable cancel target.
  * - Slash & Dash buttons around the aim stick (icons follow current function; dash shows cooldown).
  */
 export class MobileControls {
-  /** PvP: false disables aim bullet time (slow-mo and its 50% move scaling) entirely. TODO(UI): implement. */
-  public setBulletTimeAllowed(_allowed: boolean): void {}
-
   private readonly layer: HTMLDivElement;
   private readonly moveZone: HTMLDivElement;
   private readonly els: Record<LiveControlKey, HTMLDivElement>;
@@ -158,6 +156,8 @@ export class MobileControls {
   private aimHistory: { t: number; x: number; y: number }[] = [];
   private slowmoOn = false;
   private slowmoTimer: number | null = null;
+  /** PvP turns aim bullet time off regardless of the player's setting (see setBulletTimeAllowed). */
+  private bulletTimeAllowed = true;
 
   private aimIconKey = '';
   private slashIconKey = '';
@@ -222,6 +222,29 @@ export class MobileControls {
   }
 
   // ---------- Lifecycle ----------
+
+  /**
+   * PvP: false disables aim bullet time entirely — no 0.1x slow-mo (and so none of its visual effects) and no 50%
+   * move scaling while aiming — whatever the player's 子弹时间 setting says. true restores the setting.
+   */
+  public setBulletTimeAllowed(allowed: boolean): void {
+    if (this.bulletTimeAllowed === allowed) return;
+    this.bulletTimeAllowed = allowed;
+    if (!allowed) {
+      this.clearSlowmoTimer();
+      if (this.slowmoOn) {
+        this.slowmoOn = false;
+        this.callbacks.onAimSlowmo(false);
+      }
+    }
+    // An aim in progress picks up the new rule immediately
+    if (this.aimPhase === 'aiming') this.input.setVirtualAiming(this.bulletTimeOn());
+  }
+
+  /** Aim bullet time is active only when the mode allows it AND the player's setting has it on. */
+  private bulletTimeOn(): boolean {
+    return this.bulletTimeAllowed && this.settings.get().bulletTime;
+  }
 
   public show(humanSeat: number, mapData: EngineMapData | null) {
     this.humanSeat = humanSeat;
@@ -564,14 +587,15 @@ export class MobileControls {
     this.aimPhase = 'aiming';
     this.els.aim.classList.add('is-aiming');
     this.setCancelVisible(true);
-    // Restrict movement speed to 50% while aiming only when bulletTime is enabled (enforced in HumanInputController)
-    this.input.setVirtualAiming(true);
+    // Restrict movement speed to 50% while aiming only when bulletTime is enabled (enforced in HumanInputController);
+    // PvP (bullet time not allowed) never reports the aim, so movement stays at full speed
+    this.input.setVirtualAiming(this.bulletTimeOn());
     // Delay 0.1x slow-mo slightly so quick flick throws never flicker slow-mo; skip entirely when bulletTime is OFF
     this.clearSlowmoTimer();
-    if (this.settings.get().bulletTime && !this.slowmoOn) {
+    if (this.bulletTimeOn() && !this.slowmoOn) {
       this.slowmoTimer = window.setTimeout(() => {
         this.slowmoTimer = null;
-        if (this.aimPhase === 'aiming' && !this.slowmoOn && this.settings.get().bulletTime) {
+        if (this.aimPhase === 'aiming' && !this.slowmoOn && this.bulletTimeOn()) {
           this.slowmoOn = true;
           this.callbacks.onAimSlowmo(true);
         }
