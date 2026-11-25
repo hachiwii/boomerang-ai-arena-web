@@ -132,7 +132,14 @@ async function bootstrap() {
     bgm.getDebugState();
 
   const input = new HumanInputController(canvas, settings);
-  const renderer = new GameRenderer(canvas, sfx, undefined, undefined, settings.get().graphicsQuality);
+  const renderer = new GameRenderer(
+    canvas,
+    sfx,
+    undefined,
+    undefined,
+    settings.get().graphicsQuality,
+    settings.get().edgeBeautify,
+  );
   renderer.setKillFxEnabled(isKillFxEffective(settings.get()));
   input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
   input.setTouchMode(platform.isMobile());
@@ -170,6 +177,7 @@ async function bootstrap() {
   // Frame-rate lock driven directly by SettingsStore (true = monitor refresh rate, false = uncapped)
   let activeLockFps = settings.get().lockFps;
   let activeGraphicsQuality: GraphicsQualityOption = settings.get().graphicsQuality;
+  let activeEdgeBeautify = settings.get().edgeBeautify;
   let rafId = 0;
   let uncapChannel: MessageChannel | null = null;
   let uncapRunning = false;
@@ -750,6 +758,10 @@ async function bootstrap() {
       activeGraphicsQuality = s.graphicsQuality;
       renderer.setGraphicsQuality(s.graphicsQuality);
     }
+    if (s.edgeBeautify !== activeEdgeBeautify) {
+      activeEdgeBeautify = s.edgeBeautify;
+      renderer.setEdgeBeautify(s.edgeBeautify);
+    }
     const cinematic = getCinematicOptions(s);
     renderer.setKillFxEnabled(cinematic.killFx);
     controller.setKillFxEnabled(cinematic.killFx);
@@ -840,6 +852,7 @@ async function bootstrap() {
         bossMusicEnabled: s.bossMusicEnabled,
         loadBgmBuffer: (trackId, ctx) => bgm.decodeTrackForContext(trackId, ctx),
         graphicsQuality: s.graphicsQuality,
+        edgeBeautify: s.edgeBeautify,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
@@ -858,6 +871,7 @@ async function bootstrap() {
         endTickIndex,
         maxDurationSec: 10.0,
         graphicsQuality: s.graphicsQuality,
+        edgeBeautify: s.edgeBeautify,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,
@@ -950,6 +964,7 @@ async function bootstrap() {
         bossMusicEnabled: s.bossMusicEnabled,
         loadBgmBuffer: (trackId, ctx) => bgm.decodeTrackForContext(trackId, ctx),
         graphicsQuality: s.graphicsQuality,
+        edgeBeautify: s.edgeBeautify,
         cinematic: getCinematicOptions(s),
         sharedCharModelCache: renderer.getCharModelCache(),
         signal,

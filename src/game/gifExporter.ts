@@ -15,6 +15,7 @@ export interface GifClipExportOptions {
   maxDurationSec?: number;
   /** Graphics quality tier ('low' | 'high'). */
   graphicsQuality?: GraphicsQualityOption;
+  edgeBeautify?: boolean;
   /** Granular cinematic camera toggles (killCam, finisherCam, winnerCam). */
   cinematic?: boolean | Partial<CinematicOptions>;
   sharedCharModelCache?: Map<string, VoxelModelData>;
@@ -207,6 +208,7 @@ export async function exportReplayClipToGif(
       { width: gifW, height: gifH },
       options.sharedCharModelCache,
       options.graphicsQuality ?? 'high',
+      options.edgeBeautify ?? false,
     );
 
     try {

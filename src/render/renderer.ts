@@ -103,6 +103,7 @@ export class GameRenderer {
   private activeMapData: EngineMapData | null = null;
   private activeThemeName = 'meadow';
   private graphicsQuality: GraphicsQualityOption = 'high';
+  private edgeBeautify = false;
   private rigs: CharacterRig[] = [];
   private fx: FXSystem | null = null;
   private countdownArrow: THREE.Group | null = null;
@@ -213,12 +214,14 @@ export class GameRenderer {
     fixedSize?: { width: number; height: number },
     sharedCharModelCache?: Map<string, VoxelModelData>,
     graphicsQuality: GraphicsQualityOption = 'high',
+    edgeBeautify = false,
   ) {
     this.canvas = canvas;
     this.sfx = sfx;
     this.fixedSize = fixedSize ?? null;
     this.charModelCache = sharedCharModelCache ?? new Map<string, VoxelModelData>();
     this.graphicsQuality = graphicsQuality;
+    this.edgeBeautify = edgeBeautify;
 
     const initW = this.fixedSize ? this.fixedSize.width : getLogicalViewport().width;
     const initH = this.fixedSize ? this.fixedSize.height : getLogicalViewport().height;
@@ -414,7 +417,7 @@ export class GameRenderer {
 
   private createArenaInstance(mapData: EngineMapData, themeName: string): IArenaMap {
     return this.graphicsQuality === 'high'
-      ? new HqArenaMap3D(mapData, themeName)
+      ? new HqArenaMap3D(mapData, themeName, this.edgeBeautify)
       : new ArenaMap3D(mapData, themeName);
   }
 
@@ -475,6 +478,24 @@ export class GameRenderer {
     this.sunLight.shadow.camera.bottom = -halfSpan;
     this.sunLight.shadow.camera.updateProjectionMatrix();
     this.invalidateShadowMap();
+  }
+
+  public setEdgeBeautify(enabled: boolean) {
+    if (this.edgeBeautify === enabled) return;
+    this.edgeBeautify = enabled;
+    if (this.graphicsQuality === 'high' && this.arena && this.activeMapData) {
+      this.scene.remove(this.arena.root);
+      this.arena.dispose();
+      this.arena = this.createArenaInstance(this.activeMapData, this.activeThemeName);
+      this.scene.add(this.arena.root);
+      if (!this.previewMode && this.mobileView) this.arena.setBackdropVisible?.(false);
+      this.positionSunForArena();
+      if (this.currState) {
+        this.arena.update(this.currState.t, this.elapsedSec, {
+          freezeCollapseAtTick: this.currState.over ? this.currState.t : undefined,
+        });
+      }
+    }
   }
 
   public setGraphicsQuality(quality: GraphicsQualityOption) {

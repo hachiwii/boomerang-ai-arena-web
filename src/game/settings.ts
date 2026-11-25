@@ -130,6 +130,7 @@ export interface GameSettings {
   bgmVolume: number; // 0..100
   bossMusicEnabled: boolean;
   graphicsQuality: GraphicsQualityOption; // 'low' = lightweight instanced, 'high' = faithful open-source art
+  edgeBeautify: boolean; // High-quality only: upstream rounded island edges, Voronoi prism cliffs & irregular fracture collapse
   lockFps: boolean; // true = monitor refresh rate (VSync), false = uncapped
   dashInputBuffer: boolean; // Unified pre-input across all action-locked states (retains last command per lock window)
   meleeAssist: boolean; // Auto-rotate slash/kick aim minimally to include reachable target when mouse cone misses
@@ -147,6 +148,14 @@ export interface GameSettings {
   exportSoundEnabled: boolean;
   exportBgmEnabled: boolean;
   keybindings: KeyBindings;
+}
+
+export function isEdgeBeautifyAvailable(s: Pick<GameSettings, 'graphicsQuality'>): boolean {
+  return s.graphicsQuality === 'high';
+}
+
+export function isEdgeBeautifyEffective(s: Pick<GameSettings, 'graphicsQuality' | 'edgeBeautify'>): boolean {
+  return isEdgeBeautifyAvailable(s) && s.edgeBeautify;
 }
 
 export function isKillFxAvailable(s: Pick<GameSettings, 'graphicsQuality' | 'killCam'>): boolean {
@@ -286,6 +295,7 @@ export function defaultSettings(): GameSettings {
     bgmVolume: 70,
     bossMusicEnabled: true,
     graphicsQuality: 'high',
+    edgeBeautify: false,
     lockFps: true,
     dashInputBuffer: true,
     meleeAssist: true,
@@ -519,6 +529,8 @@ export class SettingsStore {
         parsed.graphicsQuality !== undefined && VALID_GRAPHICS_QUALITY.has(parsed.graphicsQuality)
           ? parsed.graphicsQuality
           : def.graphicsQuality;
+      const edgeBeautify =
+        typeof parsed.edgeBeautify === 'boolean' ? parsed.edgeBeautify : def.edgeBeautify;
       const lockFps =
         typeof parsed.lockFps === 'boolean'
           ? parsed.lockFps
@@ -604,6 +616,7 @@ export class SettingsStore {
         bgmVolume,
         bossMusicEnabled,
         graphicsQuality,
+        edgeBeautify,
         lockFps,
         dashInputBuffer,
         meleeAssist,
@@ -702,6 +715,12 @@ export class SettingsStore {
   public setGraphicsQuality(quality: GraphicsQualityOption) {
     if (!VALID_GRAPHICS_QUALITY.has(quality) || this.settings.graphicsQuality === quality) return;
     this.settings.graphicsQuality = quality;
+    this.emit();
+  }
+
+  public setEdgeBeautify(enabled: boolean) {
+    if (this.settings.edgeBeautify === enabled) return;
+    this.settings.edgeBeautify = enabled;
     this.emit();
   }
 

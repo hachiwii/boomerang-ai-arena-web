@@ -36,6 +36,7 @@ export interface Mp4ExportOptions {
   bossMusicEnabled?: boolean;
   loadBgmBuffer?: (trackId: BgmTrackId, targetCtx: BaseAudioContext) => Promise<AudioBuffer | null>;
   graphicsQuality?: GraphicsQualityOption;
+  edgeBeautify?: boolean;
   cinematic?: boolean | Partial<CinematicOptions>;
   sharedCharModelCache?: Map<string, VoxelModelData>;
   signal?: AbortSignal;
@@ -831,6 +832,7 @@ export async function exportReplayToMp4(
     { width, height },
     options.sharedCharModelCache,
     options.graphicsQuality ?? 'high',
+    options.edgeBeautify ?? false,
   );
 
   try {

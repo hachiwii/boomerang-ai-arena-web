@@ -29,6 +29,7 @@ import {
 import { BridgeSpec, PaintedGroundResult, paintHighQualityGround } from './hqGroundPaint';
 import { buildOriginalDecorIsland } from './hqOuterIsland';
 import { getHqTheme, HqThemeSpec } from './hqThemes';
+import { buildUpstreamTerrain } from './hqUpstreamTerrain';
 
 export interface ArenaMover {
   x: number;
@@ -412,6 +413,12 @@ export class HqArenaMap3D implements IArenaMap {
 
   private readonly chunks: CollapseChunk[] = [];
   private readonly waveBundles = new Map<number, WaveBundle>();
+  private readonly stateTerrains: THREE.Group[] = [];
+  private upstreamRim: {
+    sampleS2: (wx: number, wz: number) => number;
+    sampleOutNormal: (wx: number, wz: number) => [number, number];
+  } | null = null;
+  private readonly edgeBeautify: boolean;
   private readonly cellChunkId: Int32Array;
   private readonly occluders: OccluderEntry[] = [];
   private readonly grassClusters: GrassClusterRef[] = [];
@@ -440,9 +447,10 @@ export class HqArenaMap3D implements IArenaMap {
   private readonly waveMaxDist = new Map<number, number>();
   private lastShadowBakeGt = -9999;
 
-  constructor(mapData: EngineMapData, themeName: string) {
+  constructor(mapData: EngineMapData, themeName: string, edgeBeautify = false) {
     this.mapData = mapData;
     this.hqTheme = getHqTheme(themeName);
+    this.edgeBeautify = edgeBeautify;
     const cs = mapData.cell / 1000;
     this.widthM = mapData.nx * cs;
     this.heightM = mapData.ny * cs;
@@ -455,10 +463,11 @@ export class HqArenaMap3D implements IArenaMap {
     this.groundResult = paintHighQualityGround(mapData, this.hqTheme, seed + 13);
 
     // Create shared material palette (7 opaque + 2 warning materials total for the whole arena!)
+    // When edgeBeautify is active, cliff meshes carry explicit per-vertex smooth/faceted normals.
     this.sharedTopMat = new THREE.MeshLambertMaterial({ map: this.groundResult.texture });
-    this.sharedCliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    this.sharedCliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: !edgeBeautify });
     this.warnTopMat = new THREE.MeshLambertMaterial({ map: this.groundResult.texture });
-    this.warnCliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    this.warnCliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: !edgeBeautify });
     this.sharedBucketMats = {
       solid: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true }),
       smooth: new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: false }),
@@ -473,8 +482,12 @@ export class HqArenaMap3D implements IArenaMap {
       }),
     };
 
-    // 2. Build wave-merged intact terrain + compact 4x4 active-wave collapse chunks
-    this.buildTerrainWavesAndChunks(rng);
+    // 2. Build wave-merged intact terrain + compact 4x4 (or upstream rounded/fractured) collapse chunks
+    if (this.edgeBeautify) {
+      this.buildUpstreamTerrainWavesAndChunks(rng, seed);
+    } else {
+      this.buildTerrainWavesAndChunks(rng);
+    }
 
     // 3. Build detailed themed obstacles (each individually occludable with lazy material clone!)
     this.buildObstacles(rng);
@@ -539,6 +552,128 @@ export class HqArenaMap3D implements IArenaMap {
     };
     this.occluders.push(entry);
     return entry;
+  }
+
+  private buildUpstreamTerrainWavesAndChunks(rng: SeededRng, seed: number) {
+    const { nx, ny, cells, waves, nwave } = this.mapData;
+    const { mg } = this.groundResult;
+
+    const up = buildUpstreamTerrain(
+      this.mapData,
+      this.hqTheme.pal,
+      mg,
+      seed + 3,
+      this.sharedTopMat,
+      this.sharedCliffMat,
+    );
+    this.upstreamRim = {
+      sampleS2: up.sampleState0S2,
+      sampleOutNormal: up.sampleState0OutNormal,
+    };
+
+    for (const grp of up.stateTerrains) {
+      this.root.add(grp);
+      this.stateTerrains.push(grp);
+    }
+
+    // Create empty intactTerrain wrappers + intactDetails groups per wave (-1..nwave-1)
+    const ensureBundle = (w: number) => {
+      if (this.waveBundles.has(w)) return;
+      const intactTerrain = new THREE.Group();
+      const intactDetails = new THREE.Group();
+      this.root.add(intactDetails);
+      this.waveBundles.set(w, {
+        wave: w,
+        intactTerrain,
+        intactDetails,
+        chunks: [],
+        mode: 'intact',
+      });
+    };
+    ensureBundle(-1);
+    for (let w = 0; w < nwave; w++) ensureBundle(w);
+
+    // Chunk 0: permanent core mount (for permanent obstacles/tall grass)
+    const permMount = new THREE.Group();
+    const permTerrain = new THREE.Group();
+    permTerrain.visible = false;
+    this.root.add(permMount);
+    this.root.add(permTerrain);
+    const permChunk: CollapseChunk = {
+      id: 0,
+      wave: -1,
+      terrainGroup: permTerrain,
+      propMount: permMount,
+      topMesh: null,
+      cliffMesh: null,
+      cx: 0,
+      cz: 0,
+      distFromCenter: 0,
+      rnd: [rng.next(), rng.next(), rng.next(), rng.next(), rng.next(), rng.next()],
+      usingWarnMat: false,
+      modified: false,
+      hasShadowCaster: false,
+      shadowState: 0,
+      warnDustFired: false,
+      fallDustFired: false,
+    };
+    this.chunks.push(permChunk);
+    this.waveBundles.get(-1)?.chunks.push(permChunk);
+
+    // Irregular Voronoi fracture pieces become CollapseChunks 1..M
+    for (let i = 0; i < up.pieces.length; i++) {
+      const p = up.pieces[i];
+      const chunkId = this.chunks.length;
+      const propMount = new THREE.Group();
+      propMount.position.set(p.cx, 0, p.cz);
+      this.root.add(propMount);
+
+      const terrainGroup = new THREE.Group();
+      terrainGroup.position.set(p.cx, 0, p.cz);
+      terrainGroup.visible = false;
+      if (p.topMesh) terrainGroup.add(p.topMesh);
+      if (p.cliffMesh) terrainGroup.add(p.cliffMesh);
+      this.root.add(terrainGroup);
+
+      this.waveMaxDist.set(p.wave, Math.max(this.waveMaxDist.get(p.wave) ?? 0.1, p.dIn));
+
+      const chunk: CollapseChunk = {
+        id: chunkId,
+        wave: p.wave,
+        terrainGroup,
+        propMount,
+        topMesh: p.topMesh,
+        cliffMesh: p.cliffMesh,
+        cx: p.cx,
+        cz: p.cz,
+        distFromCenter: p.dIn,
+        rnd: [rng.next(), rng.next(), rng.next(), rng.next(), rng.next(), rng.next()],
+        usingWarnMat: false,
+        modified: false,
+        hasShadowCaster: false,
+        shadowState: 0,
+        warnDustFired: false,
+        fallDustFired: false,
+      };
+      this.chunks.push(chunk);
+      ensureBundle(p.wave);
+      this.waveBundles.get(p.wave)?.chunks.push(chunk);
+    }
+
+    // Bind every solid grid cell to its permanent core (0) or irregular Voronoi fracture chunk (1 + pieceIdx)
+    for (let gy = 0; gy < ny; gy++) {
+      for (let gx = 0; gx < nx; gx++) {
+        const idx = gy * nx + gx;
+        if (cells[idx] === CellType.PIT) continue;
+        const w = waves[idx];
+        if (w < 0) {
+          this.cellChunkId[idx] = 0;
+        } else {
+          const pIdx = up.cellPieceIndex[idx];
+          this.cellChunkId[idx] = pIdx >= 0 ? 1 + pIdx : 0;
+        }
+      }
+    }
   }
 
   private buildTerrainWavesAndChunks(rng: SeededRng) {
@@ -1617,9 +1752,22 @@ export class HqArenaMap3D implements IArenaMap {
           const cnt = Math.max(1, Math.round(rng.uniform(0.9, 2.0) * cs));
           for (let k = 0; k < cnt; k++) {
             const t = rng.uniform(0.14, 0.86);
-            const mx = dx !== 0 ? (x + 0.5 + dx * 0.5) * cs - dx * 0.05 : (x + t) * cs;
-            const my = dy !== 0 ? (y + 0.5 + dy * 0.5) * cs - dy * 0.05 : (y + t) * cs;
-            addTuft(mx, my, rng.uniform(1.0, 1.45), [dx, dy], 4);
+            let mx = dx !== 0 ? (x + 0.5 + dx * 0.5) * cs - dx * 0.05 : (x + t) * cs;
+            let my = dy !== 0 ? (y + 0.5 + dy * 0.5) * cs - dy * 0.05 : (y + t) * cs;
+            let leanDir: [number, number] = [dx, dy];
+            if (this.upstreamRim) {
+              const s2 = this.upstreamRim.sampleS2(mx, my);
+              const [ox, oz] = this.upstreamRim.sampleOutNormal(mx, my);
+              leanDir = [ox, oz];
+              if (s2 < 0.03) {
+                // Keep overhanging grass tufts anchored cleanly onto the rounded upstream rim (never floating off rounded corners)
+                const pushIn = 0.055 - s2;
+                mx -= ox * pushIn;
+                my -= oz * pushIn;
+                if (this.upstreamRim.sampleS2(mx, my) < 0.0) continue;
+              }
+            }
+            addTuft(mx, my, rng.uniform(1.0, 1.45), leanDir, 4);
           }
         }
       }
@@ -1970,7 +2118,22 @@ export class HqArenaMap3D implements IArenaMap {
     let shadowDirty = false;
     let anyShadowObstacleDropping = false;
 
-    // 1. Wave-level swap between ultra-fast merged intact mesh & compact 4x4 active-collapse chunks!
+    // 0. In upstream edgeBeautify mode, swap intact rounded island state[0..R] once waves enter warning/fall!
+    if (this.stateTerrains.length > 0) {
+      let activeState = 0;
+      for (let w = 0; w < waveSteps.length; w++) {
+        const fallStep = waveSteps[w];
+        const frozenIntact = freezeT !== undefined && fallStep > freezeT;
+        if (!frozenIntact && gt >= fallStep - colWarn) {
+          activeState = Math.min(this.stateTerrains.length - 1, w + 1);
+        }
+      }
+      for (let k = 0; k < this.stateTerrains.length; k++) {
+        this.stateTerrains[k].visible = k === activeState;
+      }
+    }
+
+    // 1. Wave-level swap between ultra-fast merged intact mesh & compact 4x4 (or fractured Voronoi) active-collapse chunks!
     for (const [wave, bundle] of this.waveBundles) {
       if (wave < 0 || wave >= waveSteps.length) continue;
       const fallStep = waveSteps[wave];

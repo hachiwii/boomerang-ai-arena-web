@@ -15,6 +15,7 @@ import {
   getSlashJudgmentDesc,
   GRAPHICS_QUALITY_OPTIONS,
   GraphicsQualityOption,
+  isEdgeBeautifyAvailable,
   isKillFxAvailable,
   isModifierKeyCode,
   SettingsStore,
@@ -432,6 +433,20 @@ export class SettingsModal {
       btn.setAttribute('aria-pressed', String(active));
     });
 
+    const edgeAvail = isEdgeBeautifyAvailable(s);
+    const edgeRow = this.body.querySelector<HTMLElement>('#settings-edge-beautify-row');
+    edgeRow?.classList.toggle('is-dim', !edgeAvail);
+    const edgeBtn = this.body.querySelector<HTMLButtonElement>('#settings-edge-beautify-toggle');
+    if (edgeBtn) {
+      edgeBtn.disabled = !edgeAvail;
+      edgeBtn.setAttribute('aria-disabled', String(!edgeAvail));
+    }
+    setSwitch(
+      '#settings-edge-beautify-toggle',
+      edgeAvail && s.edgeBeautify,
+      edgeAvail ? (s.edgeBeautify ? '已开启' : '已关闭') : '不可用',
+    );
+
     setSwitch('#settings-lock-fps-toggle', s.lockFps, s.lockFps ? '显示器帧率' : '无上限');
     setSwitch('#settings-killcam-toggle', s.killCam, s.killCam ? '已开启' : '已关闭');
     const killFxAvail = isKillFxAvailable(s);
@@ -653,6 +668,30 @@ export class SettingsModal {
                   }).join('')}
                 </div>
               </div>
+
+              ${(() => {
+                const edgeAvail = isEdgeBeautifyAvailable(s);
+                const edgeOn = edgeAvail && s.edgeBeautify;
+                return `
+              <div class="settings-toggle-row ${edgeAvail ? '' : 'is-dim'}" id="settings-edge-beautify-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">边缘美化</div>
+                  <div class="settings-toggle-desc">使用原版圆角浮岛、棱柱崖壁与不规则碎块塌陷（仅高画质生效）</div>
+                </div>
+                <button
+                  type="button"
+                  class="rand-switch ${edgeOn ? 'is-on' : ''}"
+                  id="settings-edge-beautify-toggle"
+                  role="switch"
+                  aria-checked="${edgeOn}"
+                  aria-disabled="${!edgeAvail}"
+                  ${edgeAvail ? '' : 'disabled'}
+                >
+                  <span class="rand-track"><span class="rand-thumb"></span></span>
+                  <span class="rand-label">${edgeAvail ? (s.edgeBeautify ? '已开启' : '已关闭') : '不可用'}</span>
+                </button>
+              </div>`;
+              })()}
 
               <div class="settings-toggle-row">
                 <div class="settings-toggle-meta">
@@ -1065,6 +1104,14 @@ export class SettingsModal {
         this.store.setGraphicsQuality(btn.dataset.graphicsQuality as GraphicsQualityOption);
         this.syncControlsInPlace();
       });
+    });
+
+    // Edge beautify toggle (upstream rounded island edges, Voronoi prism cliffs & irregular collapse pieces)
+    this.body.querySelector('#settings-edge-beautify-toggle')?.addEventListener('click', () => {
+      const cur = this.store.get();
+      if (!isEdgeBeautifyAvailable(cur)) return;
+      this.store.setEdgeBeautify(!cur.edgeBeautify);
+      this.syncControlsInPlace();
     });
 
     // Lock FPS cap toggle (ON = monitor refresh rate, OFF = uncapped)
