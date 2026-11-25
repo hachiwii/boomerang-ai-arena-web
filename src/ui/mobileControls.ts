@@ -60,7 +60,8 @@ function buildControlEl(key: MobileControlKey): HTMLDivElement {
   el.className = `m-ctl m-${key} ${key === 'move' || key === 'aim' ? 'm-stick' : 'm-btn'}`;
   el.dataset.ctl = key;
   if (key === 'move') {
-    el.innerHTML = `<div class="m-stick-ring"></div><div class="m-knob"></div>`;
+    // .m-move-hit: invisible ring around the stick that adds a small finger tolerance (sized in applyLayout)
+    el.innerHTML = `<div class="m-move-hit"></div><div class="m-stick-ring"></div><div class="m-knob"></div>`;
   } else if (key === 'aim') {
     el.innerHTML = `<div class="m-aim-fill"></div><div class="m-ctl-icon">${ICON_BOOMERANG}</div><div class="m-knob m-aim-knob"></div>`;
   } else if (key === 'slash') {
@@ -93,7 +94,14 @@ export interface MobileControlsCallbacks {
   onAimIndicator: (dir: [number, number] | null, cancel?: boolean) => void;
 }
 
-type AimPhase = 'idle' | 'pending' | 'aiming' | 'recall';
+/**
+ * Right stick phases:
+ * - pending: dart in hand but not free yet (countdown / locked action) → live indicator, throw on release
+ * - aiming: dart in hand and free → indicator + bullet time, throw on release
+ * - waiting: dart out of hand (flying / gone) → no indicator, no bullet time; aims the moment it is back in hand
+ * - recall: dart on the ground / rising → hold to recall; aims the moment it is back in hand
+ */
+type AimPhase = 'idle' | 'pending' | 'aiming' | 'waiting' | 'recall';
 type LiveControlKey = 'move' | 'aim' | 'slash' | 'dash';
 
 const AIM_DEADZONE = 0.22;
@@ -101,6 +109,14 @@ const MOVE_MAX_R_RATIO = 0.48; // Compact steering radius for snappy mobile dire
 const AIM_SLOWMO_DELAY_MS = 70; // Avoid brief slow-mo flicker on quick flick throws
 const LIFTOFF_LOOKBACK_MS = 25; // Stabilize aim direction against capacitive lift-off drift
 const LIFTOFF_MAX_AGE_MS = 95;
+/**
+ * The move stick starts ONLY from a touch on its own circle plus this finger tolerance — there is no invisible
+ * half-screen stick zone any more (it swallowed near-miss touches on buttons moved onto that side, popping the
+ * stick out). The tolerance shrinks so it never reaches another control (keeps MOVE_HIT_GAP_PX clear of it).
+ */
+const MOVE_HIT_SLOP_MAX_PX = 14;
+const MOVE_HIT_SLOP_RATIO = 0.15;
+const MOVE_HIT_GAP_PX = 4;
 
 /**
  * Mobile touch controls for live matches:
@@ -114,9 +130,9 @@ const LIFTOFF_MAX_AGE_MS = 95;
  */
 export class MobileControls {
   private readonly layer: HTMLDivElement;
-  private readonly moveZone: HTMLDivElement;
   private readonly els: Record<LiveControlKey, HTMLDivElement>;
   private readonly moveKnob: HTMLElement;
+  private readonly moveHit: HTMLElement;
   private readonly aimKnob: HTMLElement;
   private readonly aimFill: HTMLElement;
   private readonly aimIcon: HTMLElement;
@@ -161,6 +177,7 @@ export class MobileControls {
 
   private aimIconKey = '';
   private slashIconKey = '';
+  private readonly buttonPointer: Record<'slash' | 'dash', number | null> = { slash: null, dash: null };
 
   constructor(
     parent: HTMLElement,
@@ -174,9 +191,6 @@ export class MobileControls {
 
     this.layer = document.createElement('div');
     this.layer.className = 'm-controls hidden';
-    this.moveZone = document.createElement('div');
-    this.moveZone.className = 'm-move-zone';
-    this.layer.appendChild(this.moveZone);
 
     this.els = {
       move: buildControlEl('move'),
@@ -194,6 +208,7 @@ export class MobileControls {
     parent.insertBefore(this.layer, parent.firstChild);
 
     this.moveKnob = this.els.move.querySelector('.m-knob')!;
+    this.moveHit = this.els.move.querySelector('.m-move-hit')!;
     this.aimKnob = this.els.aim.querySelector('.m-knob')!;
     this.aimFill = this.els.aim.querySelector('.m-aim-fill')!;
     this.aimIcon = this.els.aim.querySelector('.m-ctl-icon')!;
@@ -203,8 +218,8 @@ export class MobileControls {
 
     this.bindMove();
     this.bindAim();
-    this.bindButton('slash', () => this.input.queueVirtualMelee());
-    this.bindButton('dash', () => this.input.queueVirtualDash());
+    this.bindButton('slash');
+    this.bindButton('dash');
 
     settings.onChange((s) => {
       if (!s.bulletTime) {
@@ -282,6 +297,8 @@ export class MobileControls {
     this.endAim(false);
     this.els.slash.classList.remove('is-pressed');
     this.els.dash.classList.remove('is-pressed');
+    this.buttonPointer.slash = null;
+    this.buttonPointer.dash = null;
   }
 
   private applyLayout() {
@@ -296,8 +313,21 @@ export class MobileControls {
     }
     this.cancelPx = this.px.cancel;
     placeControl(this.aimCancel, this.cancelPx);
-    const mv = layout.move;
-    this.moveZone.classList.toggle('is-right', mv.side === 'r');
+    this.moveHit.style.setProperty('--hit-slop', `${this.moveHitSlop().toFixed(1)}px`);
+  }
+
+  /** Finger tolerance around the move stick: up to MOVE_HIT_SLOP_MAX_PX, never reaching another control. */
+  private moveHitSlop(): number {
+    const mv = this.px.move;
+    const r = mv.d / 2;
+    let slop = Math.min(MOVE_HIT_SLOP_MAX_PX, Math.max(8, r * MOVE_HIT_SLOP_RATIO));
+    for (const k of ['aim', 'slash', 'dash'] as const) {
+      const c = this.px[k];
+      if (c.d <= 0) continue;
+      const gap = Math.hypot(c.cx - mv.cx, c.cy - mv.cy) - r - c.d / 2 - MOVE_HIT_GAP_PX;
+      slop = Math.min(slop, gap);
+    }
+    return Math.max(0, slop);
   }
 
   private setCancelVisible(visible: boolean) {
@@ -330,27 +360,7 @@ export class MobileControls {
       return;
     }
 
-    // Aim stick phase transitions driven by authoritative state
-    if (this.aimPhase === 'pending' && this.input.getInputMode() === 'active') {
-      if (dart.st === DState.HAND && me.st === PState.FREE) {
-        this.beginAiming();
-      } else if (
-        (dart.st === DState.GROUND || dart.st === DState.RISE) &&
-        (me.st === PState.FREE || me.st === PState.RECALL) &&
-        !this.stickAimDir()
-      ) {
-        // Dart dropped to ground while finger held near center without aiming → transition cleanly to recall
-        this.aimPhase = 'recall';
-        this.setCancelVisible(false);
-        this.callbacks.onAimIndicator(null);
-        this.input.setVirtualRecallHeld(true);
-      } else {
-        this.pushIndicator();
-      }
-    } else if (this.aimPhase === 'aiming' && (dart.st !== DState.HAND || this.input.getInputMode() !== 'active')) {
-      this.endAim(false);
-    }
-    if (this.aimPhase === 'aiming') this.pushIndicator();
+    this.syncAimPhase(me.st, dart.st);
 
     // Aim icon by dart state
     let aimKey: string;
@@ -395,6 +405,7 @@ export class MobileControls {
   // ---------- Move stick (logical touch-down + dynamic follow-center; visual base stays fixed in place) ----------
 
   private bindMove() {
+    // Only a touch on the stick's own circle (+ .m-move-hit tolerance) starts it; the finger may then roam anywhere
     const start = (e: PointerEvent) => {
       if (!this.visible || this.movePointer !== null) return;
       e.preventDefault();
@@ -419,13 +430,12 @@ export class MobileControls {
       this.resetMoveStick();
       this.input.setVirtualMove(0, 0);
     };
-    for (const el of [this.moveZone, this.els.move]) {
-      el.addEventListener('pointerdown', start);
-      el.addEventListener('pointermove', move);
-      el.addEventListener('pointerup', end);
-      el.addEventListener('pointercancel', end);
-      el.addEventListener('lostpointercapture', end);
-    }
+    const el = this.els.move;
+    el.addEventListener('pointerdown', start);
+    el.addEventListener('pointermove', move);
+    el.addEventListener('pointerup', end);
+    el.addEventListener('pointercancel', end);
+    el.addEventListener('lostpointercapture', end);
   }
 
   private updateMove(lx: number, ly: number) {
@@ -455,92 +465,146 @@ export class MobileControls {
 
   // ---------- Aim / recall stick ----------
 
-  private bindAim() {
+  /** Right stick finger down. */
+  private pressAim(e: PointerEvent) {
     const el = this.els.aim;
-    el.addEventListener('pointerdown', (e) => {
-      if (!this.visible || this.aimPointer !== null) return;
-      e.preventDefault();
-      this.aimPointer = e.pointerId;
-      safeCapture(el, e.pointerId);
-      el.classList.add('is-pressed');
-      const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
-      // Touch-down-as-center: dragging direction is always measured relative to the initial thumb landing spot
-      this.aimDownX = lx;
-      this.aimDownY = ly;
-      this.aimVecX = 0;
-      this.aimVecY = 0;
-      this.aimHistory.length = 0;
-      this.updateAimKnob();
+    if (!this.visible || this.aimPointer !== null) return;
+    e.preventDefault();
+    this.aimPointer = e.pointerId;
+    safeCapture(el, e.pointerId);
+    el.classList.add('is-pressed');
+    const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
+    // Touch-down-as-center: dragging direction is always measured relative to the initial thumb landing spot
+    this.aimDownX = lx;
+    this.aimDownY = ly;
+    this.aimVecX = 0;
+    this.aimVecY = 0;
+    this.aimHistory.length = 0;
+    this.updateAimKnob();
 
-      const st = this.lastState;
-      const me = st && this.humanSeat >= 0 ? st.players[this.humanSeat] : null;
-      const dart = st && this.humanSeat >= 0 ? st.darts[this.humanSeat] : null;
-      if (!me || !dart || me.alive !== 1 || st?.over) {
-        this.aimPhase = 'idle';
+    const st = this.lastState;
+    const me = st && this.humanSeat >= 0 ? st.players[this.humanSeat] : null;
+    const dart = st && this.humanSeat >= 0 ? st.darts[this.humanSeat] : null;
+    if (!me || !dart || me.alive !== 1 || st?.over) {
+      this.aimPhase = 'idle';
+      return;
+    }
+
+    if (dart.st === DState.GROUND || dart.st === DState.RISE) {
+      // Long press recalls; if the finger stays down the throw aim starts the moment the dart is back in hand
+      this.aimPhase = 'recall';
+      this.input.setVirtualRecallHeld(true);
+    } else if (dart.st === DState.HAND && this.input.getInputMode() === 'active' && me.st === PState.FREE) {
+      this.beginAiming();
+    } else if (dart.st === DState.HAND) {
+      // Dart in hand but not free yet (countdown / locked action): live indicator, aims as soon as free
+      this.enterPending();
+    } else {
+      // Dart flying or gone: no indicator and no bullet time until it is back in hand
+      this.aimPhase = 'waiting';
+    }
+  }
+
+  private enterPending() {
+    this.aimPhase = 'pending';
+    this.setCancelVisible(true);
+    this.pushIndicator();
+  }
+
+  /** Re-evaluate the held right stick against the latest authoritative state (called every logic tick). */
+  private syncAimPhase(meSt: number, dartSt: number) {
+    const active = this.input.getInputMode() === 'active';
+    const inHand = dartSt === DState.HAND;
+    const free = meSt === PState.FREE;
+    if (this.aimPhase === 'pending' && !inHand) {
+      // The dart left the hand while waiting to aim: drop the indicator, keep holding
+      this.aimPhase = 'waiting';
+      this.setCancelVisible(false);
+      this.callbacks.onAimIndicator(null);
+    }
+    if (this.aimPhase === 'waiting' || this.aimPhase === 'recall') {
+      if (inHand) {
+        // Back in hand with the finger still down → aim right away (indicator + bullet time where allowed)
+        this.input.setVirtualRecallHeld(false);
+        if (active && free) this.beginAiming();
+        else this.enterPending();
         return;
       }
-
-      const canRecallNow = dart.st === DState.GROUND || dart.st === DState.RISE;
-      if (canRecallNow) {
+      if (
+        this.aimPhase === 'waiting' &&
+        active &&
+        (dartSt === DState.GROUND || dartSt === DState.RISE) &&
+        (free || meSt === PState.RECALL) &&
+        !this.stickAimDir()
+      ) {
+        // Dart landed while the finger is held near the center → recall it
         this.aimPhase = 'recall';
         this.input.setVirtualRecallHeld(true);
-      } else if (dart.st === DState.HAND && this.input.getInputMode() === 'active' && me.st === PState.FREE) {
-        this.beginAiming();
-      } else {
-        // Countdown, any locked action state, or dart in flight (returning/outbound):
-        // show live preview indicator immediately and seamlessly enter aiming once dart is in hand & free!
-        this.aimPhase = 'pending';
-        this.setCancelVisible(true);
-        this.pushIndicator();
       }
-    });
+      return;
+    }
+    if (this.aimPhase === 'pending') {
+      if (active && free) this.beginAiming();
+      else this.pushIndicator();
+      return;
+    }
+    if (this.aimPhase === 'aiming') {
+      if (!inHand || !active) this.endAim(false);
+      else this.pushIndicator();
+    }
+  }
 
-    el.addEventListener('pointermove', (e) => {
-      if (e.pointerId !== this.aimPointer) return;
-      e.preventDefault();
-      const c = this.px.aim;
-      const maxR = Math.max(20, (c.d / 2) * 0.7);
-      const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
-      if (this.aimPhase === 'aiming' || this.aimPhase === 'pending') {
-        const cz = this.cancelPx;
-        const dist = Math.hypot(lx - cz.cx, ly - cz.cy);
-        const enterR = (cz.d / 2) * 1.18;
-        const exitR = (cz.d / 2) * 1.36;
-        this.setCancelHot(this.cancelHot ? dist <= exitR : dist <= enterR);
+  private bindAim() {
+    const el = this.els.aim;
+    el.addEventListener('pointerdown', (e) => this.pressAim(e));
+    el.addEventListener('pointermove', (e) => this.moveAim(e));
+    el.addEventListener('pointerup', (e) => this.releaseAim(e, false));
+    el.addEventListener('pointercancel', (e) => this.releaseAim(e, true));
+    el.addEventListener('lostpointercapture', (e) => this.releaseAim(e, false));
+  }
+
+  private moveAim(e: PointerEvent) {
+    if (e.pointerId !== this.aimPointer) return;
+    e.preventDefault();
+    const c = this.px.aim;
+    const maxR = Math.max(20, (c.d / 2) * 0.7);
+    const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
+    if (this.aimPhase === 'aiming' || this.aimPhase === 'pending') {
+      const cz = this.cancelPx;
+      const dist = Math.hypot(lx - cz.cx, ly - cz.cy);
+      const enterR = (cz.d / 2) * 1.18;
+      const exitR = (cz.d / 2) * 1.36;
+      this.setCancelHot(this.cancelHot ? dist <= exitR : dist <= enterR);
+    }
+    let dx = lx - this.aimDownX;
+    let dy = ly - this.aimDownY;
+    const len = Math.hypot(dx, dy);
+    if (len > maxR) {
+      dx = (dx / len) * maxR;
+      dy = (dy / len) * maxR;
+    }
+    this.aimVecX = dx / maxR;
+    this.aimVecY = dy / maxR;
+
+    // Record stabilized aim samples for lift-off drift protection
+    const now = performance.now();
+    if (Math.hypot(this.aimVecX, this.aimVecY) >= AIM_DEADZONE) {
+      this.aimHistory.push({ t: now, x: this.aimVecX, y: this.aimVecY });
+      while (this.aimHistory.length > 1 && now - this.aimHistory[0].t > 140) {
+        this.aimHistory.shift();
       }
-      let dx = lx - this.aimDownX;
-      let dy = ly - this.aimDownY;
-      const len = Math.hypot(dx, dy);
-      if (len > maxR) {
-        dx = (dx / len) * maxR;
-        dy = (dy / len) * maxR;
-      }
-      this.aimVecX = dx / maxR;
-      this.aimVecY = dy / maxR;
+    }
 
-      // Record stabilized aim samples for lift-off drift protection
-      const now = performance.now();
-      if (Math.hypot(this.aimVecX, this.aimVecY) >= AIM_DEADZONE) {
-        this.aimHistory.push({ t: now, x: this.aimVecX, y: this.aimVecY });
-        while (this.aimHistory.length > 1 && now - this.aimHistory[0].t > 140) {
-          this.aimHistory.shift();
-        }
-      }
+    this.updateAimKnob();
+    if (this.aimPhase === 'aiming' || this.aimPhase === 'pending') this.pushIndicator();
+  }
 
-      this.updateAimKnob();
-      if (this.aimPhase === 'aiming' || this.aimPhase === 'pending') this.pushIndicator();
-    });
-
-    const release = (e: PointerEvent, cancelled: boolean) => {
-      if (e.pointerId !== this.aimPointer) return;
-      this.aimPointer = null;
-      el.classList.remove('is-pressed');
-      // Lifting the finger on the red cancel target drops the throw entirely
-      this.endAim(!cancelled && !this.cancelHot);
-    };
-    el.addEventListener('pointerup', (e) => release(e, false));
-    el.addEventListener('pointercancel', (e) => release(e, true));
-    el.addEventListener('lostpointercapture', (e) => release(e, false));
+  private releaseAim(e: PointerEvent, cancelled: boolean) {
+    if (e.pointerId !== this.aimPointer) return;
+    this.aimPointer = null;
+    this.els.aim.classList.remove('is-pressed');
+    // Lifting the finger on the red cancel target drops the throw entirely
+    this.endAim(!cancelled && !this.cancelHot);
   }
 
   private stickAimDir(): [number, number] | null {
@@ -625,7 +689,7 @@ export class MobileControls {
     } else if (phase === 'pending' && commit) {
       this.input.queueVirtualThrow(dir ? dir[0] : 0, dir ? dir[1] : 0, true);
     }
-    if (phase === 'recall' || !commit) {
+    if (phase === 'recall' || phase === 'waiting' || !commit) {
       this.input.setVirtualRecallHeld(false);
     }
     this.callbacks.onAimIndicator(null);
@@ -646,24 +710,31 @@ export class MobileControls {
 
   // ---------- Small skill buttons ----------
 
-  private bindButton(key: 'slash' | 'dash', fire: () => void) {
+  /** Slash / dash finger down: fires once per press; the finger belongs to the button until lifted. */
+  private pressButton(key: 'slash' | 'dash', e: PointerEvent) {
+    if (!this.visible) return;
+    e.preventDefault();
     const el = this.els[key];
-    let pid: number | null = null;
-    el.addEventListener('pointerdown', (e) => {
-      if (!this.visible) return;
-      e.preventDefault();
-      pid = e.pointerId;
-      el.classList.add('is-pressed');
-      fire();
-    });
-    const up = (e: PointerEvent) => {
-      if (e.pointerId !== pid) return;
-      pid = null;
-      el.classList.remove('is-pressed');
-    };
+    this.buttonPointer[key] = e.pointerId;
+    safeCapture(el, e.pointerId);
+    el.classList.add('is-pressed');
+    if (key === 'slash') this.input.queueVirtualMelee();
+    else this.input.queueVirtualDash();
+  }
+
+  private releaseButton(key: 'slash' | 'dash', e: PointerEvent) {
+    if (e.pointerId !== this.buttonPointer[key]) return;
+    this.buttonPointer[key] = null;
+    this.els[key].classList.remove('is-pressed');
+  }
+
+  private bindButton(key: 'slash' | 'dash') {
+    const el = this.els[key];
+    el.addEventListener('pointerdown', (e) => this.pressButton(key, e));
+    const up = (e: PointerEvent) => this.releaseButton(key, e);
     el.addEventListener('pointerup', up);
     el.addEventListener('pointercancel', up);
-    el.addEventListener('pointerleave', up);
+    el.addEventListener('lostpointercapture', up);
   }
 }
 

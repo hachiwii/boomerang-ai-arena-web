@@ -542,9 +542,9 @@ export class LobbyUI {
   }
 
   /**
-   * Mobile header is one non-wrapping row (title · 4 tabs · actions · platform buttons). When it does not fit the
-   * phone's logical width (narrow phones, notch safe areas), step down: tighter tabs → icon-only platform toggle →
-   * smaller title. Measured, so it also works under the forced-landscape CSS rotation.
+   * Mobile header is one non-wrapping row (title · mode tabs · icon-only action buttons · platform buttons). When it
+   * does not fit the phone's logical width (narrow phones, notch safe areas), step down: tighter tabs → no tab emojis
+   * and a smaller title. Measured, so it also works under the forced-landscape CSS rotation.
    */
   private scheduleFitHeader() {
     if (this.fitHeaderRaf) return;
@@ -557,7 +557,7 @@ export class LobbyUI {
   private fitHeader() {
     const hdr = this.container.querySelector<HTMLElement>('.lobby-header');
     if (!hdr) return;
-    const levels = ['is-tight-1', 'is-tight-2', 'is-tight-3'];
+    const levels = ['is-tight-1', 'is-tight-2'];
     hdr.classList.remove(...levels);
     if (this.container.classList.contains('hidden') || !document.body.classList.contains('is-mobile')) return;
     const nav = hdr.querySelector<HTMLElement>('.lobby-nav-row');
@@ -2496,10 +2496,10 @@ export class LobbyUI {
               ${isPvpAvailable() ? `<button class="lobby-tab lobby-tab-pvp ${this.activeTab === 'pvp' ? 'active' : ''}" id="tab-pvp" title="在线 1v1：用 6 位对战码和好友对战"><span class="nav-ico">🌐</span> PvP</button>` : ''}
             </div>
             <div class="lobby-nav-actions">
-              <button type="button" class="lobby-settings-btn lobby-training-btn" id="btn-start-training" title="训练场：打稻草人、练走位冲刺、练躲镖挡镖（不限时，玩家无敌）"><span class="nav-ico">🎯</span> 训练</button>
-              <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）"><span class="nav-ico">📜</span> 对局历史</button>
-              <button type="button" class="lobby-settings-btn lobby-bots-btn" id="btn-open-bot-manager" title="上传 C++ 源码在浏览器里编译成自定义 Bot，可在自定义对局和斗蛐蛐中使用">🤖 管理 Bot</button>
-              <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置"><span class="nav-ico">⚙️</span> 设置</button>
+              <button type="button" class="lobby-settings-btn lobby-training-btn" id="btn-start-training" title="训练场：打稻草人、练走位冲刺、练躲镖挡镖（不限时，玩家无敌）" aria-label="训练"><span class="nav-ico">🎯</span><span class="nav-label"> 训练</span></button>
+              <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）" aria-label="对局历史"><span class="nav-ico">📜</span><span class="nav-label"> 对局历史</span></button>
+              <button type="button" class="lobby-settings-btn lobby-bots-btn" id="btn-open-bot-manager" title="上传 C++ 源码在浏览器里编译成自定义 Bot，可在自定义对局和斗蛐蛐中使用" aria-label="管理 Bot"><span class="nav-ico">🤖</span><span class="nav-label"> 管理 Bot</span></button>
+              <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置" aria-label="设置"><span class="nav-ico">⚙️</span><span class="nav-label"> 设置</span></button>
               <button
                 type="button"
                 class="lobby-bgm-btn ${bgmOn ? 'is-on' : 'is-off'}"
