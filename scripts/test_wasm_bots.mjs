@@ -74,15 +74,16 @@ async function runMatch(mapName, botIds, maxTicks = 800) {
   };
 }
 
-// 1. Test ALL 16 bots in 4-player matches (4 groups of 4)
+// 1. Test every bot, using a duel partner if the last group has one seat
 const allBots = fs.readdirSync(BOTS_DIR).filter((f) => f.endsWith('.js')).map((f) => f.replace(/\.js$/, '')).sort();
 console.log(`Testing all ${allBots.length} WASM bots...`);
 const maps4 = ['twinlakes', 'yinyang', 'stonecircle', 'icefloes'];
 for (let g = 0; g < allBots.length; g += 4) {
   const group = allBots.slice(g, g + 4);
+  if (group.length === 1) group.push('sparring-mid');
   const map = maps4[(g / 4) % maps4.length];
   const r = await runMatch(map, group, 250);
-  console.log(`  [4P ${map.padEnd(11)}] ${group.join(', ')} => ticks=${r.ticks} over=${r.over} winner=${r.winner} kills=[${r.kills}] avg=${r.avgBotMs}ms max=${r.maxBotMs}ms`);
+  console.log(`  [${group.length}P ${map.padEnd(11)}] ${group.join(', ')} => ticks=${r.ticks} over=${r.over} winner=${r.winner} kills=[${r.kills}] avg=${r.avgBotMs}ms max=${r.maxBotMs}ms`);
 }
 
 // 2. Test 3-player match (checking 3P support!)
