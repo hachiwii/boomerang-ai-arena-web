@@ -7,8 +7,12 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { makeEngine, stepPair } from './pvp_test_engine.mjs';
 import { PvpSimulation } from '../src/workers/pvpSimulation.ts';
-import { PvpTimeline } from '../src/net/pvpTimeline.ts';
-import { NEUTRAL, PVP_TICK_MS } from '../src/net/pvpProtocol.ts';
+import { PvpTimeline, pvpSampleFrame, pvpTargetTick } from '../src/net/pvpTimeline.ts';
+import { NEUTRAL, pvpInputDelayFrames } from '../src/net/pvpProtocol.ts';
+
+for (const [rtt, delay] of [[0, 0], [79, 0], [80, 0], [81, 1], [159, 1], [160, 1], [161, 2], [5000, 2]]) {
+  assert.equal(pvpInputDelayFrames(rtt), delay);
+}
 
 const require = createRequire(new URL('../server/package.json', import.meta.url));
 const WebSocket = require('ws');
@@ -79,6 +83,10 @@ class Peer {
     return this.noise / 0xffffffff;
   }
 
+  oneWayMs() {
+    return Math.max(1, this.rtt / 2 - 15 + Math.round(this.random() * 30));
+  }
+
   connect() {
     const socket = this.socket = new WebSocket(url, {
       headers: { ...headers, 'ali-cdn-real-ip': this.ip, 'x-forwarded-for': '198.51.100.1' },
@@ -90,7 +98,7 @@ class Peer {
     });
     socket.on('message', (raw) => {
       const message = JSON.parse(raw.toString());
-      const at = Math.max(this.arrivedAt + 1, Date.now() + this.rtt / 2 + Math.round(this.random() * 38));
+      const at = Math.max(this.arrivedAt + 1, Date.now() + this.oneWayMs());
       this.arrivedAt = at;
       this.later(() => {
         if (this.socket === socket) this.pending.push(message);
@@ -123,7 +131,7 @@ class Peer {
       this.later(deliver, afterMs);
       return;
     }
-    const at = Math.max(this.sentAt + 1, Date.now() + this.rtt / 2 + Math.round(this.random() * 38));
+    const at = Math.max(this.sentAt + 1, Date.now() + this.oneWayMs());
     this.sentAt = at;
     this.later(deliver, at - Date.now());
   }
@@ -139,7 +147,7 @@ class Peer {
     this.play = {
       info, go: null, terminal: null, timeline: new PvpTimeline(info.mySeat), log: [], hashes: new Map(),
       sim: new PvpSimulation(engine, JSON.parse(engine.state())), confirmedT: 0, predictedT: 0,
-      sampled: -1, targetT: 0, changed: false, rollbacks: 0, maxRollback: 0, maxBatch: 0, end: null,
+      targetT: 0, changed: false, rollbacks: 0, maxRollback: 0, maxBatch: 0, end: null,
     };
     this.send({ type: 'ready', matchId: info.matchId });
   }
@@ -172,7 +180,8 @@ class Peer {
     const play = this.play;
     if (!play?.go || play.end) return;
     const { matchId, mySeat } = play.info;
-    const frame = Math.floor((time + this.clockSkew - play.go.startAt) / PVP_TICK_MS);
+    const targetT = pvpTargetTick(time + this.clockSkew - play.go.startAt, play.targetT);
+    const frame = targetT - 1;
     if (frame < 0) return;
 
     if (mySeat === 0 && frame >= 44 && !play.stalled) {
@@ -191,9 +200,8 @@ class Peer {
       this.later(() => this.connect(), 720);
     }
 
-    if (frame > play.sampled) {
-      play.sampled = frame;
-      const future = frame + play.go.delay;
+    const future = pvpSampleFrame(play.targetT, targetT, play.go.delay);
+    if (future !== null) {
       const a = (Math.imul(future + 7, 16777619) ^ (mySeat * 1225971)) >>> 0;
       const b = (Math.imul(a ^ (a >>> 13), 2246822507) >>> 0) % 4096;
       let input = [b % 25 - 12, (b >>> 5) % 25 - 12, b % 16 < 4 ? b % 4 + 1 : 0, mySeat ? 1000 : -1000, 0, 0];
@@ -203,6 +211,8 @@ class Peer {
       if (frame < 112) input = [mySeat ? 1000 : -1000, 0, ...input.slice(2)];
       if (frame < 36) input[2] = 0;
       if (frame >= 150) input = mySeat ? NEUTRAL : [-1000, 0, frame >= 175 ? 3 : 0, -1000, 0, 0];
+      // Mark even deliberately idle submissions so neutral deadline fills can be counted.
+      if (input === NEUTRAL) input = [0, 0, 0, 0, 0, 1];
       const late = mySeat === 0 && future === 28;
       if (late) {
         input = [0, 900, 2, 0, -1000, 23];
@@ -211,14 +221,19 @@ class Peer {
       play.timeline.sample(future, input);
       this.send({ type: 'input', matchId, frame: future, action: input }, late ? 430 : 0);
     }
-    const targetT = frame + 1;
     if (targetT === play.targetT && !play.changed) return;
     play.targetT = targetT;
     play.changed = false;
     const update = play.timeline.plan(play.confirmedT, play.predictedT, targetT);
     if (update.rollbackFrames) {
+      if (mySeat === 0 && play.log[28]?.[0] && play.predictedT - update.rollbackFrames <= 28 &&
+          play.predictedT > 28 && play.log[28][0].every((v) => v === 0)) play.correctedOwnFill = true;
       play.rollbacks++;
       play.maxRollback = Math.max(play.maxRollback, update.rollbackFrames);
+    }
+    if (mySeat === 0 && update.prediction) {
+      const pair = update.prediction.frames[28 - update.prediction.from];
+      if (pair && pair[0] === play.late) play.predictedOwnLate = true;
     }
     const result = play.sim.update(update);
     play.maxBatch = Math.max(play.maxBatch, result.predictedEvents.length, result.confirmedEvents.length);
@@ -257,6 +272,57 @@ async function startMatch(a, b, runSimulation = true) {
   }
   if (runSimulation) await Promise.all([a.readyPlay(aInfo), b.readyPlay(bInfo)]);
   return aInfo.matchId;
+}
+
+async function verifyConvergence(a, b, delay) {
+  await until(() => a.play.end && b.play.end && a.play.terminal && b.play.terminal, 'confirmed finish', 20_000);
+  assert.equal(a.play.terminal.reason, 'complete');
+  assert.equal(a.play.go.delay, delay);
+  assert.deepEqual(a.play.go, b.play.go);
+  const { matchId } = a.play.info;
+  assert.deepEqual(a.play.end, b.play.end);
+  assert.deepEqual(a.play.hashes, b.play.hashes);
+  const end = a.play.end;
+  assert.equal(end.winner, 1);
+  const canonical = a.play.log.slice(0, end.frame + 1);
+  assert.deepEqual(canonical, b.play.log.slice(0, end.frame + 1));
+  for (const [seat, peer] of [a, b].entries()) {
+    const first = peer.requestLog.find((m) => m.matchId === matchId && m.type === 'input');
+    assert.equal(first.frame, delay);
+    assert.deepEqual(canonical[delay][seat], first.action);
+    for (let f = 0; f < delay; f++) assert.deepEqual(canonical[f][seat], NEUTRAL);
+  }
+  assert.ok(a.play.predictedOwnLate && a.play.correctedOwnFill, 'the late sender must rewind its own prediction');
+  assert.ok(a.requestLog.some((m) => m.type === 'input' && m.action === a.play.late), 'late input was transmitted');
+  assert.notDeepEqual(canonical[28][0], a.play.late);
+  assert.equal(canonical[27][0][0], -1000);
+  assert.deepEqual(canonical[28][0], NEUTRAL);
+  assert.deepEqual(canonical[55][0], NEUTRAL);
+  assert.ok(!a.requestLog.some((m) => m.matchId === matchId && m.type === 'input' && m.frame === 55));
+  assert.ok(a.play.rollbacks > 0 && b.play.rollbacks > 0);
+  assert.ok(a.play.maxBatch >= 35 && b.play.maxBatch >= 20);
+  assert.deepEqual(a.messages.filter((m) => m.matchId === matchId && m.type === 'peer').map((m) => m.connected), [false, true]);
+  assert.equal(b.messages.filter((m) => m.type === 'matchStart' && m.info.matchId === matchId).length, 2);
+
+  const offline = await makeMatchEngine(a.play.info);
+  const offlineTicks = [JSON.parse(offline.state())];
+  for (const [frame, pair] of canonical.entries()) {
+    assert.ok(pair[0] && pair[1]);
+    stepPair(offline, pair);
+    offlineTicks.push(JSON.parse(offline.state()));
+    if ((frame + 1) % 20 === 0) assert.equal(a.play.hashes.get(frame), offline.hash());
+  }
+  assert.equal(offline.hash(), end.hash);
+  assert.deepEqual(offlineTicks[40].players.map((p) => [p.alive, p.x]), [[1, 500], [1, 17500]]);
+  assert.ok(offlineTicks.slice(0, -1).every((tick) => tick.players.every((p) => p.alive)));
+  assert.ok(offlineTicks.slice(-10).some((tick) => tick.events.some((e) => e.name === 'DASH' && e.a === 0)));
+  assert.deepEqual(a.play.sim.recorded(end.frame + 1), offlineTicks);
+  assert.deepEqual(b.play.sim.recorded(end.frame + 1), offlineTicks);
+  assert.ok(!logs.some(({ event }) => event === 'desync' || event === 'end-desync'));
+  const fills = [0, 1].map((seat) => canonical.slice(delay).filter((pair) => pair[seat].every((v) => v === 0)).length);
+  console.log(`PvP relay convergence: ${end.frame + 1} canonical ticks, 3 equal hashes ${end.hash}, delay ${a.play.go.delay}, ` +
+    `${a.play.hashes.size} periodic hashes, rollback counts ${a.play.rollbacks}/${b.play.rollbacks}, ` +
+    `largest rollback ${a.play.maxRollback}/${b.play.maxRollback}, fills ${fills.join('/')}, catch-up batches ${a.play.maxBatch}/${b.play.maxBatch}`);
 }
 
 try {
@@ -303,46 +369,7 @@ try {
 
   const matchId = await startMatch(a, b);
   assert.equal(a.play.info.mapId, 'stonecircle');
-  await until(() => a.play.end && b.play.end && a.play.terminal && b.play.terminal, 'confirmed finish', 20_000);
-  assert.equal(a.play.terminal.reason, 'complete');
-  assert.equal(a.play.go.delay, 4);
-  assert.equal(a.play.go.startAt, b.play.go.startAt);
-  assert.deepEqual(a.play.end, b.play.end);
-  assert.deepEqual(a.play.hashes, b.play.hashes);
-  const end = a.play.end;
-  assert.equal(end.winner, 1);
-  const canonical = a.play.log.slice(0, end.frame + 1);
-  assert.deepEqual(canonical, b.play.log.slice(0, end.frame + 1));
-  assert.ok(a.play.late);
-  assert.ok(a.requestLog.some((m) => m.type === 'input' && m.action === a.play.late), 'late input was transmitted');
-  assert.notDeepEqual(canonical[28][0], a.play.late);
-  assert.equal(canonical[27][0][0], -1000);
-  assert.deepEqual(canonical[28][0], NEUTRAL);
-  assert.deepEqual(canonical[55][0], NEUTRAL);
-  assert.ok(!a.requestLog.some((m) => m.type === 'input' && m.frame === 55));
-  assert.ok(a.play.rollbacks > 0 && b.play.rollbacks > 0);
-  assert.ok(a.play.maxBatch >= 35 && b.play.maxBatch >= 20);
-  assert.deepEqual(a.messages.filter((m) => m.type === 'peer').map((m) => m.connected), [false, true]);
-  assert.equal(b.messages.filter((m) => m.type === 'matchStart' && m.info.matchId === matchId).length, 2);
-
-  const offline = await makeMatchEngine(a.play.info);
-  const offlineTicks = [JSON.parse(offline.state())];
-  for (const [frame, pair] of canonical.entries()) {
-    assert.ok(pair[0] && pair[1]);
-    stepPair(offline, pair);
-    offlineTicks.push(JSON.parse(offline.state()));
-    if ((frame + 1) % 20 === 0) assert.equal(a.play.hashes.get(frame), offline.hash());
-  }
-  assert.equal(offline.hash(), end.hash);
-  assert.deepEqual(offlineTicks[40].players.map((p) => [p.alive, p.x]), [[1, 500], [1, 17500]]);
-  assert.ok(offlineTicks.slice(0, -1).every((tick) => tick.players.every((p) => p.alive)));
-  assert.ok(offlineTicks.slice(-10).some((tick) => tick.events.some((e) => e.name === 'DASH' && e.a === 0)));
-  assert.deepEqual(a.play.sim.recorded(end.frame + 1), offlineTicks);
-  assert.deepEqual(b.play.sim.recorded(end.frame + 1), offlineTicks);
-  assert.ok(!logs.some(({ event }) => event === 'desync' || event === 'end-desync'));
-  console.log(`PvP relay convergence: ${end.frame + 1} canonical ticks, 3 equal hashes ${end.hash}, delay ${a.play.go.delay}, ` +
-    `${a.play.hashes.size} periodic hashes, rollback counts ${a.play.rollbacks}/${b.play.rollbacks}, ` +
-    `largest rollback ${a.play.maxRollback}/${b.play.maxRollback}, catch-up batches ${a.play.maxBatch}/${b.play.maxBatch}`);
+  await verifyConvergence(a, b, 2);
 
   const getRematch = (peer, id, me, opponent) => peer.messages.find((m) =>
     m.type === 'rematch' && m.matchId === id && m.me === me && m.opponent === opponent);
@@ -361,6 +388,21 @@ try {
   assert.notEqual(roundA.matchId, matchId);
   assert.deepEqual(roundA, { ...roundB, mySeat: 0, challenger: true });
   assert.notDeepEqual([roundA.seed, roundA.spawnSeed, roundA.bgmSeed], [a.play.info.seed, a.play.info.spawnSeed, a.play.info.bgmSeed]);
+
+  // Reuse the real rematch, measuring new RTTs before ready. P1 alone sets the
+  // one-frame tier. The following low-latency round has 10–40 ms one-way jitter.
+  a.rtt = 120;
+  b.rtt = 50;
+  for (const peer of [a, b]) peer.send({ type: 'ping', t: 3, rttMs: peer.rtt });
+  await Promise.all([a.readyPlay(roundA), b.readyPlay(roundB)]);
+  await verifyConvergence(a, b, 1);
+
+  for (const peer of [a, b]) choose(peer, roundA.matchId, 'left');
+  await until(() => getRematch(a, roundA.matchId, 'left', 'left'), 'leaving the rematch');
+  a.rtt = 50;
+  a.send({ type: 'ping', t: 4, rttMs: a.rtt });
+  await startMatch(a, b);
+  await verifyConvergence(a, b, 0);
 
   const c = new Peer({ ip: '192.0.2.3', rtt: 10 });
   const d = new Peer({ ip: '192.0.2.4', rtt: 10 });

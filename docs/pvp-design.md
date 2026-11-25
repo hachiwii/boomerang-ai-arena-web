@@ -58,7 +58,7 @@ browser ──wss://<relay domain>/ws──► Aliyun CDN (WebSocket on, secret 
 1. Challenge accepted → server creates the match (challenger = seat 0 = P1), sends `matchStart` to both
    (`PvpMatchInfo`). `main.ts` builds the config with `buildPvpMatchConfig` and starts the match.
 2. Both load (map, engine worker, renderer) and send `ready`. When both are ready the server sends
-   `go {startAt}` (server time, ~3 s ahead) so the 3-2-1-GO countdown ends on the same instant on both screens.
+   `go {startAt, delay}` (server time, ~3 s ahead) so the 3-2-1-GO countdown ends on the same instant on both screens.
    Not ready within 20 s → match cancelled, both get a notice.
 3. Frame `f` (20 Hz) is due at `startAt + f × 50 ms` in server time; clients estimate server time from ping
    (minimum-RTT filter).
@@ -71,11 +71,14 @@ browser ──wss://<relay domain>/ws──► Aliyun CDN (WebSocket on, secret 
 
 ## Netcode: input delay + rollback, server-canonical inputs
 
-- **Input delay** `D` frames: input sampled at frame `f` is for frame `f + D`. The server picks `D` at `go` from both
-  players' RTT (at least 2, at most 4) and keeps it for the match.
-- Each client sends its input for frame `f + D` as soon as it is sampled. The server **accepts** an input if it arrives
-  before that frame's deadline (`due + grace`, grace ≈ 100–150 ms), and forwards it to the opponent at once (and
-  acknowledges it to the sender).
+- **Input delay** is shared by both seats. At `go`, the relay takes the larger of each player's WebSocket and
+  application RTT, then the larger of the two players' estimates. RTT ≤ 80 ms gives 0 frames, 80 < RTT ≤ 160 ms
+  gives 1 frame, and RTT > 160 ms gives 2 frames. The delay stays fixed until the next match or rematch.
+- Frame 0 is due at `startAt` and produces engine tick 1. Countdown accepts held movement. At GO the client
+  samples before stepping, assigns the action to due frame `f + delay` and sends it immediately. With zero delay
+  that sample applies to the step about to run. With positive delay the relay publishes the first `delay` frames
+  as neutral for both seats during countdown. A throttled client samples once for the newest due frame.
+- The relay forwards accepted inputs to both clients immediately. Each frame's deadline is its due time + 125 ms.
 - At the deadline, a missing input is **filled** by the server with a **neutral** input: no movement, no action (a
   lagging player stands still instead of running on — repeating the last move used to walk players off cliffs). The
   fill goes to both clients — including the late one, who must roll back its own input. Inputs that arrive after the
@@ -89,16 +92,22 @@ browser ──wss://<relay domain>/ws──► Aliyun CDN (WebSocket on, secret 
   present. Keep snapshots for at least the deadline window (≈ 16 frames).
 - The live clock follows server time, not accumulated local ticks: when a tab was throttled or hidden, catch up by
   simulating several frames at once.
-- Rendering: show the newest predicted state. Events (sounds, FX) from re-simulated frames are de-duplicated; an event
+- Live PvP rendering blends a remote rollback correction from the last displayed pose over 125 ms while the
+  target keeps moving. The remote dart uses the same blend. Displacements over 1.5 m, death, respawn, dash
+  transitions and match end snap to the corrected pose. Dart state changes also clear its blend. Corrections
+  affect only the remote render coordinates. Input sampling, local poses, WASM snapshots and replays use the
+  underlying game state.
+- Rendering shows the newest predicted state. Events (sounds, FX) from re-simulated frames are de-duplicated; an event
   that disappears after a correction is simply not played again. **Match end, result screen and history are taken
   only from confirmed frames**; the recorded tick list must be the canonical sequence (replace mispredicted ticks).
 - Desync check: clients report the engine state hash of confirmed frames (e.g. every 20 frames); the server compares
-  and logs mismatches.
+  and logs mismatches. Resuming a connection repeats the match's periodic reports.
 - Disconnects: the client reconnects with its token and match id; the server replays canonical inputs it missed. Gone
   for more than 10 s, or the player quits the match → **forfeit**: the opponent wins, both get a notice, the match
   ends on both screens and is saved to history.
 - Over: the client reports `end {frame, hash, winner}`; the server cross-checks both reports and closes the match.
-  A hard server-side timeout ends abandoned matches.
+  The client saves history through the relay's final cutoff, including when a quit races an end report. A hard
+  server-side timeout ends abandoned matches.
 
 ## Engine work (WASM)
 
