@@ -7,7 +7,6 @@ import { generateSpawnSeed, MapMeta, MatchConfig, RankedMode, RosterEntry, SlotC
 import { clientToLogical, getLogicalViewport, isForcedLandscape, rectToLogical } from '../game/viewport';
 import { getPvpLobbyClient } from '../net/pvpLobbyClient';
 import type { PvpChallengeFailReason, PvpConnState, PvpLobbyClient, PvpNetStats } from '../net/pvpTypes';
-import { PVP_CODE_TTL_MS } from '../net/pvpTypes';
 import { getTheme } from '../render/themes';
 import { makeHoodieAvatarDataUrl } from './hoodieAvatar';
 import { pvpNetDetail, pvpRttLevel, pvpRttMs } from './pvpNet';
@@ -70,9 +69,10 @@ const PVP_CONN_TEXT: Record<PvpConnState, string> = {
 };
 
 const PVP_HINT_TEXT = '对方在 PvP 页面时直接开战，无需确认';
-const PVP_TTL_MIN = Math.round(PVP_CODE_TTL_MS / 60000);
 
 type PvpMsgKind = 'hint' | 'info' | 'ok' | 'warn' | 'err';
+type MapPoolKey = RankedMode | 'pvp';
+type MapPoolTarget = 'ranked' | 'cricket' | 'pvp';
 
 export { makeHoodieAvatarDataUrl };
 
@@ -223,7 +223,7 @@ export class LobbyUI {
   private rankedMode: RankedMode = 'solo';
   private showLeaderboard = false;
   private mapPoolOpen = false;
-  private mapPoolTarget: 'ranked' | 'cricket' = 'ranked';
+  private mapPoolTarget: MapPoolTarget = 'ranked';
   private mapPoolWarnText: string | null = null;
 
   // Cricket mode transient UI states
@@ -236,7 +236,9 @@ export class LobbyUI {
   private cricketShakeInvited = false;
 
   // Separate saved map pools for Ranked SOLO and Ranked FFA (default: all maps enabled)
-  private rankedMapPools: Record<RankedMode, Set<string>>;
+  // Saved map pools: Ranked SOLO, Ranked FFA and PvP (default: all maps). The PvP pool is only used when someone
+  // enters this player's code — the relay draws the map from the challenged side's pool.
+  private mapPools: Record<MapPoolKey, Set<string>>;
   // Rolling history of the last 3 played map IDs (for recent-3-map anti-repeat when pool > 3)
   private recentMapIds: string[] = [];
 
@@ -261,10 +263,9 @@ export class LobbyUI {
   private pvpResetting = false;
   private pvpMsg: { text: string; kind: PvpMsgKind } | null = null;
   private pvpMsgAt = 0;
-  private pvpCodeNote: string | null = null;
-  private pvpCodeNoteTimer: number | null = null;
-  private pvpCopied = false;
-  private pvpCopyTimer: number | null = null;
+  /** Short feedback shown on the 复制 / 重置 buttons themselves (no extra text line under the code). */
+  private pvpBtnFlash: { copy: 'ok' | 'err' | null; reset: 'err' | null } = { copy: null, reset: null };
+  private pvpBtnFlashTimers: { copy: number | null; reset: number | null } = { copy: null, reset: null };
   private fitHeaderRaf = 0;
 
   constructor(
@@ -291,7 +292,7 @@ export class LobbyUI {
       }
     });
 
-    this.rankedMapPools = this.loadMapPools();
+    this.mapPools = this.loadMapPools();
     this.recentMapIds = this.loadRecentMaps();
 
     this.leaderboardPanel = new LeaderboardPanel(leaderboard, {
@@ -353,7 +354,8 @@ export class LobbyUI {
     // Re-fit the mobile header whenever the lobby's box changes (window resize, forced-landscape rotation,
     // fullscreen enter / exit) — including transient sizes that are later restored
     if (typeof ResizeObserver !== 'undefined') {
-      new ResizeObserver(() => this.scheduleFitHeader()).observe(this.container);
+      // Measured right in the callback (layout is fresh there); header classes never resize the observed overlay
+      new ResizeObserver(() => this.fitHeader()).observe(this.container);
     } else {
       window.addEventListener('resize', () => this.scheduleFitHeader());
     }
@@ -363,13 +365,13 @@ export class LobbyUI {
     this.render();
   }
 
-  private loadMapPools(): Record<RankedMode, Set<string>> {
+  private loadMapPools(): Record<MapPoolKey, Set<string>> {
     const validIds = new Set(this.maps.map((m) => m.id));
     const allIds = () => new Set(this.maps.map((m) => m.id));
     try {
       const raw = localStorage.getItem(MAP_POOLS_STORAGE_KEY);
-      if (!raw) return { solo: allIds(), ffa: allIds() };
-      const parsed = JSON.parse(raw) as Partial<Record<RankedMode, string[]>>;
+      if (!raw) return { solo: allIds(), ffa: allIds(), pvp: allIds() };
+      const parsed = JSON.parse(raw) as Partial<Record<MapPoolKey, string[]>>;
       const parseSet = (arr?: string[]) => {
         if (!Array.isArray(arr)) return allIds();
         const filtered = arr.filter((id) => validIds.has(id));
@@ -378,9 +380,10 @@ export class LobbyUI {
       return {
         solo: parseSet(parsed.solo),
         ffa: parseSet(parsed.ffa),
+        pvp: parseSet(parsed.pvp),
       };
     } catch {
-      return { solo: allIds(), ffa: allIds() };
+      return { solo: allIds(), ffa: allIds(), pvp: allIds() };
     }
   }
 
@@ -389,8 +392,9 @@ export class LobbyUI {
       localStorage.setItem(
         MAP_POOLS_STORAGE_KEY,
         JSON.stringify({
-          solo: Array.from(this.rankedMapPools.solo),
-          ffa: Array.from(this.rankedMapPools.ffa),
+          solo: Array.from(this.mapPools.solo),
+          ffa: Array.from(this.mapPools.ffa),
+          pvp: Array.from(this.mapPools.pvp),
         }),
       );
     } catch {
@@ -442,7 +446,7 @@ export class LobbyUI {
   }
 
   private getRankedPoolMaps(mode: RankedMode): MapMeta[] {
-    const set = this.rankedMapPools[mode];
+    const set = this.mapPools[mode];
     const pool = this.maps.filter((m) => set.has(m.id));
     return pool.length > 0 ? pool : this.maps;
   }
@@ -607,11 +611,13 @@ export class LobbyUI {
    */
   public resetLobbyConfig() {
     this.rankedMode = 'solo';
-    this.rankedMapPools = {
+    this.mapPools = {
       solo: new Set(this.maps.map((m) => m.id)),
       ffa: new Set(this.maps.map((m) => m.id)),
+      pvp: new Set(this.maps.map((m) => m.id)),
     };
     this.saveMapPools();
+    this.pushPvpMapPool();
     this.recentMapIds = [];
     this.saveRecentMaps();
 
@@ -1046,8 +1052,9 @@ export class LobbyUI {
       if (this.mapPoolTarget === 'cricket') {
         this.cricket.setMapPool(ids);
       } else {
-        this.rankedMapPools[this.rankedMode] = new Set(ids);
+        this.mapPools[this.mapPoolKey()] = new Set(ids);
         this.saveMapPools();
+        if (this.mapPoolTarget === 'pvp') this.pushPvpMapPool();
       }
       this.mapPoolWarnText = null;
       this.syncMapPoolModal();
@@ -1075,7 +1082,7 @@ export class LobbyUI {
             return;
           }
         } else {
-          const set = this.rankedMapPools[this.rankedMode];
+          const set = this.mapPools[this.mapPoolKey()];
           if (set.has(id)) {
             if (set.size <= 1) {
               this.mapPoolWarnText = '图池内至少保留 1 张地图';
@@ -1087,6 +1094,7 @@ export class LobbyUI {
             set.add(id);
           }
           this.saveMapPools();
+          if (this.mapPoolTarget === 'pvp') this.pushPvpMapPool();
         }
         this.mapPoolWarnText = null;
         this.syncMapPoolModal();
@@ -1095,7 +1103,12 @@ export class LobbyUI {
     });
   }
 
-  private openMapPoolModal(target: 'ranked' | 'cricket' = 'ranked') {
+  /** Which saved pool the modal edits (cricket keeps its own store). */
+  private mapPoolKey(): MapPoolKey {
+    return this.mapPoolTarget === 'pvp' ? 'pvp' : this.rankedMode;
+  }
+
+  private openMapPoolModal(target: MapPoolTarget = 'ranked') {
     this.mapPoolTarget = target;
     this.mapPoolOpen = true;
     this.mapPoolWarnText = null;
@@ -1113,13 +1126,17 @@ export class LobbyUI {
 
   private syncMapPoolModal() {
     const isCricket = this.mapPoolTarget === 'cricket';
+    const isPvp = this.mapPoolTarget === 'pvp';
     const mode = this.rankedMode;
-    const poolSet = isCricket ? this.cricket.getMapPoolSet() : this.rankedMapPools[mode];
-    const titleName = isCricket ? '斗蛐蛐图池' : `${mode === 'solo' ? 'SOLO' : '四人混战'} 地图池`;
+    const poolSet = isCricket ? this.cricket.getMapPoolSet() : this.mapPools[this.mapPoolKey()];
+    const titleName = isCricket ? '斗蛐蛐图池' : isPvp ? 'PvP 地图池' : `${mode === 'solo' ? 'SOLO' : '四人混战'} 地图池`;
 
     this.mapPoolCard.setAttribute('aria-label', titleName);
     this.mapPoolTitleEl.textContent = titleName;
-    this.mapPoolSubEl.innerHTML = `已选 <strong>${poolSet.size}</strong> / ${this.maps.length} 张地图${poolSet.size > 3 ? ' · 最近 3 场不重复' : ''}`;
+    // PvP: the relay draws at random from the challenged player's pool (no recent-3 rule there)
+    this.mapPoolSubEl.innerHTML = isPvp
+      ? `已选 <strong>${poolSet.size}</strong> / ${this.maps.length} 张地图 · 别人输入你的对战码时从中抽图`
+      : `已选 <strong>${poolSet.size}</strong> / ${this.maps.length} 张地图${poolSet.size > 3 ? ' · 最近 3 场不重复' : ''}`;
 
     if (this.mapPoolWarnText) {
       this.mapPoolWarnEl.textContent = this.mapPoolWarnText;
@@ -1146,6 +1163,17 @@ export class LobbyUI {
     if (cricketBadge) {
       cricketBadge.textContent = `${this.cricket.getMapPoolMetas().length} / ${this.maps.length}`;
     }
+    const pvpBadge = this.container.querySelector<HTMLElement>('#pvp-mappool-count');
+    if (pvpBadge) {
+      pvpBadge.textContent = `${this.mapPools.pvp.size} / ${this.maps.length}`;
+    }
+  }
+
+  /** Report the PvP pool to the relay (empty = every map). Only matters when someone enters this player's code. */
+  private pushPvpMapPool() {
+    if (!this.pvpClient) return; // sent on the first visit to the PvP tab
+    const ids = this.maps.map((m) => m.id).filter((id) => this.mapPools.pvp.has(id));
+    this.pvpClient.setMapPool(ids.length === this.maps.length ? [] : ids);
   }
 
   private hasHuman(): boolean {
@@ -1899,8 +1927,13 @@ export class LobbyUI {
       !this.loadingMessage;
     if (want === this.pvpPresent) return;
     this.pvpPresent = want;
-    if (want) this.getPvpClient().enter();
-    else this.pvpClient?.leave();
+    if (want) {
+      const client = this.getPvpClient();
+      this.pushPvpMapPool(); // the relay needs it before anyone can enter this player's code
+      client.enter();
+    } else {
+      this.pvpClient?.leave();
+    }
   }
 
   private pvpCanChallenge(): boolean {
@@ -1948,7 +1981,18 @@ export class LobbyUI {
               </div>
             </div>
             <div class="pvp-code" id="pvp-code" aria-live="polite" aria-label="我的对战码">${this.renderPvpCodeTiles(null)}</div>
-            <p class="pvp-card-note" id="pvp-code-note">停留在本页时持续续期 · 离开后保留 ${PVP_TTL_MIN} 分钟</p>
+            <div class="pvp-pool-row">
+              <button
+                type="button"
+                class="mappool-trigger-btn pvp-mappool-btn"
+                id="btn-open-pvp-mappool"
+                title="PvP 地图池：别人输入你的对战码向你发起对战时，从这里随机抽图"
+              >
+                <span class="mpt-icon">🗺️</span>
+                <span>地图选择</span>
+                <span class="mpt-count" id="pvp-mappool-count">${this.mapPools.pvp.size} / ${this.maps.length}</span>
+              </button>
+            </div>
           </section>
 
           <section class="pvp-card pvp-card-challenge">
@@ -2021,6 +2065,9 @@ export class LobbyUI {
     this.container.querySelector('#btn-pvp-reset')?.addEventListener('click', () => {
       void this.resetPvpCode();
     });
+    this.container.querySelector('#btn-open-pvp-mappool')?.addEventListener('click', () => {
+      this.openMapPoolModal('pvp');
+    });
     this.container.querySelector('#btn-pvp-retry')?.addEventListener('click', () => {
       // Re-enter so the client retries the connection
       const client = this.getPvpClient();
@@ -2082,17 +2129,15 @@ export class LobbyUI {
     this.pvpMsgAt = performance.now();
   }
 
-  private setPvpCodeNote(text: string | null, ms = 2600) {
-    this.pvpCodeNote = text;
-    if (this.pvpCodeNoteTimer !== null) window.clearTimeout(this.pvpCodeNoteTimer);
-    this.pvpCodeNoteTimer = null;
-    if (text) {
-      this.pvpCodeNoteTimer = window.setTimeout(() => {
-        this.pvpCodeNoteTimer = null;
-        this.pvpCodeNote = null;
-        this.syncPvpInPlace();
-      }, ms);
-    }
+  private flashPvpButton<K extends 'copy' | 'reset'>(btn: K, value: (typeof this.pvpBtnFlash)[K], ms = 1600) {
+    this.pvpBtnFlash[btn] = value;
+    const prev = this.pvpBtnFlashTimers[btn];
+    if (prev !== null) window.clearTimeout(prev);
+    this.pvpBtnFlashTimers[btn] = window.setTimeout(() => {
+      this.pvpBtnFlashTimers[btn] = null;
+      this.pvpBtnFlash[btn] = null;
+      this.syncPvpInPlace();
+    }, ms);
     this.syncPvpInPlace();
   }
 
@@ -2118,18 +2163,7 @@ export class LobbyUI {
         ok = false;
       }
     }
-    if (!ok) {
-      this.setPvpCodeNote('复制失败，请手动记下对战码');
-      return;
-    }
-    this.pvpCopied = true;
-    if (this.pvpCopyTimer !== null) window.clearTimeout(this.pvpCopyTimer);
-    this.pvpCopyTimer = window.setTimeout(() => {
-      this.pvpCopyTimer = null;
-      this.pvpCopied = false;
-      this.syncPvpInPlace();
-    }, 1600);
-    this.syncPvpInPlace();
+    this.flashPvpButton('copy', ok ? 'ok' : 'err');
   }
 
   private async resetPvpCode() {
@@ -2144,7 +2178,18 @@ export class LobbyUI {
       console.warn('PvP resetCode failed:', err);
     }
     this.pvpResetting = false;
-    this.setPvpCodeNote(next ? '✓ 已换成新对战码，旧码已失效' : '重置失败，请稍后再试');
+    if (next) {
+      // New code: the tiles flash once (the old code stops working right away)
+      this.syncPvpInPlace();
+      const codeEl = this.container.querySelector<HTMLElement>('#pvp-code');
+      if (codeEl) {
+        codeEl.classList.remove('is-fresh');
+        void codeEl.offsetWidth;
+        codeEl.classList.add('is-fresh');
+      }
+    } else {
+      this.flashPvpButton('reset', 'err', 2200);
+    }
   }
 
   /** Latency pill: written through data attributes (+ CSS content) so 1 Hz updates never re-trigger mobile auto-fit. */
@@ -2193,31 +2238,24 @@ export class LobbyUI {
       codeEl.classList.toggle('is-loading', !codeInfo.code && (state === 'connecting' || state === 'reconnecting'));
       codeEl.setAttribute('aria-label', codeInfo.code ? `我的对战码 ${codeInfo.code.split('').join(' ')}` : '我的对战码（获取中）');
     }
-    const noteEl = root.querySelector<HTMLElement>('#pvp-code-note');
-    if (noteEl) {
-      const note =
-        this.pvpCodeNote ??
-        (state === 'offline'
-          ? '连接恢复后对战码继续有效'
-          : !codeInfo.code
-            ? '正在向服务器申请对战码…'
-            : `停留在本页时持续续期 · 离开后保留 ${PVP_TTL_MIN} 分钟`);
-      if (noteEl.textContent !== note) noteEl.textContent = note;
-      noteEl.classList.toggle('is-flash', Boolean(this.pvpCodeNote));
-    }
     const copyBtn = root.querySelector<HTMLButtonElement>('#btn-pvp-copy');
     if (copyBtn) {
+      const flash = this.pvpBtnFlash.copy;
       copyBtn.disabled = !codeInfo.code;
-      copyBtn.classList.toggle('is-done', this.pvpCopied);
-      const t = this.pvpCopied ? '已复制 ✓' : '复制';
+      copyBtn.classList.toggle('is-done', flash === 'ok');
+      copyBtn.classList.toggle('is-error', flash === 'err');
+      const t = flash === 'ok' ? '已复制 ✓' : flash === 'err' ? '复制失败' : '复制';
       if (copyBtn.textContent !== t) copyBtn.textContent = t;
     }
     const resetBtn = root.querySelector<HTMLButtonElement>('#btn-pvp-reset');
     if (resetBtn) {
+      const failed = this.pvpBtnFlash.reset === 'err';
       resetBtn.disabled = !online || this.pvpResetting || busy;
-      const t = this.pvpResetting ? '重置中…' : '↻ 重置';
+      resetBtn.classList.toggle('is-error', failed);
+      const t = this.pvpResetting ? '重置中…' : failed ? '重置失败' : '↻ 重置';
       if (resetBtn.textContent !== t) resetBtn.textContent = t;
     }
+    root.querySelector<HTMLButtonElement>('#btn-open-pvp-mappool')?.toggleAttribute('disabled', this.pvpStarting);
 
     const input = root.querySelector<HTMLInputElement>('#pvp-code-input');
     if (input) {

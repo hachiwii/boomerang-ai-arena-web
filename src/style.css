@@ -9229,7 +9229,7 @@ body:not(.is-mobile) .lobby-card-pvp .lobby-nav-row {
 }
 
 .pvp-mini-btn {
-  min-width: 64px;
+  min-width: 76px;
   padding: 5px 11px;
   border-radius: 9px;
   border: 1px solid rgba(255, 255, 255, 0.16);
@@ -9257,6 +9257,12 @@ body:not(.is-mobile) .lobby-card-pvp .lobby-nav-row {
   background: rgba(63, 217, 138, 0.2);
   border-color: rgba(114, 234, 166, 0.5);
   color: #b4f9d2;
+}
+
+.pvp-mini-btn.is-error {
+  background: rgba(235, 82, 82, 0.16);
+  border-color: rgba(255, 130, 130, 0.45);
+  color: #ffc2c2;
 }
 
 .pvp-code {
@@ -9323,20 +9329,36 @@ body:not(.is-mobile) .lobby-card-pvp .lobby-nav-row {
   opacity: 0.45;
 }
 
-.pvp-card-note {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text-dim);
-  text-align: center;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  line-height: 18px;
-  min-height: 18px;
+.pvp-code.is-fresh .pvp-digit {
+  animation: pvpCodeFresh 0.7s ease-out;
 }
 
-.pvp-card-note.is-flash {
-  color: #a6f5c9;
+@keyframes pvpCodeFresh {
+  0% {
+    border-color: rgba(114, 234, 166, 0.95);
+    box-shadow: 0 0 16px rgba(63, 217, 138, 0.55);
+    transform: scale(1.06);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+/* PvP map pool (used when someone enters this player's code): same chip as 排位赛 地图选择 */
+.pvp-pool-row {
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.pvp-mappool-btn {
+  max-width: 100%;
+  white-space: nowrap;
+}
+
+.pvp-mappool-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
 }
 
 .pvp-challenge-row {
@@ -9701,4 +9723,95 @@ body.is-mobile .start-btn.pvp-fight-btn {
 
 .history-toolbar .history-export-cfg-btn {
   margin-left: auto;
+}
+
+/* ---------- PvP result card: 再来一局 / 退出 (收藏 stays in the header row) ---------- */
+.result-pvp-btns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.6fr);
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.result-pvp-exit-btn {
+  white-space: nowrap;
+}
+
+.result-pvp-exit-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.result-pvp-again-wrap {
+  position: relative;
+  min-width: 0;
+}
+
+.start-btn.result-pvp-again-btn {
+  width: 100%;
+  height: 100%;
+  margin-top: 0;
+  padding: 13px 16px;
+  font-size: 15.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 0 8px 24px rgba(61, 126, 255, 0.38);
+}
+
+.start-btn.result-pvp-again-btn.has-cue {
+  box-shadow: 0 0 0 2px rgba(114, 234, 166, 0.75), 0 8px 24px rgba(63, 217, 138, 0.35);
+}
+
+.start-btn.result-pvp-again-btn:disabled {
+  cursor: default;
+}
+
+.start-btn.result-pvp-again-btn.is-pending:disabled {
+  opacity: 0.85;
+  cursor: progress;
+}
+
+.start-btn.result-pvp-again-btn.is-blocked:disabled {
+  opacity: 1;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 130, 130, 0.38);
+  color: #ffb8b8;
+  box-shadow: none;
+}
+
+/* Opponent's choice: a small tag floating on the button's top edge, so it never moves the layout */
+.result-pvp-cue {
+  position: absolute;
+  top: 0;
+  right: 12px;
+  transform: translateY(-55%);
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: #2fbf77;
+  border: 1px solid rgba(190, 255, 220, 0.75);
+  color: #06281a;
+  font-size: 11.5px;
+  font-weight: 900;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.18s ease;
+}
+
+.result-pvp-cue.is-visible {
+  opacity: 1;
+  visibility: visible;
+  animation: pvpCuePulse 1.4s ease-in-out infinite;
+}
+
+@keyframes pvpCuePulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(63, 217, 138, 0.55);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(63, 217, 138, 0);
+  }
 }
