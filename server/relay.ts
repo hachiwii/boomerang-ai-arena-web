@@ -4,7 +4,7 @@ import type { AddressInfo } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { WebSocket, WebSocketServer } from 'ws';
 import maps from '../public/assets/maps/manifest.json' with { type: 'json' };
-import { PVP_CODE_TTL_MS, type PvpMatchInfo } from '../src/net/pvpTypes.ts';
+import { PVP_CODE_TTL_MS, type PvpChallengeFailReason, type PvpMatchInfo } from '../src/net/pvpTypes.ts';
 import {
   PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_TICK_MS, NEUTRAL, isAction, withoutAct,
   type Action, type ClientMessage, type Go, type InputRow, type MatchEnd, type MatchTerminal,
@@ -13,7 +13,7 @@ import {
 
 const READY_MS = 20_000;
 const RECONNECT_MS = 10_000;
-const TERMINAL_TTL_MS = 60_000;
+const TERMINAL_TTL_MS = PVP_CODE_TTL_MS;
 const PRESENCE_MS = 8_000;
 const MAX_CONNECTIONS = 512;
 const MAX_PER_IP = 24;
@@ -25,7 +25,8 @@ const standardMaps = new Set(maps.filter((map) => map.category === 'standard').m
 const now = () => Math.round(performance.timeOrigin + performance.now());
 const other = (seat: Seat): Seat => seat === 0 ? 1 : 0;
 const digest = (text: string) => createHash('sha256').update(text).digest();
-const originKey = process.env.PVP_ORIGIN_KEY ? digest(process.env.PVP_ORIGIN_KEY) : null;
+const configuredOriginKey = process.env.PVP_ORIGIN_KEY;
+const originKey = configuredOriginKey === undefined ? null : digest(configuredOriginKey);
 
 function authorized(req: IncomingMessage): boolean {
   if (!originKey) return true;
@@ -75,10 +76,10 @@ interface Match {
 }
 
 function ipOf(req: IncomingMessage): string {
-  const cdnIp = req.headers['ali-cdn-real-ip'];
-  const forwarded = req.headers['x-forwarded-for'];
-  return (typeof cdnIp === 'string' ? cdnIp : typeof forwarded === 'string' ? forwarded : '')
-    .split(',')[0].trim().slice(0, 64) || req.socket.remoteAddress || '?';
+  const first = (header: string | string[] | undefined) =>
+    typeof header === 'string' ? header.split(',', 1)[0].trim().slice(0, 64) : '';
+  return first(req.headers['ali-cdn-real-ip']) || first(req.headers['x-forwarded-for']) ||
+    req.socket.remoteAddress || '?';
 }
 
 function count(window: WindowCount, time: number, duration: number, cap: number): boolean {
@@ -280,14 +281,14 @@ function onHello(conn: Connection, msg: Extract<ClientMessage, {type: 'hello'}>,
   p.presentUntil = 0;
   conn.reservation = p;
   previous?.ws.close(4001, 'Session replaced');
-  send(conn, { type: 'welcome', token: p.token, code: p.code, expiresAt: p.expiresAt });
   const match = p.match ?? (p.lastMatch?.info.matchId === msg.matchId ? p.lastMatch : undefined);
+  send(conn, { type: 'welcome', token: p.token, code: p.code, expiresAt: p.expiresAt, matchId: match?.info.matchId });
   if (match) rejoin(conn, match, p === match.players[0] ? 0 : 1);
 }
 
 function challenge(conn: Connection, p: Reservation, msg: Extract<ClientMessage, {type: 'challenge'}>, time: number) {
   if (!int(msg.request, 0, Number.MAX_SAFE_INTEGER)) return;
-  const fail = (reason: Exclude<Extract<ServerMessage, {type: 'challengeResult'}>['result'], {ok: true}>['reason']) =>
+  const fail = (reason: PvpChallengeFailReason) =>
     send(conn, { type: 'challengeResult', request: msg.request, result: { ok: false, reason } });
   let ipWindow = challengesByIp.get(conn.ip);
   if (!ipWindow) {
@@ -389,8 +390,14 @@ function onMessage(conn: Connection, raw: string) {
   }
   if (msg.type === 'hash' || msg.type === 'end') {
     const { frame, hash } = msg;
-    if (!int(frame, 0, due(match, time)) || !match.inputs[frame]?.[0] || !match.inputs[frame]?.[1] ||
+    // A client's filtered clock may lead the relay slightly. A report is
+    // eligible as soon as its entire prefix is canonical and its tick is due
+    // within one clock-error window.
+    if (!int(frame, 0, Math.min(PVP_MAX_FRAMES - 1, due(match, time) + 2)) ||
         typeof hash !== 'string' || !/^[a-f0-9]{16}$/.test(hash)) return;
+    for (let f = Math.min(frame, match.nextDeadline); f <= frame; f++) {
+      if (!match.inputs[f]?.[0] || !match.inputs[f]?.[1]) return;
+    }
     if (msg.type === 'hash') {
       if ((frame + 1) % 20 !== 0) return;
       const reports = match.hashes.get(frame) ?? [];

@@ -14,6 +14,17 @@ The development frontend on localhost uses `ws://<host>:8787/ws`. Set the fronte
 `VITE_PVP_URL` to override the endpoint. The production default is `wss://pvp.biao.oinkvm.cn/ws`.
 Play with two browser profiles to obtain two independent lobby tokens.
 
+Run the network and engine tests from the repository root after building the
+relay bundle.
+
+```sh
+node scripts/test_pvp_engine.mjs
+node scripts/test_pvp_relay.mjs
+```
+
+Rebuild only the checked-in game engine with `python3 scripts/build_wasm.py --engine-only`
+and `em++` on `PATH`.
+
 ## Origin artifacts
 
 Copy `server/dist/relay.mjs`, `server/package.json`, and `server/package-lock.json` into

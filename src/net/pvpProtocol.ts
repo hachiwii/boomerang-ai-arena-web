@@ -60,7 +60,7 @@ export type MatchMessage = { matchId: string } & (
 );
 
 export type ServerMessage =
-  | { type: 'welcome'; token: string; code: string; expiresAt: number }
+  | { type: 'welcome'; token: string; code: string; expiresAt: number; matchId?: string }
   | { type: 'code'; code: string; expiresAt: number; request?: number }
   | { type: 'pong'; t: number; serverTime: number; expiresAt: number }
   | { type: 'challengeResult'; request: number; result: PvpChallengeResult }

@@ -6,7 +6,10 @@ import { CricketStore } from './game/cricketStore';
 import { HumanInputController } from './game/humanInput';
 import { CinematicDirector } from './game/killCamDirector';
 import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
-import { CountdownStage, MatchController } from './game/matchController';
+import { CountdownStage, MatchController, type MatchCallbacks } from './game/matchController';
+import { buildPvpMatchConfig } from './game/pvpConfig';
+import { PvpMatchController } from './game/pvpMatchController';
+import { getPvpLobbyClient, getPvpMatchLink, setPvpMapPool } from './net/pvpLobbyClient';
 import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
@@ -33,6 +36,7 @@ import {
   MatchConfig,
   RankedMode,
   RosterEntry,
+  type TickSnapshot,
 } from './game/types';
 import { BotCompiler } from './game/customBots/botCompiler';
 import { CustomBotStore, customBotRosterEntry } from './game/customBots/customBotStore';
@@ -96,6 +100,8 @@ async function bootstrap() {
     fetch(`/assets/chars/roster.json?v=${__BUILD_ID__}`),
   ]);
   const maps = (await mapsResp.json()) as MapMeta[];
+  setPvpMapPool(maps);
+  const pvpLobby = getPvpLobbyClient();
   const roster = (await rosterResp.json()) as RosterEntry[];
   // Enabled custom bots (compiled in the browser) join the shared roster; it's mutated in place when they change
   const customBots = new CustomBotStore();
@@ -193,6 +199,8 @@ async function bootstrap() {
   let hudUI: HudUI;
   let trainingPanel: TrainingPanel;
   let controller: MatchController;
+  let pvpController: PvpMatchController | null = null;
+  const liveController = () => pvpController ?? controller;
   let replayController: ReplayController;
   let historyModal: HistoryModal;
   let replayPlaylist: string[] = [];
@@ -230,7 +238,7 @@ async function bootstrap() {
     clearMatchOverTimer();
     matchOverCallback = cb;
     matchOverRemainingMs = Math.max(0, delayMs);
-    if (externalPaused) return;
+    if (externalPaused && !pvpController) return;
     matchOverDeadlineMs = performance.now() + matchOverRemainingMs;
     matchOverTimer = window.setTimeout(() => {
       const fn = matchOverCallback;
@@ -270,7 +278,7 @@ async function bootstrap() {
     input.setPaused(want);
     renderer.setCursorSuppressed(want);
     if (want) mobileControls?.cancelAll();
-    if (mode === 'playing') {
+    if (mode === 'playing' && !pvpController) {
       controller.setPaused(want);
       renderer.setPlaybackPaused(want);
       if (want) pauseMatchOverTimer();
@@ -573,6 +581,18 @@ async function bootstrap() {
     }
   };
 
+  const pvpNotice = document.createElement('div');
+  pvpNotice.className = 'ui-hidden-toast platform-toast';
+  pvpNotice.setAttribute('role', 'status');
+  document.body.appendChild(pvpNotice);
+  let pvpNoticeTimer = 0;
+  const showPvpNotice = (message: string) => {
+    pvpNotice.textContent = message;
+    pvpNotice.classList.add('is-visible');
+    window.clearTimeout(pvpNoticeTimer);
+    pvpNoticeTimer = window.setTimeout(() => pvpNotice.classList.remove('is-visible'), 3500);
+  };
+
   const isTextEditableTarget = (target: EventTarget | null): boolean => {
     if (target instanceof HTMLTextAreaElement) return true;
     if (target instanceof HTMLInputElement) {
@@ -610,12 +630,22 @@ async function bootstrap() {
     });
   };
 
-  const persistCurrentMatchHistory = (eloResult: EloUpdateResult | null, earlyExit: boolean) => {
+  const persistCurrentMatchHistory = (
+    eloResult: EloUpdateResult | null,
+    earlyExit: boolean,
+    finalState?: TickSnapshot,
+  ) => {
     if (historyRecorded || !activeConfig || !activeMapData) return;
-    const ticks = controller.getRecordedTicks().slice();
+    const ticks = liveController().getRecordedTicks().slice();
     if (ticks.length === 0) return;
     historyRecorded = true;
     const bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, eloResult, earlyExit);
+    if (activeConfig.pvp && finalState) {
+      // The relay may award a forfeit without changing the final engine tick.
+      bundle.summary.humanSeat = activeConfig.pvp.mySeat;
+      bundle.summary.winner = finalState.winner;
+      bundle.summary.players.forEach((player, seat) => { player.rank = finalState.players[seat].rank; });
+    }
     lastFinishedBundle = bundle;
     enqueueHistorySave(bundle);
   };
@@ -627,7 +657,20 @@ async function bootstrap() {
     else trainingPanel.hide();
   };
 
+  const disposePvpMatch = () => {
+    if (!pvpController) return;
+    pvpController.stop();
+    pvpController = null;
+    hudUI.setNetStats(null);
+    mobileControls?.setBulletTimeAllowed(true);
+  };
+
   const returnToLobby = (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => {
+    if (pvpController && !pvpController.isFinished()) {
+      pvpController.requestQuit();
+      return;
+    }
+    disposePvpMatch();
     setUiHidden(false);
     setTrainingChrome(false);
     clearMatchOverTimer();
@@ -754,6 +797,8 @@ async function bootstrap() {
     fallbackOpenHistory = false,
     opts?: { keepPlaylist?: boolean; speed?: number },
   ) => {
+    if (pvpController && !pvpController.isFinished()) return;
+    disposePvpMatch();
     setTrainingChrome(false);
     clearMatchOverTimer();
     matchRecorded = false;
@@ -894,7 +939,7 @@ async function bootstrap() {
   };
 
   const canQuickRestart = (): boolean => {
-    if (!activeConfig || restarting) return false;
+    if (!activeConfig || restarting || pvpController) return false;
     if (mode === 'replay' && replayIsLiveAi) return true;
     if (mode !== 'playing') return false;
     const hSeat = controller.getHumanSeat();
@@ -910,7 +955,7 @@ async function bootstrap() {
   };
 
   const restartCurrentMatch = () => {
-    if (!activeConfig || restarting) return;
+    if (!activeConfig || restarting || pvpController) return;
     restarting = true;
     clearMatchOverTimer();
     mobileControls?.hide();
@@ -1030,10 +1075,10 @@ async function bootstrap() {
       if (mode === 'playing' && now - lastTelemetryUpdateMs >= 200) {
         lastTelemetryUpdateMs = now;
         hudUI.updateTelemetry(
-          controller.actualLogicHz,
+          pvpController ? 20 : controller.actualLogicHz,
           renderer.renderHz,
           renderer.avgFrameWorkMs,
-          controller.lastBotMaxMs,
+          pvpController ? 0 : controller.lastBotMaxMs,
           activeConfig?.speed ?? 1.0,
         );
       } else if (mode === 'replay' && now - lastTelemetryUpdateMs >= 200) {
@@ -1084,10 +1129,12 @@ async function bootstrap() {
   settings.onChange((s) => {
     sfx.applySettings(s.soundEnabled, s.volume);
     bgm.applySettings(s.bgmEnabled, s.bgmVolume, s.bossMusicEnabled);
-    controller.setCliffGuard(s.cliffGuard);
-    controller.setDashGuard(s.dashGuard);
-    controller.setMeleeAssist(s.meleeAssist);
-    controller.setHumanSlashTicks(getSlashJudgmentTicks(s.slashJudgment));
+    if (!pvpController) {
+      controller.setCliffGuard(s.cliffGuard);
+      controller.setDashGuard(s.dashGuard);
+      controller.setMeleeAssist(s.meleeAssist);
+      controller.setHumanSlashTicks(getSlashJudgmentTicks(s.slashJudgment));
+    }
     if (s.lockFps !== activeLockFps) {
       activeLockFps = s.lockFps;
       startRenderLoop();
@@ -1109,7 +1156,7 @@ async function bootstrap() {
     controller.setKillFxEnabled(cinematic.killFx);
     if (mode === 'replay') {
       replayController.setCinematicOptions(cinematic);
-    } else if (mode === 'playing') {
+    } else if (mode === 'playing' && !pvpController) {
       const updatedDir = controller.setCinematicOptions(cinematic);
       if (updatedDir) {
         renderer.setCinematicDirector(updatedDir);
@@ -1141,7 +1188,7 @@ async function bootstrap() {
     onWatchCurrentReplay: () => {
       let bundle = lastFinishedBundle;
       if (!bundle && activeConfig && activeMapData) {
-        const ticks = controller.getRecordedTicks().slice();
+        const ticks = liveController().getRecordedTicks().slice();
         if (ticks.length > 0) {
           bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, null, false);
         }
@@ -1152,7 +1199,7 @@ async function bootstrap() {
     onToggleCurrentFavorite: (nextFavorite) => {
       let bundle = lastFinishedBundle;
       if (!bundle && activeConfig && activeMapData) {
-        const ticks = controller.getRecordedTicks().slice();
+        const ticks = liveController().getRecordedTicks().slice();
         if (ticks.length > 0) {
           bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, pendingMatchElo?.elo ?? null, false);
           lastFinishedBundle = bundle;
@@ -1210,7 +1257,7 @@ async function bootstrap() {
 
   mobileControls = new MobileControls(uiRoot, input, settings, {
     onAimSlowmo: (active) => {
-      if (mode !== 'playing') return;
+      if (mode !== 'playing' || pvpController) return;
       // Aim slow-mo pins the live clock to 0.1x regardless of the configured match speed
       const eff = controller.setSpeedOverride(active ? 0.1 : null);
       renderer.setPlaybackSpeed(eff);
@@ -1291,7 +1338,7 @@ async function bootstrap() {
     isMobile: () => platform.isMobile(),
   });
 
-  controller = new MatchController(input, {
+  const matchCallbacks: MatchCallbacks = {
     onStatus: (msg) => {
       if (mode === 'lobby') lobbyUI.setLoading(msg);
     },
@@ -1300,7 +1347,7 @@ async function bootstrap() {
       if (!activeConfig) return;
       activeMapData = mapData;
       const cfg = activeConfig;
-      const hSeat = controller.getHumanSeat();
+      const hSeat = liveController().getHumanSeat();
       await renderer.setupMatch(mapData, cfg.mapMeta.theme, cfg.slots, initialState, hSeat, cfg.speed);
       if (activeConfig !== cfg) return;
       renderer.setCinematicDirector(director ?? null);
@@ -1316,7 +1363,7 @@ async function bootstrap() {
       document.body.classList.remove('m-aim-slowmo');
       if (platform.isMobile() && hSeat >= 0) {
         mobileControls?.show(hSeat, mapData);
-        mobileControls?.onTick(initialState, controller.getTickIntervalMs());
+        mobileControls?.onTick(initialState, liveController().getTickIntervalMs());
       } else {
         mobileControls?.hide();
       }
@@ -1326,7 +1373,7 @@ async function bootstrap() {
       bgm.updateMatchTick(next);
       hudUI.updateTick(next, activeMapData?.colStart, activeMapData?.colEvery);
       mobileControls?.onTick(next, tickDurationMs);
-      if (controller.isTraining()) trainingPanel.onTick(next, controller.getHumanSeat());
+      if (!pvpController && controller.isTraining()) trainingPanel.onTick(next, controller.getHumanSeat());
     },
     onMatchOver: (finalState, director) => {
       mobileControls?.hide();
@@ -1336,9 +1383,11 @@ async function bootstrap() {
       let eloResult: EloUpdateResult | null = null;
       if (activeConfig && !matchRecorded) {
         matchRecorded = true;
-        eloResult = leaderboard.recordMatch(activeConfig, finalState);
+        if (isRankedMatchMode(activeConfig.matchMode)) {
+          eloResult = leaderboard.recordMatch(activeConfig, finalState);
+        }
         if (eloResult) {
-          const hSeat = controller.getHumanSeat();
+          const hSeat = liveController().getHumanSeat();
           const hp = hSeat >= 0 ? finalState.players[hSeat] : null;
           const outcome: 'win' | 'draw' | 'loss' =
             finalState.winner >= 0 && finalState.winner === hSeat
@@ -1353,14 +1402,18 @@ async function bootstrap() {
           };
         }
       }
-      persistCurrentMatchHistory(eloResult, false);
+      persistCurrentMatchHistory(eloResult, false, finalState);
+      if (pvpController?.isQuitting()) {
+        returnToLobby();
+        return;
+      }
       // Live human matches (and live AI matches with only winnerCam) glide smoothly to the winner front close-up;
       // if already spectating (4P eliminated human), also run upstream final-kill hit-stop + punch when killFx is ON!
       let activeDirector = director ?? null;
       if (!activeDirector && activeMapData) {
         const curSettings = settings.get();
-        const hSeat = controller.getHumanSeat();
-        const recorded = controller.getRecordedTicks();
+        const hSeat = liveController().getHumanSeat();
+        const recorded = liveController().getRecordedTicks();
         const prevSt = recorded.length >= 2 ? recorded[recorded.length - 2] : null;
         const spectatingFinal = hSeat < 0 || Boolean(prevSt && prevSt.players[hSeat]?.alive === 0);
         const wantFinalKillFx = spectatingFinal && isKillFxEffective(curSettings);
@@ -1396,7 +1449,63 @@ async function bootstrap() {
       alert(`对局启动出错：${err}`);
       returnToLobby();
     },
-  });
+  };
+  controller = new MatchController(input, matchCallbacks);
+
+  const startInteractiveMatch = (config: MatchConfig) => {
+    if (pvpController) return;
+    const pvp = config.pvp;
+    const link = pvp ? getPvpMatchLink(pvp.matchId) : null;
+    if (pvp && !link) return;
+    clearMatchOverTimer();
+    matchRecorded = false;
+    historyRecorded = false;
+    pendingMatchElo = null;
+    resultOverlayShown = false;
+    restarting = false;
+    replayIsLiveAi = false;
+    clearReplayPlaylist();
+    lastFinishedBundle = null;
+    replayController.stop();
+    renderer.resetCameraToOverview();
+    historyModal.close();
+    activeMapData = null;
+    activeConfig = config;
+    bgm.prepareMatchLaunch({
+      matchMode: config.matchMode,
+      bgmSeed: config.bgmSeed ?? config.seed,
+      slots: config.slots,
+    });
+
+    if (pvp && link) {
+      controller.stop();
+      pvpLobby.leave();
+      pvpController = new PvpMatchController(input, config, pvp.mySeat, link, {
+        ...matchCallbacks,
+        onNotice: showPvpNotice,
+        onCancelled: () => {
+          disposePvpMatch();
+          returnToLobby();
+        },
+        onError: (err) => {
+          disposePvpMatch();
+          matchCallbacks.onError?.(err);
+        },
+      });
+      mobileControls.setBulletTimeAllowed(false);
+      hudUI.setNetStats(pvpLobby.getStats());
+      renderer.setPlaybackPaused(false);
+      void pvpController.start();
+      return;
+    }
+
+    lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
+    void controller.start(config, { cinematic: getCinematicOptions(settings.get()) }).catch((err) => {
+      console.error(err);
+      lobbyUI.setLoading(null);
+      alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);
+    });
+  };
 
   lobbyUI = new LobbyUI(uiRoot, maps, roster, leaderboard, cricketStore, settings, {
     onSelectMap: (map) => {
@@ -1417,30 +1526,7 @@ async function bootstrap() {
         return;
       }
 
-      clearMatchOverTimer();
-      matchRecorded = false;
-      historyRecorded = false;
-      pendingMatchElo = null;
-      resultOverlayShown = false;
-      restarting = false;
-      replayIsLiveAi = false;
-      clearReplayPlaylist();
-      lastFinishedBundle = null;
-      replayController.stop();
-      renderer.resetCameraToOverview();
-      historyModal.close();
-      activeConfig = config;
-      bgm.prepareMatchLaunch({
-        matchMode: config.matchMode,
-        bgmSeed: config.bgmSeed ?? config.seed,
-        slots: config.slots,
-      });
-      lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
-      void controller.start(config, { cinematic: getCinematicOptions(settings.get()) }).catch((err) => {
-        console.error(err);
-        lobbyUI.setLoading(null);
-        alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);
-      });
+      startInteractiveMatch(config);
     },
     onStartCricketBatch: (count) => {
       void startCricketBatchRun(count);
@@ -1474,6 +1560,22 @@ async function bootstrap() {
         void platform.enterImmersive().finally(() => lobbyUI.refreshPlatformButtons());
       }
     },
+  });
+
+  pvpLobby.on('matchStart', (info) => {
+    if (pvpController) return;
+    const map = maps.find((entry) => entry.id === info.mapId && entry.category === 'standard');
+    if (mode === 'lobby' && map) {
+      startInteractiveMatch(buildPvpMatchConfig(info, map));
+    } else {
+      getPvpMatchLink(info.matchId)?.quit();
+    }
+  });
+  pvpLobby.on('stats', (stats) => {
+    if (pvpController) hudUI.setNetStats(stats);
+  });
+  pvpLobby.on('notice', (message) => {
+    if (pvpController) showPvpNotice(message);
   });
 
   // ---------- PC / mobile presentation switching ----------
@@ -1532,7 +1634,7 @@ async function bootstrap() {
       return;
     }
     if (e.code === 'Escape') {
-      if (mode === 'playing' || mode === 'replay') {
+      if (mode === 'playing' || mode === 'replay' || pvpController) {
         returnToLobby();
         return;
       }

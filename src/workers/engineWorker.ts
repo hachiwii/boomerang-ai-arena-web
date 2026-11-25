@@ -1,4 +1,5 @@
 /// <reference lib="webworker" />
+import { PvpSimulation } from './pvpSimulation';
 
 interface EngineWasmModule {
   cwrap: (name: string, ret: string | null, args: string[]) => (...params: unknown[]) => unknown;
@@ -9,6 +10,12 @@ let engineInitWithSpawnSeed:
   | ((mapText: string, nPlayers: number, seed: number, spawnSeed: number) => number)
   | null = null;
 let engineInitTraining: ((mapText: string) => number) | null = null;
+let pvpSimulation: PvpSimulation | null = null;
+let engineSetHumanSeats: ((seats: number) => void) | null = null;
+let engineSave: ((slot: number) => number) | null = null;
+let engineRestore: ((slot: number) => number) | null = null;
+let engineEvents: (() => string) | null = null;
+let engineHash: (() => string) | null = null;
 let engineSetHumanSeat: ((seat: number) => void) | null = null;
 let engineSetHumanSlashTicks: ((ticks: number) => void) | null = null;
 let engineSetHumanCliffGuard: ((enabled: number) => void) | null = null;
@@ -39,6 +46,11 @@ async function ensureLoaded(origin: string, buildId?: string) {
     ss: number,
   ) => number;
   engineInitTraining = mod.cwrap('engine_init_training', 'number', ['string']) as (m: string) => number;
+  engineSetHumanSeats = mod.cwrap('engine_set_human_seats', null, ['number']) as (seats: number) => void;
+  engineSave = mod.cwrap('engine_snapshot_save', 'number', ['number']) as (slot: number) => number;
+  engineRestore = mod.cwrap('engine_snapshot_restore', 'number', ['number']) as (slot: number) => number;
+  engineEvents = mod.cwrap('engine_get_events_json', 'string', []) as () => string;
+  engineHash = mod.cwrap('engine_state_hash', 'string', []) as () => string;
   engineSetHumanSeat = mod.cwrap('engine_set_human_seat', null, ['number']) as (s: number) => void;
   engineSetHumanSlashTicks = mod.cwrap('engine_set_human_slash_ticks', null, ['number']) as (t: number) => void;
   engineSetHumanCliffGuard = mod.cwrap('engine_set_human_cliff_guard', null, ['number']) as (e: number) => void;
@@ -55,7 +67,7 @@ self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      const { reqId, origin, buildId, mapText, nPlayers, seed, spawnSeed, botSeats, humanSeat, cliffGuard, meleeAssist, humanSlashTicks, training } = msg as {
+      const { reqId, origin, buildId, mapText, nPlayers, seed, spawnSeed, botSeats, humanSeat, humanSeats, cliffGuard, meleeAssist, humanSlashTicks, training } = msg as {
         reqId: number;
         origin: string;
         buildId?: string;
@@ -65,6 +77,7 @@ self.onmessage = async (ev: MessageEvent) => {
         spawnSeed?: number;
         botSeats: number[];
         humanSeat?: number;
+        humanSeats?: number;
         cliffGuard?: boolean;
         meleeAssist?: boolean;
         humanSlashTicks?: number;
@@ -82,12 +95,19 @@ self.onmessage = async (ev: MessageEvent) => {
         self.postMessage({ type: 'error', reqId, error: engineLastErr!() });
         return;
       }
-      engineSetHumanSeat!(typeof humanSeat === 'number' ? humanSeat : -1);
+      if (humanSeats !== undefined) engineSetHumanSeats!(humanSeats);
+      else engineSetHumanSeat!(typeof humanSeat === 'number' ? humanSeat : -1);
       engineSetHumanSlashTicks!(typeof humanSlashTicks === 'number' ? humanSlashTicks : 3);
       engineSetHumanCliffGuard!(cliffGuard ? 1 : 0);
       engineSetHumanMeleeAssist!(meleeAssist === false ? 0 : 1);
       const mapData = JSON.parse(engineGetMapJson!());
       const state = JSON.parse(engineGetStateJson!());
+      pvpSimulation = humanSeats !== undefined
+        ? new PvpSimulation({
+            step: engineStep!, state: engineGetStateJson!, events: engineEvents!, save: engineSave!,
+            restore: engineRestore!, hash: engineHash!,
+          }, state)
+        : null;
       const headers: Record<number, string> = {};
       const obs: Record<number, string> = {};
       for (const seat of botSeats) {
@@ -107,6 +127,13 @@ self.onmessage = async (ev: MessageEvent) => {
       if (engineSetHumanSlashTicks) {
         engineSetHumanSlashTicks(typeof msg.ticks === 'number' ? msg.ticks : 3);
       }
+    } else if (msg.type === 'pvp_update') {
+      if (!pvpSimulation) throw new Error('PvP engine is not initialized');
+      const result = pvpSimulation.update(msg.update);
+      self.postMessage({ type: 'pvp_update_done', reqId: msg.reqId, result });
+    } else if (msg.type === 'pvp_history') {
+      if (!pvpSimulation) throw new Error('PvP engine is not initialized');
+      self.postMessage({ type: 'pvp_history_done', reqId: msg.reqId, ticks: pvpSimulation.recorded(msg.throughT) });
     } else if (msg.type === 'step') {
       const { reqId, actionsText, botSeats } = msg as {
         reqId: number;
