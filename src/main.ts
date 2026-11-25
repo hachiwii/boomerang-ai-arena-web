@@ -9,7 +9,8 @@ import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
 import { CountdownStage, MatchController, type MatchCallbacks } from './game/matchController';
 import { buildPvpMatchConfig } from './game/pvpConfig';
 import { PvpMatchController } from './game/pvpMatchController';
-import { getPvpLobbyClient, getPvpMatchLink, setPvpMapPool } from './net/pvpLobbyClient';
+import { getPvpLobbyClient, getPvpMatchLink } from './net/pvpLobbyClient';
+import type { PvpRematchState } from './net/pvpTypes';
 import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
@@ -100,7 +101,6 @@ async function bootstrap() {
     fetch(`/assets/chars/roster.json?v=${__BUILD_ID__}`),
   ]);
   const maps = (await mapsResp.json()) as MapMeta[];
-  setPvpMapPool(maps);
   const pvpLobby = getPvpLobbyClient();
   const roster = (await rosterResp.json()) as RosterEntry[];
   // Enabled custom bots (compiled in the browser) join the shared roster; it's mutated in place when they change
@@ -200,6 +200,7 @@ async function bootstrap() {
   let trainingPanel: TrainingPanel;
   let controller: MatchController;
   let pvpController: PvpMatchController | null = null;
+  let pvpRematchState: PvpRematchState | null = null;
   const liveController = () => pvpController ?? controller;
   let replayController: ReplayController;
   let historyModal: HistoryModal;
@@ -661,6 +662,8 @@ async function bootstrap() {
     if (!pvpController) return;
     pvpController.stop();
     pvpController = null;
+    pvpRematchState = null;
+    hudUI.setPvpRematchState(null);
     hudUI.setNetStats(null);
     mobileControls?.setBulletTimeAllowed(true);
   };
@@ -670,6 +673,8 @@ async function bootstrap() {
       pvpController.requestQuit();
       return;
     }
+    const wasPvp = activeConfig?.matchMode === 'pvp';
+    if (wasPvp) pvpLobby.leaveRematch();
     disposePvpMatch();
     setUiHidden(false);
     setTrainingChrome(false);
@@ -692,7 +697,7 @@ async function bootstrap() {
     replayMapData = null;
     lastFinishedBundle = null;
     bgm.enterLobby();
-    lobbyUI.show(opts?.openLeaderboard ? 'ranked' : undefined, opts);
+    lobbyUI.show(wasPvp ? 'pvp' : opts?.openLeaderboard ? 'ranked' : undefined, opts);
     const m = lobbyUI.getSelectedMap();
     void renderer.loadPreviewMap(parseQuickPreviewMap(m), m.theme);
     if (opts?.openHistory) {
@@ -798,6 +803,7 @@ async function bootstrap() {
     opts?: { keepPlaylist?: boolean; speed?: number },
   ) => {
     if (pvpController && !pvpController.isFinished()) return;
+    if (pvpController) pvpLobby.leaveRematch();
     disposePvpMatch();
     setTrainingChrome(false);
     clearMatchOverTimer();
@@ -1183,6 +1189,10 @@ async function bootstrap() {
 
   hudUI = new HudUI(uiRoot, settings, {
     onReturnToLobby: returnToLobby,
+    onPvpRematch: () => {
+      if (pvpController?.isFinished() && resultOverlayShown) pvpLobby.requestRematch();
+    },
+    onPvpExit: () => returnToLobby(),
     onRestartMatch: restartCurrentMatch,
     canQuickRestart: () => canQuickRestart(),
     onWatchCurrentReplay: () => {
@@ -1435,11 +1445,19 @@ async function bootstrap() {
         activeDirector && activeDirector.isEnabled()
           ? Math.round(activeDirector.getRecommendedOutroRealSec(1.6) * 1000)
           : 1600;
+      const note = pvpController?.getResultNote();
+      const isPvp = activeConfig?.matchMode === 'pvp';
       scheduleMatchOverTimer(celebrateMs, () => {
         if (mode === 'playing') {
           resultOverlayShown = true;
           pendingMatchElo = null;
-          hudUI.showMatchResult(finalState, eloResult, Boolean(lastFinishedBundle?.summary.favorite));
+          const favorite = Boolean(lastFinishedBundle?.summary.favorite);
+          if (isPvp) {
+            hudUI.showMatchResult(finalState, null, favorite, { note, pvpRematch: true });
+            hudUI.setPvpRematchState(pvpRematchState);
+          } else {
+            hudUI.showMatchResult(finalState, eloResult, favorite);
+          }
         }
       });
     },
@@ -1568,13 +1586,24 @@ async function bootstrap() {
   });
 
   pvpLobby.on('matchStart', (info) => {
-    if (pvpController) return;
-    const map = maps.find((entry) => entry.id === info.mapId && entry.category === 'standard');
-    if (mode === 'lobby' && map) {
+    if (activeConfig?.pvp?.matchId === info.matchId) return;
+    const map = maps.find((entry) => entry.id === info.mapId);
+    const rematching = mode === 'playing' && resultOverlayShown && pvpController?.isFinished() &&
+      info.rematchOf !== undefined && info.rematchOf === activeConfig?.pvp?.matchId;
+    if (map && rematching) {
+      hudUI.cancelResultOverlay();
+      disposePvpMatch();
+      startInteractiveMatch(buildPvpMatchConfig(info, map));
+    } else if (map && mode === 'lobby' && !pvpController && !info.rematchOf) {
       startInteractiveMatch(buildPvpMatchConfig(info, map));
     } else {
       getPvpMatchLink(info.matchId)?.quit();
     }
+  });
+  pvpLobby.on('rematch', (state) => {
+    if (activeConfig?.pvp?.matchId !== state.matchId) return;
+    pvpRematchState = state;
+    if (resultOverlayShown) hudUI.setPvpRematchState(state);
   });
   pvpLobby.on('stats', (stats) => {
     if (pvpController) hudUI.setNetStats(stats);

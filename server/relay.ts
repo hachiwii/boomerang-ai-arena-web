@@ -4,15 +4,21 @@ import type { AddressInfo } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { WebSocket, WebSocketServer } from 'ws';
 import maps from '../public/assets/maps/manifest.json' with { type: 'json' };
-import { PVP_CODE_TTL_MS, type PvpChallengeFailReason, type PvpMatchInfo } from '../src/net/pvpTypes.ts';
 import {
-  PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_TICK_MS, NEUTRAL, isAction, withoutAct,
+  PVP_CODE_TTL_MS, type PvpChallengeFailReason, type PvpMatchInfo, type PvpRematchChoice,
+} from '../src/net/pvpTypes.ts';
+import {
+  PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_TICK_MS, NEUTRAL, isAction,
   type Action, type ClientMessage, type Go, type InputRow, type MatchEnd, type MatchTerminal,
   type Seat, type ServerMessage,
 } from '../src/net/pvpProtocol.ts';
 
 const READY_MS = 20_000;
 const RECONNECT_MS = 10_000;
+const REMATCH_MS = Number(process.env.PVP_REMATCH_TIMEOUT_MS ?? 180_000);
+if (!Number.isSafeInteger(REMATCH_MS) || REMATCH_MS < 1000 || REMATCH_MS > 180_000) {
+  throw new Error('Invalid PVP_REMATCH_TIMEOUT_MS');
+}
 const TERMINAL_TTL_MS = PVP_CODE_TTL_MS;
 const PRESENCE_MS = 8_000;
 const MAX_CONNECTIONS = 512;
@@ -21,7 +27,8 @@ const MAX_MATCHES = 128;
 const MAX_RESERVATIONS = 20_000;
 const MAX_RETAINED_MATCHES = 256;
 const MAX_BUFFERED_BYTES = 256 * 1024;
-const standardMaps = new Set(maps.filter((map) => map.category === 'standard').map((map) => map.id));
+const mapIds = maps.map((map) => map.id);
+const validMaps = new Set(mapIds);
 const now = () => Math.round(performance.timeOrigin + performance.now());
 const other = (seat: Seat): Seat => seat === 0 ? 1 : 0;
 const digest = (text: string) => createHash('sha256').update(text).digest();
@@ -54,9 +61,17 @@ interface Reservation {
   buildId: string;
   expiresAt: number;
   presentUntil: number;
+  mapPool: string[];
   conn?: Connection;
   match?: Match;
   lastMatch?: Match;
+  postgame?: Match;
+}
+
+interface Postgame {
+  choices: [PvpRematchChoice, PvpRematchChoice];
+  expiresAt: number;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 interface Match {
@@ -67,11 +82,11 @@ interface Match {
   hashes: Map<number, [string?, string?]>;
   ends: [MatchEnd?, MatchEnd?];
   inputs: [Action?, Action?][];
-  last: [Action, Action];
   nextDeadline: number;
   readyBy: number;
   go?: Go;
   terminal?: MatchTerminal;
+  postgame?: Postgame;
   removeAt?: number;
 }
 
@@ -101,6 +116,8 @@ const connectionsByIp = new Map<string, number>();
 const challengesByIp = new Map<string, WindowCount>();
 const active = new Map<string, Match>();
 const retained = new Map<string, Match>();
+// A result that can still launch a rematch holds one slot in the match cap.
+const rematchSlots = new Set<Match>();
 
 function log(event: string, details: object = {}) {
   console.log(JSON.stringify({ time: new Date().toISOString(), event, ...details }));
@@ -119,6 +136,53 @@ function broadcast(match: Match, message: ServerMessage) {
   for (const player of match.players) send(player.conn, message);
 }
 
+function matchInfo(match: Match, seat: Seat): PvpMatchInfo {
+  return { ...match.info, mySeat: seat, challenger: seat === 0 };
+}
+
+function sendRematch(conn: Connection | undefined, match: Match, seat: Seat) {
+  const choices = match.postgame?.choices;
+  if (choices) {
+    send(conn, { type: 'rematch', matchId: match.info.matchId, me: choices[seat], opponent: choices[other(seat)] });
+  }
+}
+
+function publishRematch(match: Match) {
+  const postgame = match.postgame!;
+  for (const seat of [0, 1] as const) {
+    const player = match.players[seat];
+    if (player.postgame === match && postgame.choices[seat] === 'left') player.postgame = undefined;
+    if (player.lastMatch === match) sendRematch(player.conn, match, seat);
+  }
+  if (postgame.choices.includes('left')) rematchSlots.delete(match);
+}
+
+function expireRematch(match: Match) {
+  const postgame = match.postgame;
+  if (!postgame || !postgame.choices.includes('undecided')) return;
+  for (const seat of [0, 1] as const) {
+    if (postgame.choices[seat] === 'undecided') postgame.choices[seat] = 'left';
+  }
+  publishRematch(match);
+}
+
+function chooseRematch(match: Match, seat: Seat, choice: 'rematch' | 'left', time: number) {
+  const postgame = match.postgame;
+  if (!postgame) return;
+  if (time >= postgame.expiresAt) expireRematch(match);
+  const choices = postgame.choices;
+  if (choices[seat] === 'left' || choices[seat] === choice) return;
+  if (choice === 'rematch' && choices[other(seat)] === 'left') return;
+  choices[seat] = choice;
+  publishRematch(match);
+  if (choices[0] === 'rematch' && choices[1] === 'rematch') {
+    rematchSlots.delete(match);
+    clearTimeout(postgame.timer);
+    for (const player of match.players) if (player.postgame === match) player.postgame = undefined;
+    makeMatch(...match.players, time, match.info.matchId);
+  }
+}
+
 function newCode(): string {
   for (;;) {
     const code = String(randomInt(1_000_000)).padStart(6, '0');
@@ -132,7 +196,7 @@ function renew(reservation: Reservation, time: number) {
 
 function rejoin(conn: Connection, match: Match, seat: Seat) {
   const matchId = match.info.matchId;
-  send(conn, { type: 'matchStart', info: { ...match.info, mySeat: seat, challenger: seat === 0 } });
+  send(conn, { type: 'matchStart', info: matchInfo(match, seat) });
   if (match.go) send(conn, { type: 'go', matchId, ...match.go });
   let rows: InputRow[] = [];
   const limit = match.terminal ? match.terminal.through + 1 : match.inputs.length;
@@ -149,6 +213,7 @@ function rejoin(conn: Connection, match: Match, seat: Seat) {
   if (rows.length) send(conn, { type: 'inputs', matchId, rows });
   if (match.terminal) {
     send(conn, { type: 'terminal', matchId, ...match.terminal });
+    sendRematch(conn, match, seat);
   } else {
     match.disconnectedAt[seat] = null;
     const peer = match.players[other(seat)].conn;
@@ -159,6 +224,13 @@ function rejoin(conn: Connection, match: Match, seat: Seat) {
 
 function evictRetained(matchId: string, match: Match) {
   retained.delete(matchId);
+  if (match.postgame) {
+    clearTimeout(match.postgame.timer);
+    if (match.players.some((player) => player.postgame === match)) {
+      match.postgame.choices = ['left', 'left'];
+      publishRematch(match);
+    }
+  }
   for (const p of match.players) if (p.lastMatch === match) p.lastMatch = undefined;
 }
 
@@ -177,11 +249,24 @@ function finish(match: Match, terminal: MatchTerminal, time: number) {
     p.lastMatch = match;
   }
   broadcast(match, { type: 'terminal', matchId, ...terminal });
+  if (terminal.reason !== 'cancelled') {
+    const choices = match.players.map((p): PvpRematchChoice =>
+      p.conn?.ws.readyState === WebSocket.OPEN ? 'undecided' : 'left',
+    ) as [PvpRematchChoice, PvpRematchChoice];
+    match.postgame = {
+      choices, expiresAt: time + REMATCH_MS,
+      timer: setTimeout(() => expireRematch(match), REMATCH_MS).unref(),
+    };
+    for (const seat of [0, 1] as const) {
+      if (choices[seat] !== 'left') match.players[seat].postgame = match;
+    }
+    if (!choices.includes('left')) rematchSlots.add(match);
+    publishRematch(match);
+  }
   log('match-ended', { matchId, ...terminal });
 }
 
-// The deadline cursor is strictly increasing. A fill inherits from the previous
-// canonical frame of that seat, even if later frames have already arrived.
+// Finalize each frame once. A missed input stops movement and starts no action.
 function finalizeThrough(match: Match, through: number) {
   const rows: InputRow[] = [];
   through = Math.min(through, PVP_MAX_FRAMES - 1);
@@ -190,11 +275,9 @@ function finalizeThrough(match: Match, through: number) {
     const pair = match.inputs[frame] ?? (match.inputs[frame] = []);
     for (const seat of [0, 1] as const) {
       if (!pair[seat]) {
-        const fill = withoutAct(match.last[seat]);
-        pair[seat] = fill;
-        rows.push([frame, seat, fill]);
+        pair[seat] = NEUTRAL;
+        rows.push([frame, seat, NEUTRAL]);
       }
-      match.last[seat] = pair[seat]!;
     }
     if (rows.length >= 64) broadcast(match, { type: 'inputs', matchId: match.info.matchId, rows: rows.splice(0) });
   }
@@ -212,7 +295,7 @@ function maintainMatch(match: Match, time: number): boolean {
     if (disconnected !== null && time - disconnected >= RECONNECT_MS) {
       const through = Math.max(-1, due(match, disconnected + RECONNECT_MS));
       finalizeThrough(match, through);
-      finish(match, { reason: 'forfeit', winner: other(seat), through }, time);
+      finish(match, { reason: 'forfeit', cause: 'disconnect', winner: other(seat), through }, time);
       return false;
     }
   }
@@ -227,17 +310,21 @@ function maintainMatch(match: Match, time: number): boolean {
   return true;
 }
 
-function makeMatch(challenger: Reservation, target: Reservation, msg: Extract<ClientMessage, {type: 'challenge'}>, time: number) {
-  const { mapId, seed, spawnSeed, bgmSeed } = msg;
+function makeMatch(challenger: Reservation, target: Reservation, time: number, rematchOf?: string) {
+  const pool = target.mapPool.length ? target.mapPool : mapIds;
+  const mapId = pool[randomInt(pool.length)];
+  const seeds = randomBytes(12);
+  const seed = seeds.readUInt32LE(0);
+  const spawnSeed = seeds.readUInt32LE(4) || 1;
+  const bgmSeed = seeds.readUInt32LE(8);
   const match: Match = {
-    info: { matchId: randomBytes(12).toString('hex'), mapId, seed, spawnSeed, bgmSeed },
+    info: { matchId: randomBytes(12).toString('hex'), mapId, seed, spawnSeed, bgmSeed, rematchOf },
     players: [challenger, target],
     ready: [false, false],
     disconnectedAt: [null, null],
     hashes: new Map(),
     ends: [],
     inputs: [],
-    last: [NEUTRAL, NEUTRAL],
     nextDeadline: 0,
     readyBy: time + READY_MS,
   };
@@ -249,7 +336,7 @@ function makeMatch(challenger: Reservation, target: Reservation, msg: Extract<Cl
   active.set(match.info.matchId, match);
   log('match-started', { matchId: match.info.matchId, mapId });
   for (const seat of [0, 1] as const) {
-    send(match.players[seat].conn, { type: 'matchStart', info: { ...match.info, mySeat: seat, challenger: seat === 0 } });
+    send(match.players[seat].conn, { type: 'matchStart', info: matchInfo(match, seat) });
   }
 }
 
@@ -264,7 +351,7 @@ function onHello(conn: Connection, msg: Extract<ClientMessage, {type: 'hello'}>,
     }
     p = {
       code: newCode(), token: randomBytes(24).toString('hex'), buildId: msg.buildId,
-      expiresAt: time + PVP_CODE_TTL_MS, presentUntil: 0,
+      expiresAt: time + PVP_CODE_TTL_MS, presentUntil: 0, mapPool: [],
     };
     tokens.set(p.token, p);
     codes.set(p.code, p);
@@ -276,6 +363,10 @@ function onHello(conn: Connection, msg: Extract<ClientMessage, {type: 'hello'}>,
     return;
   }
   const previous = p.conn;
+  if (previous && p.postgame) {
+    const match = p.postgame;
+    chooseRematch(match, p === match.players[0] ? 0 : 1, 'left', time);
+  }
   p.conn = conn;
   p.buildId = msg.buildId;
   p.presentUntil = 0;
@@ -302,13 +393,12 @@ function challenge(conn: Connection, p: Reservation, msg: Extract<ClientMessage,
   if (msg.code === p.code) return fail('self');
   const target = codes.get(msg.code);
   if (!target || target.expiresAt <= time) return fail('not_found');
-  if (p.match || target.match || active.size >= MAX_MATCHES) return fail('busy');
+  if (p.match || target.match || p.postgame || target.postgame ||
+      active.size + rematchSlots.size >= MAX_MATCHES) return fail('busy');
   if (p.presentUntil <= time || target.presentUntil <= time || target.conn?.ws.readyState !== WebSocket.OPEN) return fail('offline');
   if (p.buildId !== target.buildId) return fail('version');
-  if (!standardMaps.has(msg.mapId) || !int(msg.seed, 0, 0xffffffff) ||
-      !int(msg.spawnSeed, 0, 0xffffffff) || !int(msg.bgmSeed, 0, 0xffffffff)) return fail('invalid');
   send(conn, { type: 'challengeResult', request: msg.request, result: { ok: true } });
-  makeMatch(p, target, msg, time);
+  makeMatch(p, target, time);
 }
 
 function onMessage(conn: Connection, raw: string) {
@@ -329,7 +419,7 @@ function onMessage(conn: Connection, raw: string) {
   switch (msg.type) {
     case 'presence':
       if (typeof msg.present !== 'boolean') return;
-      p.presentUntil = msg.present && !p.match ? time + PRESENCE_MS : 0;
+      p.presentUntil = msg.present && !p.match && !p.postgame ? time + PRESENCE_MS : 0;
       if (p.presentUntil) {
         renew(p, time);
         send(conn, { type: 'code', code: p.code, expiresAt: p.expiresAt });
@@ -356,6 +446,18 @@ function onMessage(conn: Connection, raw: string) {
     case 'challenge':
       challenge(conn, p, msg, time);
       return;
+    case 'mapPool':
+      if (Array.isArray(msg.ids)) {
+        p.mapPool = [...new Set(msg.ids.filter((id) => typeof id === 'string' && validMaps.has(id)))];
+      }
+      return;
+    case 'rematch': {
+      const match = p.postgame;
+      if (match?.info.matchId === msg.matchId && (msg.choice === 'rematch' || msg.choice === 'left')) {
+        chooseRematch(match, p === match.players[0] ? 0 : 1, msg.choice, time);
+      }
+      return;
+    }
   }
   const match = p.match;
   if (!match || !('matchId' in msg) || msg.matchId !== match.info.matchId || !maintainMatch(match, time)) return;
@@ -364,7 +466,7 @@ function onMessage(conn: Connection, raw: string) {
   if (msg.type === 'quit') {
     const through = Math.max(-1, due(match, time));
     finalizeThrough(match, through);
-    finish(match, { reason: 'forfeit', winner: other(seat), through }, time);
+    finish(match, { reason: 'forfeit', cause: 'quit', winner: other(seat), through }, time);
     return;
   }
   if (msg.type === 'ready') {
@@ -475,6 +577,10 @@ server.on('upgrade', (req, socket, head) => {
         const seat = p.match.players[0] === p ? 0 : 1;
         p.match.disconnectedAt[seat] = now();
         send(p.match.players[other(seat)].conn, { type: 'peer', matchId: p.match.info.matchId, connected: false });
+      }
+      if (p.postgame) {
+        const match = p.postgame;
+        chooseRematch(match, p === match.players[0] ? 0 : 1, 'left', now());
       }
     });
     conn.pingAt = now();

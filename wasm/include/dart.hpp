@@ -1221,6 +1221,7 @@ struct Game {
     i64 human_slash_ticks = 3;  // 人类砍镖窗口帧数：普通 3 帧 / 严格 2 帧（均含本步线段扫掠 ±60°）/ AI 0（原版 ±20° 单点）
     i64 human_melee_ticks = 2;  // 人类砍人/踢人窗口帧数：普通 2 帧 / 严格 0 / AI 0（0 = 1 帧前摇 + 1 帧，与 AI 相同）
     bool human_cliff_guard = false;  // 开启跌落防护时：人类冲刺若原本会坠崖，但末尾 25% 存在安全落点，则停在最远安全点
+    bool human_walk_guard = false;  // PvP guards walking at the tick the input is applied.
     bool human_melee_assist = true;  // 保留字段以兼容 WASM 导出接口（砍镖判定范围不再受近战吸附影响，仅由挥砍判定模式决定）
     bool human_dash_target_active = false;
     i64 human_dash_target_x = 0, human_dash_target_y = 0;
@@ -1560,6 +1561,48 @@ struct Game {
         return rdiv(v, 1000);
     }
 
+    void move_walk(const Map& m, Player& P, i64& vx, i64& vy) const {
+        const i64 x = P.x, y = P.y, dx = vx, dy = vy;
+        move_body(m, cf.body_r, P.x, P.y, vx, vy);
+        if (cell_of_point(cf, m, P.x, P.y, t) != C_PIT ||
+            cell_of_point(cf, m, x, y, t) == C_PIT) return;
+
+        // Stay on the rim even if the movement was predicted or the input was
+        // delayed. Try a shorter stride and slides along the two grid axes.
+        // Resolve each candidate against walls before checking its landing.
+        P.x = x; P.y = y;
+        vx = vy = 0;
+        i64 best_progress = 0;
+        auto try_direction = [&](i64 mx, i64 my) {
+            auto try_scale = [&](i64 scale) {
+                i64 tx = x, ty = y;
+                i64 sx = rdiv(mx * scale, UNIT), sy = rdiv(my * scale, UNIT);
+                move_body(m, cf.body_r, tx, ty, sx, sy);
+                if (cell_of_point(cf, m, tx, ty, t) == C_PIT) return false;
+                const i64 progress = (tx - x) * dx + (ty - y) * dy;
+                if (progress > best_progress) {
+                    best_progress = progress;
+                    P.x = tx; P.y = ty;
+                    vx = sx; vy = sy;
+                }
+                return true;
+            };
+            if (try_scale(UNIT)) return;
+            i64 lo = 0, hi = UNIT - 1;
+            while (lo < hi) {
+                const i64 mid = (lo + hi + 1) / 2;
+                if (try_scale(mid)) lo = mid;
+                else hi = mid - 1;
+            }
+        };
+        try_direction(dx, dy);
+        if (dx && dy) {
+            const i64 speed = ilen(dx, dy);
+            try_direction(dx > 0 ? speed : -speed, 0);
+            try_direction(0, dy > 0 ? speed : -speed);
+        }
+    }
+
     void step(const Action* acts) {
         if (over) return;
         const Map& m = LM();
@@ -1715,7 +1758,8 @@ struct Game {
             i64 dvx = tvx - P.vx, dvy = tvy - P.vy;
             cap_len(dvx, dvy, cf.acc);
             i64 vx = P.vx + dvx, vy = P.vy + dvy;
-            move_body(m, cf.body_r, P.x, P.y, vx, vy);
+            if (human_walk_guard && is_human(k) && pct > 0) move_walk(m, P, vx, vy);
+            else move_body(m, cf.body_r, P.x, P.y, vx, vy);
             P.vx = vx;  // 速度 = 去掉了撞墙分量的速度（位置可能还被墙推开了一点）
             P.vy = vy;
             if (P.st == S_FREE && (P.vx || P.vy) && ilen(P.vx, P.vy) >= 20) P.face = iatan2(P.vy, P.vx);

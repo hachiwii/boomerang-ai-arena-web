@@ -1,6 +1,6 @@
-import type { MapMeta } from '../game/types';
 import type {
   PvpChallengeResult, PvpCodeInfo, PvpConnState, PvpLobbyClient, PvpLobbyEventMap, PvpMatchInfo, PvpNetStats,
+  PvpRematchState,
 } from './pvpTypes';
 import type { ClientMessage, MatchMessage, ServerMessage } from './pvpProtocol';
 import { mockPvpMatchLink, type PvpMatchLink } from './pvpMatchLink';
@@ -31,14 +31,10 @@ interface MatchConnection {
   quit: boolean;
   peerConnected?: boolean;
   end?: Extract<ClientMessage, { type: 'end' }>;
+  postgameChoice?: 'rematch' | 'left';
 }
 
 class RelayPvpLobbyClient implements PvpLobbyClient {
-  // TODO(pvp rematch/map pool): contract stubs added by the integrator; replace with the real implementation
-  setMapPool(_mapIds: string[]): void {}
-  requestRematch(): void {}
-  leaveRematch(): void {}
-
   private state: PvpConnState = 'idle';
   private code = EMPTY_CODE;
   private stats = EMPTY_STATS;
@@ -46,8 +42,9 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
   private listeners = new Map<keyof PvpLobbyEventMap, Set<(value: unknown) => void>>();
   private socket: WebSocket | null = null;
   private tabOpen = false;
-  private standardMaps: string[] = [];
+  private mapPool: string[] = [];
   private match: MatchConnection | null = null;
+  private postgame: PvpRematchState | null = null;
   private reconnectTimer: number | null = null;
   private pingTimer: number | null = null;
   private reconnectAttempts = 0;
@@ -61,6 +58,7 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
 
   constructor() {
     document.addEventListener('visibilitychange', () => this.syncPresence());
+    window.addEventListener('pagehide', () => this.leaveRematch());
     window.addEventListener('offline', () => {
       if (this.socket) this.disconnect(this.socket);
     });
@@ -75,8 +73,34 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
   getCode() { return this.code; }
   getStats() { return this.stats; }
 
-  setMaps(maps: MapMeta[]) {
-    this.standardMaps = maps.filter((map) => map.category === 'standard').map((map) => map.id);
+  setMapPool(mapIds: string[]) {
+    const ids = [...new Set(mapIds)].sort();
+    if (ids.length === this.mapPool.length && ids.every((id, i) => id === this.mapPool[i])) return;
+    this.mapPool = ids;
+    this.send({ type: 'mapPool', ids });
+  }
+
+  requestRematch() {
+    const postgame = this.postgame;
+    if (postgame) {
+      if (postgame.me === 'undecided' && postgame.opponent !== 'left') {
+        this.send({ type: 'rematch', matchId: postgame.matchId, choice: 'rematch' });
+      }
+    } else if (this.match?.end && this.match.postgameChoice !== 'left') {
+      // The local engine can reach its confirmed end before the peer reports.
+      this.match.postgameChoice = 'rematch';
+    }
+  }
+
+  leaveRematch() {
+    const postgame = this.postgame;
+    if (postgame) {
+      this.send({ type: 'rematch', matchId: postgame.matchId, choice: 'left' });
+      this.postgame = null;
+      this.syncPresence();
+    } else if (this.match?.end) {
+      this.match.postgameChoice = 'left';
+    }
   }
 
   enter() {
@@ -100,13 +124,7 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
   async challenge(code: string): Promise<PvpChallengeResult> {
     if (!/^\d{6}$/.test(code)) return { ok: false, reason: 'invalid' };
     if (code === this.code.code) return { ok: false, reason: 'self' };
-    const mapId = this.standardMaps[Math.floor(Math.random() * this.standardMaps.length)];
-    if (!mapId) return UNAVAILABLE;
-    const seeds = crypto.getRandomValues(new Uint32Array(3));
-    const result = await this.request({
-      type: 'challenge', request: ++this.requestId, code, mapId,
-      seed: seeds[0], spawnSeed: seeds[1] || 1, bgmSeed: seeds[2],
-    });
+    const result = await this.request({ type: 'challenge', request: ++this.requestId, code });
     return result?.type === 'challengeResult' ? result.result : UNAVAILABLE;
   }
 
@@ -160,11 +178,11 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
   }
 
   private present() {
-    return this.tabOpen && !this.match && document.visibilityState === 'visible';
+    return this.tabOpen && !this.match && !this.postgame && document.visibilityState === 'visible';
   }
 
   private wantsSocket() {
-    return !this.replaced && (this.present() || !!this.match);
+    return !this.replaced && (this.present() || !!this.match || !!this.postgame);
   }
 
   private syncPresence() {
@@ -224,6 +242,11 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
     this.emit('stats', this.stats);
     this.lastRtt = null;
     this.clockSamples = [];
+    if (this.postgame) {
+      const rematch: PvpRematchState = { ...this.postgame, me: 'left' };
+      this.postgame = null;
+      this.emit('rematch', rematch);
+    }
     if (replaced) {
       this.replaced = true;
       this.setState('offline');
@@ -246,6 +269,7 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
         this.setState('online');
         this.setCode(message.code, message.expiresAt);
         if (this.match && this.match.info.matchId !== message.matchId) this.endUnavailableMatch();
+        this.send({ type: 'mapPool', ids: this.mapPool });
         this.send({ type: 'presence', present: this.present() });
         this.ping();
         return;
@@ -259,6 +283,13 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
       case 'pong':
         this.onPong(message);
         return;
+      case 'rematch':
+        if (this.postgame?.matchId === message.matchId) {
+          const { matchId, me, opponent } = message;
+          this.postgame = { matchId, me, opponent };
+          this.emit('rematch', this.postgame);
+        }
+        return;
       case 'matchStart': {
         const match = this.match;
         if (match?.info.matchId === message.info.matchId) {
@@ -267,6 +298,7 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
           else if (match.end) this.send(match.end);
           else if (match.ready) this.send({ type: 'ready', matchId: match.info.matchId });
         } else {
+          this.postgame = null;
           this.match = { info: message.info, ready: false, quit: false, listeners: new Set() };
           this.emit('matchStart', message.info);
         }
@@ -282,7 +314,14 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
       match.peerConnected = message.connected;
     }
     for (const listener of match.listeners) listener(message);
-    if (message.type === 'terminal') this.releaseMatch();
+    if (message.type === 'terminal') {
+      if (message.reason !== 'cancelled') {
+        this.postgame = { matchId: message.matchId, me: 'undecided', opponent: 'undecided' };
+      }
+      this.releaseMatch();
+      if (match.quit || match.postgameChoice === 'left') this.leaveRematch();
+      else if (match.postgameChoice === 'rematch') this.requestRematch();
+    }
   }
 
   private releaseMatch() {
@@ -397,11 +436,6 @@ export function getPvpLobbyClient(): PvpLobbyClient {
     instance = mock ? new PvpLobbyMock() : new RelayPvpLobbyClient();
   }
   return instance;
-}
-
-export function setPvpMapPool(maps: MapMeta[]) {
-  const client = getPvpLobbyClient();
-  if (client instanceof RelayPvpLobbyClient) client.setMaps(maps);
 }
 
 export function getPvpMatchLink(matchId: string): PvpMatchLink | null {

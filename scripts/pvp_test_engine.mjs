@@ -6,7 +6,9 @@ export function mapText(mapId) {
   return readFileSync(new URL(`../public/assets/maps/${mapId}.txt`, import.meta.url), 'utf8');
 }
 
-export async function makeEngine({ map = mapText('stonecircle'), seed = 0, spawnSeed = 0, humanSeats = 3, slashTicks = 2 } = {}) {
+export async function makeEngine({
+  map = mapText('stonecircle'), seed = 0, spawnSeed = 0, humanSeats = 3, slashTicks = 2, walkGuard = true,
+} = {}) {
   const mod = await createEngineModule({ print: () => {}, printErr: () => {} });
   const call = (name, ret, args = []) => mod.cwrap(`engine_${name}`, ret, args);
   const init = call('init_with_spawn_seed', 'number', ['string', 'number', 'number', 'number']);
@@ -14,6 +16,7 @@ export async function makeEngine({ map = mapText('stonecircle'), seed = 0, spawn
   call('set_human_seats', null, ['number'])(humanSeats);
   call('set_human_slash_ticks', null, ['number'])(slashTicks);
   call('set_human_cliff_guard', null, ['number'])(1);
+  call('set_human_walk_guard', null, ['number'])(Number(walkGuard));
   call('set_human_melee_assist', null, ['number'])(1);
   return {
     step: call('step', 'number', ['string']),

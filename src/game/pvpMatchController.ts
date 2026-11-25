@@ -36,6 +36,7 @@ export class PvpMatchController {
   private confirmedT = 0;
   private lastSampled = -1;
   private history: TickSnapshot[] = [];
+  private resultNote?: string;
 
   constructor(
     private readonly input: HumanInputController,
@@ -53,6 +54,7 @@ export class PvpMatchController {
   getTickIntervalMs() { return PVP_TICK_MS; }
   isFinished() { return this.finished; }
   isQuitting() { return this.quitRequested; }
+  getResultNote() { return this.resultNote; }
 
   async start() {
     this.callbacks.onStatus?.('加载 PvP 地图与引擎…');
@@ -70,6 +72,7 @@ export class PvpMatchController {
         type: 'init', origin, buildId: __BUILD_ID__, mapText,
         nPlayers: 2, seed: this.config.seed, spawnSeed: this.config.spawnSeed ?? 0,
         botSeats: [], humanSeats: 0b11, cliffGuard: PVP_FIXED_RULES.dashGuard,
+        walkGuard: PVP_FIXED_RULES.cliffGuard,
         meleeAssist: PVP_FIXED_RULES.meleeAssist, humanSlashTicks: PVP_FIXED_RULES.humanSlashTicks,
       });
       if (this.stopped) return;
@@ -79,7 +82,8 @@ export class PvpMatchController {
       this.input.reset();
       this.input.setFixedMatchRules(PVP_FIXED_RULES);
       this.input.setMapData(map);
-      this.input.setCliffGuard(PVP_FIXED_RULES.cliffGuard);
+      // PvP walks are guarded in WASM at the frame where they are applied.
+      this.input.setCliffGuard(false);
       this.input.setTickIntervalMs(PVP_TICK_MS);
       await this.callbacks.onMapLoaded(map, initial);
       if (this.stopped) return;
@@ -252,7 +256,7 @@ export class PvpMatchController {
       }
       if (ended) {
         // An administrative close can arrive after an already confirmed game over.
-        await this.finish(display, result.confirmedOver ? null : terminal);
+        await this.finish(display, result.confirmedOver && terminal?.reason !== 'timeout' ? null : terminal);
       }
     } catch (err) {
       if (!this.stopped) this.fail(err instanceof Error ? err.message : String(err));
@@ -271,10 +275,14 @@ export class PvpMatchController {
     this.finished = true;
     this.terminateWorker();
     if (terminal?.reason === 'forfeit') {
-      this.callbacks.onNotice(terminal.winner === this.seat ? '对方已弃权' : '你已弃权');
+      const won = terminal.winner === this.seat;
+      this.resultNote = terminal.cause === 'disconnect'
+        ? (won ? '对方断线超时' : '你断线超时')
+        : (won ? '对方已弃权' : '你已弃权');
     } else if (terminal?.reason === 'timeout') {
-      this.callbacks.onNotice('PvP 对局已超时');
+      this.resultNote = '对局超时';
     }
+    if (this.resultNote) this.callbacks.onNotice(this.resultNote);
     this.callbacks.onMatchOver(state);
   }
 }

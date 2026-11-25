@@ -557,6 +557,11 @@ void engine_set_human_cliff_guard(int enabled) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+void engine_set_human_walk_guard(int enabled) {
+    if (g_game) g_game->human_walk_guard = enabled != 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
 void engine_set_human_melee_assist(int enabled) {
     if (g_game) {
         g_game->human_melee_assist = (enabled != 0);
@@ -639,7 +644,7 @@ const char* engine_state_hash() {
     hash.add(g.human_seats);
     hash.add(g.human_slash_ticks);
     hash.add(g.human_melee_ticks);
-    hash.add(g.human_cliff_guard);
+    hash.add(g.human_cliff_guard | (g.human_walk_guard ? 2 : 0));
     hash.add(g.human_melee_assist);
     hash.add(g.human_dash_target_active);
     hash.add(g.human_dash_target_x);
