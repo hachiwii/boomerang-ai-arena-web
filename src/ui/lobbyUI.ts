@@ -5,8 +5,12 @@ import { LeaderboardStore } from '../game/leaderboard';
 import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore } from '../game/settings';
 import { generateSpawnSeed, MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { clientToLogical, getLogicalViewport, isForcedLandscape, rectToLogical } from '../game/viewport';
+import { getPvpLobbyClient } from '../net/pvpLobbyClient';
+import type { PvpChallengeFailReason, PvpConnState, PvpLobbyClient, PvpNetStats } from '../net/pvpTypes';
+import { PVP_CODE_TTL_MS } from '../net/pvpTypes';
 import { getTheme } from '../render/themes';
 import { makeHoodieAvatarDataUrl } from './hoodieAvatar';
+import { pvpNetDetail, pvpRttLevel, pvpRttMs } from './pvpNet';
 import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_PHONE } from './icons';
 import { LeaderboardPanel } from './leaderboardUI';
 
@@ -43,7 +47,32 @@ export interface LobbyCallbacks {
   onToggleFullscreen?: () => void;
 }
 
-export type LobbyTab = 'ranked' | 'cricket' | 'custom';
+export type LobbyTab = 'ranked' | 'cricket' | 'custom' | 'pvp';
+
+/** Short, one-line reasons shown under the PvP code input. */
+const PVP_FAIL_TEXT: Record<PvpChallengeFailReason, string> = {
+  invalid: '对战码应为 6 位数字',
+  self: '这是你自己的对战码',
+  not_found: '对战码不存在或已过期，请向对方确认',
+  offline: '对方不在 PvP 页面，请让对方打开后重试',
+  busy: '对方正在对局中，请稍后再试',
+  version: '双方版本不一致，请都刷新页面后重试',
+  rate_limited: '尝试过于频繁，请稍后再试',
+  network: '网络异常，未连上服务器，请稍后重试',
+};
+
+const PVP_CONN_TEXT: Record<PvpConnState, string> = {
+  idle: '未连接',
+  connecting: '正在连接对战服务器…',
+  online: '已连接对战服务器',
+  reconnecting: '连接中断，正在重连…',
+  offline: '无法连接对战服务器',
+};
+
+const PVP_HINT_TEXT = '对方在 PvP 页面时直接开战，无需确认';
+const PVP_TTL_MIN = Math.round(PVP_CODE_TTL_MS / 60000);
+
+type PvpMsgKind = 'hint' | 'info' | 'ok' | 'warn' | 'err';
 
 export { makeHoodieAvatarDataUrl };
 
@@ -221,6 +250,22 @@ export class LobbyUI {
   private openSlotIdx: number | null = null;
   private loadingMessage: string | null = null;
 
+  // Online 1v1 (PvP) tab: the client is created lazily on first visit so the lobby never connects up front
+  private pvpClient: PvpLobbyClient | null = null;
+  /** enter() was called and not yet matched by leave(). */
+  private pvpPresent = false;
+  private pvpInput = '';
+  private pvpPending = false;
+  /** matchStart arrived: the panel is frozen until the lobby is hidden / shown again. */
+  private pvpStarting = false;
+  private pvpResetting = false;
+  private pvpMsg: { text: string; kind: PvpMsgKind } | null = null;
+  private pvpMsgAt = 0;
+  private pvpCodeNote: string | null = null;
+  private pvpCodeNoteTimer: number | null = null;
+  private pvpCopied = false;
+  private pvpCopyTimer: number | null = null;
+
   constructor(
     root: HTMLElement,
     maps: MapMeta[],
@@ -301,9 +346,18 @@ export class LobbyUI {
         }
       }
     });
+    let fitRaf = 0;
     window.addEventListener('resize', () => {
       if (this.openSlotIdx !== null) this.closeDropdown();
+      if (!fitRaf) {
+        fitRaf = requestAnimationFrame(() => {
+          fitRaf = 0;
+          this.fitHeader();
+        });
+      }
     });
+    // PvP presence = PvP tab shown AND page visible (a hidden browser tab must not auto-accept challenges)
+    document.addEventListener('visibilitychange', () => this.syncPvpPresence());
 
     this.render();
   }
@@ -402,6 +456,12 @@ export class LobbyUI {
     if (tab) this.activeTab = tab;
     if (opts?.rankedMode) this.rankedMode = opts.rankedMode;
     this.showLeaderboard = Boolean(opts?.openLeaderboard);
+    this.pvpStarting = false;
+    this.pvpPending = false;
+    // Back from a match: drop progress messages; keep a fresh server notice (e.g. the match was cancelled)
+    if (this.pvpMsg && (this.pvpMsg.kind === 'ok' || this.pvpMsg.kind === 'info' || performance.now() - this.pvpMsgAt > 10000)) {
+      this.pvpMsg = null;
+    }
     this.container.classList.remove('hidden');
     this.render();
   }
@@ -412,10 +472,20 @@ export class LobbyUI {
     this.closeMapPoolModal();
     this.leaderboardPanel.hideTooltip();
     this.container.classList.add('hidden');
+    this.pvpStarting = false;
+    this.syncPvpPresence();
+  }
+
+  public getActiveTab(): LobbyTab {
+    return this.activeTab;
   }
 
   public setLoading(msg: string | null) {
     this.loadingMessage = msg;
+    if (this.activeTab === 'pvp') {
+      this.syncPvpInPlace();
+      return;
+    }
     const btn = this.container.querySelector<HTMLButtonElement>('#btn-start-match');
     if (btn) {
       if (msg) {
@@ -463,6 +533,25 @@ export class LobbyUI {
     return platformBtn + fsBtn;
   }
 
+  /**
+   * Mobile header is one non-wrapping row (title · 4 tabs · actions · platform buttons). When it does not fit the
+   * phone's logical width (narrow phones, notch safe areas), step down: tighter tabs → icon-only platform toggle →
+   * smaller title. Measured, so it also works under the forced-landscape CSS rotation.
+   */
+  private fitHeader() {
+    const hdr = this.container.querySelector<HTMLElement>('.lobby-header');
+    if (!hdr) return;
+    const levels = ['is-tight-1', 'is-tight-2', 'is-tight-3'];
+    hdr.classList.remove(...levels);
+    if (this.container.classList.contains('hidden') || !document.body.classList.contains('is-mobile')) return;
+    const nav = hdr.querySelector<HTMLElement>('.lobby-nav-row');
+    const overflows = () =>
+      hdr.scrollWidth > hdr.clientWidth + 1 || (nav !== null && nav.scrollWidth > nav.clientWidth + 1);
+    for (let i = 0; i < levels.length && overflows(); i++) {
+      hdr.classList.add(...levels.slice(0, i + 1));
+    }
+  }
+
   /** Re-render header buttons after a desktop/mobile or fullscreen change. */
   public refreshPlatformButtons() {
     if (this.container.classList.contains('hidden')) return;
@@ -482,6 +571,7 @@ export class LobbyUI {
       this.callbacks.onToggleFullscreen?.();
     });
     this.syncKeyHintsInPlace();
+    this.fitHeader();
   }
 
   public getSelectedMap(): MapMeta {
@@ -1759,6 +1849,394 @@ export class LobbyUI {
     }
   }
 
+  // =====================================================================================
+  // Online 1v1 (PvP) tab
+  // =====================================================================================
+
+  private getPvpClient(): PvpLobbyClient {
+    if (this.pvpClient) return this.pvpClient;
+    const client = getPvpLobbyClient();
+    this.pvpClient = client;
+    client.on('state', () => this.syncPvpInPlace());
+    client.on('code', () => this.syncPvpInPlace());
+    client.on('stats', (st) => this.syncPvpRtt(st));
+    client.on('notice', (text) => {
+      if (!text) return;
+      this.setPvpMsg(text, 'warn');
+      this.syncPvpInPlace();
+    });
+    client.on('matchStart', () => {
+      // main.ts starts the match; freeze the panel and stop being challengeable right away
+      this.pvpStarting = true;
+      this.pvpPending = false;
+      this.setPvpMsg('对战已建立，正在进入对局…', 'ok');
+      this.syncPvpPresence();
+      this.syncPvpInPlace();
+    });
+    return client;
+  }
+
+  /** enter() while the PvP tab is on screen (lobby shown, page visible, no match starting), leave() otherwise. */
+  private syncPvpPresence() {
+    const want =
+      this.activeTab === 'pvp' &&
+      !this.container.classList.contains('hidden') &&
+      document.visibilityState === 'visible' &&
+      !this.pvpStarting;
+    if (want === this.pvpPresent) return;
+    this.pvpPresent = want;
+    if (want) this.getPvpClient().enter();
+    else this.pvpClient?.leave();
+  }
+
+  private pvpCanChallenge(): boolean {
+    const client = this.pvpClient;
+    if (!client || this.pvpPending || this.pvpStarting || this.loadingMessage) return false;
+    if (client.getState() !== 'online') return false;
+    if (this.pvpInput.length !== 6) return false;
+    return this.pvpInput !== client.getCode().code;
+  }
+
+  private renderPvpCodeTiles(code: string | null): string {
+    const digits = code && /^\d{6}$/.test(code) ? code.split('') : null;
+    return Array.from({ length: 6 }, (_, i) => {
+      const ch = digits ? digits[i] : '';
+      return `<span class="pvp-digit ${i === 3 ? 'is-group-start' : ''} ${digits ? '' : 'is-empty'}">${ch}</span>`;
+    }).join('');
+  }
+
+  private renderPvpBody(): string {
+    const rules = ['严格判定', '跌落防护', '冲刺保护', '近战吸附', '无子弹时间'];
+    return `
+      <div class="pvp-panel">
+        <div class="pvp-statusbar">
+          <div class="pvp-status-left">
+            <span class="pvp-mode-badge">在线 1v1</span>
+            <span class="pvp-conn" id="pvp-conn" data-state="idle">
+              <span class="pvp-conn-dot" aria-hidden="true"></span>
+              <span class="pvp-conn-text" id="pvp-conn-text">${PVP_CONN_TEXT.idle}</span>
+            </span>
+            <button type="button" class="pvp-retry-btn hidden" id="btn-pvp-retry">重新连接</button>
+          </div>
+          <div class="pvp-rtt" id="pvp-rtt" data-level="none" data-rtt="--" title="与对战服务器的实时往返延迟">
+            <span class="pvp-rtt-bars" aria-hidden="true"><i></i><i></i><i></i><i></i></span>
+            <span class="pvp-rtt-label">延迟</span>
+          </div>
+        </div>
+
+        <div class="pvp-grid">
+          <section class="pvp-card pvp-card-mine">
+            <div class="pvp-card-head">
+              <h3>我的对战码</h3>
+              <div class="pvp-card-actions">
+                <button type="button" class="pvp-mini-btn" id="btn-pvp-copy" title="复制对战码，发给好友">复制</button>
+                <button type="button" class="pvp-mini-btn" id="btn-pvp-reset" title="换一个新对战码（旧码立即失效）">↻ 重置</button>
+              </div>
+            </div>
+            <div class="pvp-code" id="pvp-code" aria-live="polite" aria-label="我的对战码">${this.renderPvpCodeTiles(null)}</div>
+            <p class="pvp-card-note" id="pvp-code-note">停留在本页时持续续期 · 离开后保留 ${PVP_TTL_MIN} 分钟</p>
+          </section>
+
+          <section class="pvp-card pvp-card-challenge">
+            <div class="pvp-card-head">
+              <h3>挑战对手</h3>
+            </div>
+            <div class="pvp-challenge-row">
+              <input
+                type="text"
+                class="pvp-code-input"
+                id="pvp-code-input"
+                inputmode="numeric"
+                pattern="[0-9]*"
+                autocomplete="off"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
+                enterkeyhint="go"
+                placeholder="输入 6 位对战码"
+                aria-label="对方的 6 位对战码"
+                value="${this.pvpInput}"
+              />
+              <button type="button" class="start-btn pvp-fight-btn" id="btn-pvp-challenge" disabled>⚔️ 对战</button>
+            </div>
+            <div class="pvp-msg is-hint" id="pvp-msg" role="status">${PVP_HINT_TEXT}</div>
+          </section>
+        </div>
+
+        <div class="pvp-rules" title="PvP 双方规则固定：${rules.join('、')}；速度 1.0x，不可暂停或重开">
+          <span class="pvp-rules-label">固定规则</span>
+          <span class="pvp-rules-list">${rules.join(' · ')} · 1.0x 速度</span>
+        </div>
+      </div>
+    `;
+  }
+
+  private bindPvpEvents() {
+    const input = this.container.querySelector<HTMLInputElement>('#pvp-code-input');
+    if (input) {
+      const apply = (raw: string) => {
+        const next = raw.replace(/\D/g, '').slice(0, 6);
+        if (input.value !== next) input.value = next;
+        if (next !== this.pvpInput) {
+          this.pvpInput = next;
+          // Typing clears a stale reason; the pending / starting messages stay
+          if (this.pvpMsg && (this.pvpMsg.kind === 'err' || this.pvpMsg.kind === 'warn')) this.pvpMsg = null;
+        }
+        this.syncPvpInPlace();
+      };
+      input.addEventListener('input', () => apply(input.value));
+      input.addEventListener('paste', (e) => {
+        const text = e.clipboardData?.getData('text') ?? '';
+        if (!text) return;
+        e.preventDefault();
+        apply(text);
+      });
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          void this.submitPvpChallenge();
+        }
+      });
+    }
+    this.container.querySelector('#btn-pvp-challenge')?.addEventListener('click', () => {
+      void this.submitPvpChallenge();
+    });
+    this.container.querySelector('#btn-pvp-copy')?.addEventListener('click', () => {
+      void this.copyPvpCode();
+    });
+    this.container.querySelector('#btn-pvp-reset')?.addEventListener('click', () => {
+      void this.resetPvpCode();
+    });
+    this.container.querySelector('#btn-pvp-retry')?.addEventListener('click', () => {
+      // Re-enter so the client retries the connection
+      const client = this.getPvpClient();
+      if (this.pvpPresent) client.leave();
+      this.pvpPresent = false;
+      this.syncPvpPresence();
+    });
+  }
+
+  private async submitPvpChallenge() {
+    const client = this.pvpClient;
+    if (!client || this.pvpPending || this.pvpStarting || this.loadingMessage) return;
+    const code = this.pvpInput;
+    if (code.length !== 6) {
+      this.setPvpMsg(PVP_FAIL_TEXT.invalid, 'err');
+      this.syncPvpInPlace();
+      return;
+    }
+    if (code === client.getCode().code) {
+      this.setPvpMsg(PVP_FAIL_TEXT.self, 'err');
+      this.syncPvpInPlace();
+      return;
+    }
+    if (client.getState() !== 'online') {
+      this.setPvpMsg(PVP_FAIL_TEXT.network, 'err');
+      this.syncPvpInPlace();
+      return;
+    }
+    this.pvpPending = true;
+    this.setPvpMsg(`正在向 ${code.slice(0, 3)} ${code.slice(3)} 发起对战…`, 'info');
+    this.syncPvpInPlace();
+    let reason: PvpChallengeFailReason | null = null;
+    try {
+      const res = await client.challenge(code);
+      if (!res.ok) reason = res.reason;
+    } catch (err) {
+      console.warn('PvP challenge failed:', err);
+      reason = 'network';
+    }
+    this.pvpPending = false;
+    if (reason) {
+      this.setPvpMsg(PVP_FAIL_TEXT[reason] ?? PVP_FAIL_TEXT.network, reason === 'rate_limited' ? 'warn' : 'err');
+      this.syncPvpInPlace();
+      const input = this.container.querySelector<HTMLInputElement>('#pvp-code-input');
+      if (input && this.activeTab === 'pvp' && !this.callbacks.getPlatformState?.().mobile) {
+        input.focus();
+        input.select();
+      }
+      return;
+    }
+    if (!this.pvpStarting) {
+      this.setPvpMsg('对方已收到，正在建立对局…', 'ok');
+    }
+    this.syncPvpInPlace();
+  }
+
+  private setPvpMsg(text: string, kind: PvpMsgKind) {
+    this.pvpMsg = { text, kind };
+    this.pvpMsgAt = performance.now();
+  }
+
+  private setPvpCodeNote(text: string | null, ms = 2600) {
+    this.pvpCodeNote = text;
+    if (this.pvpCodeNoteTimer !== null) window.clearTimeout(this.pvpCodeNoteTimer);
+    this.pvpCodeNoteTimer = null;
+    if (text) {
+      this.pvpCodeNoteTimer = window.setTimeout(() => {
+        this.pvpCodeNoteTimer = null;
+        this.pvpCodeNote = null;
+        this.syncPvpInPlace();
+      }, ms);
+    }
+    this.syncPvpInPlace();
+  }
+
+  private async copyPvpCode() {
+    const code = this.pvpClient?.getCode().code;
+    if (!code) return;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(code);
+      ok = true;
+    } catch {
+      try {
+        const ta = document.createElement('textarea');
+        ta.value = code;
+        ta.setAttribute('readonly', '');
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.select();
+        ok = document.execCommand('copy');
+        ta.remove();
+      } catch {
+        ok = false;
+      }
+    }
+    if (!ok) {
+      this.setPvpCodeNote('复制失败，请手动记下对战码');
+      return;
+    }
+    this.pvpCopied = true;
+    if (this.pvpCopyTimer !== null) window.clearTimeout(this.pvpCopyTimer);
+    this.pvpCopyTimer = window.setTimeout(() => {
+      this.pvpCopyTimer = null;
+      this.pvpCopied = false;
+      this.syncPvpInPlace();
+    }, 1600);
+    this.syncPvpInPlace();
+  }
+
+  private async resetPvpCode() {
+    const client = this.pvpClient;
+    if (!client || this.pvpResetting || this.pvpStarting || client.getState() !== 'online') return;
+    this.pvpResetting = true;
+    this.syncPvpInPlace();
+    let next: string | null = null;
+    try {
+      next = await client.resetCode();
+    } catch (err) {
+      console.warn('PvP resetCode failed:', err);
+    }
+    this.pvpResetting = false;
+    this.setPvpCodeNote(next ? '✓ 已换成新对战码，旧码已失效' : '重置失败，请稍后再试');
+  }
+
+  /** Latency pill: written through data attributes (+ CSS content) so 1 Hz updates never re-trigger mobile auto-fit. */
+  private syncPvpRtt(stats: PvpNetStats | null) {
+    const el = this.container.querySelector<HTMLElement>('#pvp-rtt');
+    if (!el) return;
+    const online = this.pvpClient?.getState() === 'online';
+    const rtt = online ? pvpRttMs(stats) : null;
+    const level = pvpRttLevel(rtt);
+    const text = rtt === null ? '--' : `${rtt}ms`;
+    // Only touch attributes that changed (and never the DOM tree) so mobile auto-fit is not re-triggered
+    if (el.dataset.level !== level) el.dataset.level = level;
+    if (el.dataset.rtt !== text) el.dataset.rtt = text;
+    const title = rtt === null ? '与对战服务器的实时往返延迟' : pvpNetDetail(stats);
+    if (el.title !== title) el.title = title;
+  }
+
+  /** Updates the PvP panel without re-rendering (keeps the input's focus, caret and IME state). */
+  private syncPvpInPlace() {
+    if (this.activeTab !== 'pvp') return;
+    const root = this.container.querySelector<HTMLElement>('.pvp-panel');
+    if (!root) return;
+    const client = this.pvpClient;
+    const state: PvpConnState = client?.getState() ?? 'idle';
+    const codeInfo = client?.getCode() ?? { code: null, expiresAt: null };
+    const online = state === 'online';
+    const busy = Boolean(this.loadingMessage) || this.pvpStarting;
+
+    const conn = root.querySelector<HTMLElement>('#pvp-conn');
+    if (conn) conn.dataset.state = this.pvpStarting ? 'online' : state;
+    const connText = root.querySelector<HTMLElement>('#pvp-conn-text');
+    if (connText) {
+      const t = this.pvpStarting ? '正在进入对局…' : PVP_CONN_TEXT[state];
+      if (connText.textContent !== t) connText.textContent = t;
+    }
+    root.querySelector('#btn-pvp-retry')?.classList.toggle('hidden', state !== 'offline' || busy);
+
+    const codeEl = root.querySelector<HTMLElement>('#pvp-code');
+    if (codeEl) {
+      const key = codeInfo.code ?? '';
+      if (codeEl.dataset.code !== key) {
+        codeEl.dataset.code = key;
+        codeEl.innerHTML = this.renderPvpCodeTiles(codeInfo.code);
+      }
+      codeEl.classList.toggle('is-stale', !online && Boolean(codeInfo.code) && !this.pvpStarting);
+      codeEl.classList.toggle('is-loading', !codeInfo.code && (state === 'connecting' || state === 'reconnecting'));
+      codeEl.setAttribute('aria-label', codeInfo.code ? `我的对战码 ${codeInfo.code.split('').join(' ')}` : '我的对战码（获取中）');
+    }
+    const noteEl = root.querySelector<HTMLElement>('#pvp-code-note');
+    if (noteEl) {
+      const note =
+        this.pvpCodeNote ??
+        (state === 'offline'
+          ? '连接恢复后对战码继续有效'
+          : !codeInfo.code
+            ? '正在向服务器申请对战码…'
+            : `停留在本页时持续续期 · 离开后保留 ${PVP_TTL_MIN} 分钟`);
+      if (noteEl.textContent !== note) noteEl.textContent = note;
+      noteEl.classList.toggle('is-flash', Boolean(this.pvpCodeNote));
+    }
+    const copyBtn = root.querySelector<HTMLButtonElement>('#btn-pvp-copy');
+    if (copyBtn) {
+      copyBtn.disabled = !codeInfo.code;
+      copyBtn.classList.toggle('is-done', this.pvpCopied);
+      const t = this.pvpCopied ? '已复制 ✓' : '复制';
+      if (copyBtn.textContent !== t) copyBtn.textContent = t;
+    }
+    const resetBtn = root.querySelector<HTMLButtonElement>('#btn-pvp-reset');
+    if (resetBtn) {
+      resetBtn.disabled = !online || this.pvpResetting || busy;
+      const t = this.pvpResetting ? '重置中…' : '↻ 重置';
+      if (resetBtn.textContent !== t) resetBtn.textContent = t;
+    }
+
+    const input = root.querySelector<HTMLInputElement>('#pvp-code-input');
+    if (input) {
+      input.disabled = this.pvpPending || busy;
+      if (input.disabled && document.activeElement === input) input.blur();
+      if (input.value !== this.pvpInput) input.value = this.pvpInput;
+    }
+    const fightBtn = root.querySelector<HTMLButtonElement>('#btn-pvp-challenge');
+    if (fightBtn) {
+      fightBtn.disabled = !this.pvpCanChallenge();
+      fightBtn.classList.toggle('is-pending', this.pvpPending);
+      const t = this.pvpPending ? '等待中…' : '⚔️ 对战';
+      if (fightBtn.textContent !== t) fightBtn.textContent = t;
+    }
+
+    const msgEl = root.querySelector<HTMLElement>('#pvp-msg');
+    if (msgEl) {
+      let msg: { text: string; kind: PvpMsgKind };
+      if (this.loadingMessage) msg = { text: this.loadingMessage, kind: 'info' };
+      else if (this.pvpMsg) msg = this.pvpMsg;
+      else if (this.pvpInput.length === 6 && codeInfo.code && this.pvpInput === codeInfo.code)
+        msg = { text: PVP_FAIL_TEXT.self, kind: 'warn' };
+      else if (!online && this.pvpInput.length === 6 && !this.pvpStarting)
+        msg = { text: state === 'offline' ? '未连接服务器，暂时无法发起对战' : '连接服务器后即可发起对战', kind: 'hint' };
+      else msg = { text: PVP_HINT_TEXT, kind: 'hint' };
+      if (msgEl.textContent !== msg.text) msgEl.textContent = msg.text;
+      const cls = `pvp-msg is-${msg.kind}`;
+      if (msgEl.className !== cls) msgEl.className = cls;
+    }
+
+    this.syncPvpRtt(client?.getStats() ?? null);
+  }
+
   private renderCustomBody(): string {
     const selectedMap = this.getSelectedMap();
     const resolved = resolveSlots(this.drafts, this.roster);
@@ -1945,12 +2423,14 @@ export class LobbyUI {
         ? this.renderRankedBody()
         : this.activeTab === 'cricket'
           ? this.renderCricketBody()
-          : this.renderCustomBody();
+          : this.activeTab === 'pvp'
+            ? this.renderPvpBody()
+            : this.renderCustomBody();
 
     const bgmOn = this.settings.get().bgmEnabled;
 
     this.container.innerHTML = `
-      <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''} ${this.activeTab === 'cricket' ? 'lobby-card-cricket' : ''}">
+      <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''} ${this.activeTab === 'cricket' ? 'lobby-card-cricket' : ''} ${this.activeTab === 'pvp' ? 'lobby-card-pvp' : ''}">
         <header class="lobby-header">
           <div class="lobby-title-group">
             <h1>回旋镖大作战</h1>
@@ -1960,6 +2440,7 @@ export class LobbyUI {
               <button class="lobby-tab ${this.activeTab === 'ranked' ? 'active' : ''}" id="tab-ranked"><span class="nav-ico">🏆</span> 排位赛</button>
               <button class="lobby-tab ${this.activeTab === 'cricket' ? 'active' : ''}" id="tab-cricket"><span class="nav-ico">🦗</span> 斗蛐蛐</button>
               <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom"><span class="nav-ico">🎛️</span> 自定义</button>
+              <button class="lobby-tab lobby-tab-pvp ${this.activeTab === 'pvp' ? 'active' : ''}" id="tab-pvp" title="在线 1v1：用 6 位对战码和好友对战"><span class="nav-ico">🌐</span> PvP</button>
             </div>
             <div class="lobby-nav-actions">
               <button type="button" class="lobby-settings-btn lobby-training-btn" id="btn-start-training" title="训练场：打稻草人、练走位冲刺、练躲镖挡镖（不限时，玩家无敌）"><span class="nav-ico">🎯</span> 训练</button>
@@ -2002,6 +2483,7 @@ export class LobbyUI {
       ${icpFooterHtml}
     `;
 
+    this.fitHeader();
     const lobbyCardEl = this.container.querySelector<HTMLElement>('.lobby-card');
     if (lobbyCardEl && prevScrollTop > 0) {
       lobbyCardEl.scrollTop = prevScrollTop;
@@ -2060,6 +2542,24 @@ export class LobbyUI {
       this.leaderboardPanel.hideTooltip();
       this.render();
     });
+    this.container.querySelector('#tab-pvp')?.addEventListener('click', () => {
+      if (this.activeTab === 'pvp') return;
+      this.activeTab = 'pvp';
+      this.showLeaderboard = false;
+      this.closeMapPoolModal();
+      this.leaderboardPanel.hideTooltip();
+      this.render();
+    });
+
+    // Become challengeable only while the PvP tab is on screen
+    this.syncPvpPresence();
+
+    // PvP tab bindings
+    if (this.activeTab === 'pvp') {
+      this.bindPvpEvents();
+      this.syncPvpInPlace();
+      return;
+    }
 
     // Ranked tab bindings
     if (this.activeTab === 'ranked') {

@@ -25,16 +25,23 @@ export class PvpLobbyMock implements PvpLobbyClient {
 
   enter() {
     if (this.timer !== null) return;
-    this.setState('connecting');
-    window.setTimeout(() => {
-      this.setState('online');
-      if (!this.code.code) this.code = { code: this.randomCode(), expiresAt: Date.now() + PVP_CODE_TTL_MS };
-      this.emit('code', this.code);
-    }, 400);
+    // Like the real client, the socket stays up after leave(): coming back only resumes presence
+    if (this.state !== 'online') {
+      this.setState('connecting');
+      window.setTimeout(() => {
+        if (this.timer === null) return;
+        this.setState('online');
+        if (!this.code.code) this.code = { code: this.randomCode(), expiresAt: Date.now() + PVP_CODE_TTL_MS };
+        this.emit('code', this.code);
+      }, 400);
+    }
     this.timer = window.setInterval(() => {
       if (this.state !== 'online') return;
       this.code = { ...this.code, expiresAt: Date.now() + PVP_CODE_TTL_MS };
-      this.stats = { rttMs: Math.round(18 + Math.random() * 30), jitterMs: Math.round(Math.random() * 6), transport: 'ws' };
+      // ?pvpMockRtt=180 pins the simulated latency (UI colour checks)
+      const pinned = Number(new URLSearchParams(location.search).get('pvpMockRtt'));
+      const rtt = Number.isFinite(pinned) && pinned > 0 ? pinned : 18 + Math.random() * 30;
+      this.stats = { rttMs: Math.round(rtt), jitterMs: Math.round(Math.random() * 6), transport: 'ws' };
       this.emit('stats', this.stats);
     }, 1000);
   }
@@ -42,7 +49,6 @@ export class PvpLobbyMock implements PvpLobbyClient {
   leave() {
     if (this.timer !== null) window.clearInterval(this.timer);
     this.timer = null;
-    this.setState('idle');
   }
 
   async resetCode() {
