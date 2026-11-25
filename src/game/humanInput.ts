@@ -1,4 +1,4 @@
-import { applyMeleeAssist, applyMobileMeleeAssist, hasMobileMeleeHitOpportunity } from './meleeAssist';
+import { applyMeleeAssist, applyMobileMeleeAssist } from './meleeAssist';
 import { ActionBindKey, getSlashJudgmentTicks, isBoundToAction, SettingsStore } from './settings';
 import {
   ActType,
@@ -755,7 +755,6 @@ export class HumanInputController {
     }
 
     const preInputEnabled = this.settings.get().dashInputBuffer;
-    const meleeAssistEnabled = this.meleeAssistEnabled();
     if (!preInputEnabled) {
       this.touchLockedPreInput = null;
     }
@@ -771,26 +770,15 @@ export class HumanInputController {
           this.touchLockedPreInput = this.touchPendingPresses[this.touchPendingPresses.length - 1];
           this.touchPendingPresses.length = 0;
         }
-        // Mobile dash-slash / dash-kick ("冲刺斩/踢") in moving ticks (timer 3..6):
-        // When BOTH pre-input AND melee assist are enabled, auto-trigger on the FIRST moving tick
-        // that can hit an enemy or block an incoming dart; if no opportunity arises during the dash,
-        // keep dashing cleanly and fire on the first FREE tick after the dash finishes!
+        // Mobile dash-slash / dash-kick ("冲刺斩/踢"): a melee pressed during the dash (or buffered just before it)
+        // cuts the dash on the first moving tick (timer 3..6), exactly like pre-input OFF and like desktop. It used to
+        // wait for a melee-assist hit opportunity when assist was on, which turned every dash-slash without a target
+        // in reach into a plain slash after the dash ("开启预输入情况下，移动端无法冲刺斩").
         if (canDashMelee && this.touchLockedPreInput && this.touchLockedPreInput.kind === 'melee') {
-          const smartWait =
-            meleeAssistEnabled &&
-            this.mapData !== null &&
-            !hasMobileMeleeHitOpportunity(
-              this.mapData,
-              state,
-              seat,
-              this.slashTicks(),
-            );
-          if (!smartWait) {
-            const cmd = this.touchLockedPreInput;
-            this.touchLockedPreInput = null;
-            const act = this.tryBuildTouchAction(cmd, state, seat, p, dart, mx, my, stickDir, faceX, faceY);
-            if (act) return act;
-          }
+          const cmd = this.touchLockedPreInput;
+          this.touchLockedPreInput = null;
+          const act = this.tryBuildTouchAction(cmd, state, seat, p, dart, mx, my, stickDir, faceX, faceY);
+          if (act) return act;
         }
       } else {
         const fresh = this.touchPendingPresses.filter((pr) => now - pr.at <= this.bufferMs);

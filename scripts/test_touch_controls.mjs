@@ -196,7 +196,7 @@ for (const afterDash of [true, false]) {
   console.log(`  [TEST 4 PASS] throw pre-input during dash (afterDash=${afterDash}) fires right after the dash`);
 }
 
-// ---------- 5. Mobile dash-slash/kick (manual & smart auto-trigger with preInput + meleeAssist) ----------
+// ---------- 5. Mobile dash-slash/kick: immediate on the moving tick, whatever pre-input / melee assist say ----------
 {
   // 5a. Manual dash-slash (meleeAssist OFF): pressing melee on moving tick 3 immediately cuts dash into SLASH
   const h = setup(openRows, { meleeAssist: false });
@@ -247,31 +247,51 @@ for (const afterDash of [true, false]) {
   }
   assert.equal(kickOffset, 3, `Manual mobile dash-kick must fire immediately on moving tick 3, got ${kickOffset}`);
 
-  // 5c. Smart dash-melee (preInput ON + meleeAssist ON) with NO enemy/dart in reach:
-  // completes FULL 3000mm dash and fires SLASH on the first FREE tick after dash!
-  const hNoTarget = setup(openRows, { meleeAssist: true });
-  const yNT0 = hNoTarget.st.players[0].y;
-  hNoTarget.input.setVirtualMove(0, 1);
-  hNoTarget.at(10);
-  hNoTarget.input.queueVirtualDash();
-  hNoTarget.step();
-  let ntSlashTick = -1;
-  let ntFirstFree = -1;
-  for (let i = 1; i <= 12; i++) {
-    if (i === 2) {
-      hNoTarget.at(20);
-      hNoTarget.input.setVirtualMove(-1, 0);
-      hNoTarget.input.queueVirtualMelee();
+  // 5c. Dash-slash with pre-input ON + melee assist ON (the defaults, and PvP's fixed rules) and NO target in reach:
+  // the slash must still cut the dash on the first moving tick at/after the press — not wait for the dash to end.
+  // (Regression: "开启预输入情况下，移动端无法冲刺斩" — a smart wait turned it into a plain slash after the dash.)
+  const dashSlash = ({ preInput = true, assist = true, pressBefore = 2, sameWindow = false, rows = openRows, spawn } = {}) => {
+    const hh = setup(rows, { meleeAssist: assist, spawn });
+    hh.input['settings'].setDashInputBuffer(preInput);
+    const y0 = hh.st.players[0].y;
+    hh.input.setVirtualMove(0, 1);
+    hh.at(10);
+    hh.input.queueVirtualDash();
+    if (sameWindow) {
+      hh.at(30);
+      hh.input.queueVirtualMelee(); // dash + slash tapped inside one 50 ms tick window
     }
-    const { st } = hNoTarget.step();
-    if (ntFirstFree < 0 && st.players[0].st !== 7) ntFirstFree = hNoTarget.tick;
-    if (ev(st, 'SLASH') && ntSlashTick < 0) ntSlashTick = hNoTarget.tick;
-  }
-  assert.equal(ntSlashTick, ntFirstFree + 1, `Smart dash-melee with no target fires right after dash (free@${ntFirstFree}, slash@${ntSlashTick})`);
-  assert.ok(hNoTarget.st.players[0].y - yNT0 >= 2900, 'full 3000mm dash completed when no hit opportunity arose');
+    hh.step(); // dash tick 0
+    let slashAt = -1;
+    let firstMoving = -1;
+    for (let i = 1; i <= 12; i++) {
+      const p = hh.st.players[0];
+      if (firstMoving < 0 && p.st === 7 && p.timer >= 3 && p.timer <= 6) firstMoving = i;
+      if (!sameWindow && i === pressBefore) {
+        hh.at(20);
+        hh.input.setVirtualMove(-1, 0);
+        hh.input.queueVirtualMelee();
+      }
+      const { st } = hh.step();
+      if (ev(st, 'SLASH') && slashAt < 0) slashAt = i;
+    }
+    return { slashAt, firstMoving, dy: hh.st.players[0].y - y0 };
+  };
+  const midDash = dashSlash({ pressBefore: 2 });
+  assert.equal(midDash.slashAt, 2, `pre-input + assist: slash pressed mid-dash fires on that moving tick (got ${midDash.slashAt})`);
+  assert.ok(midDash.dy < 2600, `pre-input + assist: dash-slash cuts the dash short (dy=${midDash.dy})`);
+  const startup = dashSlash({ pressBefore: 1 });
+  assert.equal(startup.slashAt, startup.firstMoving, `slash pressed on the dash start-up tick fires on the first moving tick (${startup.slashAt} vs ${startup.firstMoving})`);
+  assert.ok(startup.dy < 2600, `start-up press still cuts the dash (dy=${startup.dy})`);
+  const together = dashSlash({ sameWindow: true });
+  assert.equal(together.slashAt, together.firstMoving, `dash + slash tapped together → slash on the first moving tick (${together.slashAt} vs ${together.firstMoving})`);
+  const noPreInput = dashSlash({ preInput: false, pressBefore: 3 });
+  assert.equal(noPreInput.slashAt, 3, `pre-input OFF + assist: same immediate dash-slash (got ${noPreInput.slashAt})`);
+  const noAssist = dashSlash({ assist: false, pressBefore: 2 });
+  assert.equal(noAssist.slashAt, midDash.slashAt, 'assist on/off must not change dash-slash timing');
 
-  // 5d. Smart dash-melee (preInput ON + meleeAssist ON) when enemy enters reach mid-dash:
-  // P0 at (3.0, 5.0), P1 at (5.0, 5.0) = 2000mm ahead -> dash right + tap melee early -> auto-cuts on tick 3 (dist=1250mm) & kills P1!
+  // 5d. Dash-slash with assist ON when the enemy is in reach: the slash still fires on the press tick and the
+  // assist snaps it 360° onto the enemy even though the stick points away → kill.
   const hHit = setup(openRows, { meleeAssist: true, spawn: '3 5 5 5' });
   hHit.input.setVirtualMove(1, 0); // dash right toward P1
   hHit.at(10);
@@ -280,42 +300,48 @@ for (const afterDash of [true, false]) {
   let hitSlashOffset = -1;
   let killedP1 = false;
   for (let i = 1; i <= 10; i++) {
-    if (i === 1) {
+    if (i === 3) {
       hHit.at(20);
-      hHit.input.setVirtualMove(0, -1); // stick points UP (away from P1) to also verify 360° assist snap!
+      hHit.input.setVirtualMove(0, -1); // stick points UP (away from P1) to verify the 360° assist snap
       hHit.input.queueVirtualMelee();
     }
     const { st } = hHit.step();
     if (ev(st, 'SLASH') && hitSlashOffset < 0) hitSlashOffset = i;
     if (st.players[1].alive === 0) killedP1 = true;
   }
-  assert.equal(hitSlashOffset, 3, `Smart dash-melee must auto-trigger on exact first tick enemy enters reach (offset 3), got ${hitSlashOffset}`);
-  assert.ok(killedP1, 'Smart dash-melee must kill P1 cleanly');
+  assert.equal(hitSlashOffset, 3, `dash-slash with assist fires on the press tick (offset 3), got ${hitSlashOffset}`);
+  assert.ok(killedP1, 'assisted dash-slash must kill P1 in reach');
 
-  // 5e. Smart dash-melee (preInput ON + meleeAssist ON) auto-triggers to BLOCK an incoming enemy dart mid-dash!
-  const hBlk = setup(openRows, { meleeAssist: true, spawn: '3 5 8 5' });
-  // P1 throws left toward P0 on tick 0; P0 waits 2 ticks then dashes UP while tapping melee
-  hBlk.step('0 0 1 -1000 0 0');
-  hBlk.step('0 0 0 0 0 0');
-  hBlk.input.setVirtualMove(0, 1);
-  hBlk.at(10);
-  hBlk.input.queueVirtualDash();
-  hBlk.step('0 0 0 0 0 0'); // dash starts while dart is still ~5m away
-  let blkOffset = -1;
-  let dartBlocked = false;
-  for (let i = 1; i <= 12; i++) {
-    if (i === 1) {
-      hBlk.at(20);
-      hBlk.input.queueVirtualMelee();
+  // 5e. Dash-slash with assist ON blocks an incoming dart when pressed while it is in the slash window:
+  // every press fires on its own moving tick, and pressing at the right moment blocks.
+  const blockRun = (pressAt) => {
+    const hb = setup(openRows, { meleeAssist: true, spawn: '3 5 8 5' });
+    hb.step('0 0 1 -1000 0 0'); // P1 throws left toward P0
+    hb.step('0 0 0 0 0 0');
+    hb.input.setVirtualMove(0, 1);
+    hb.at(10);
+    hb.input.queueVirtualDash();
+    hb.step('0 0 0 0 0 0'); // dash starts while the dart is still ~5 m away
+    let slashAt = -1;
+    let blocked = false;
+    for (let i = 1; i <= 12; i++) {
+      if (i === pressAt) {
+        hb.at(20);
+        hb.input.queueVirtualMelee();
+      }
+      const { st } = hb.step('0 0 0 0 0 0');
+      if (ev(st, 'SLASH') && slashAt < 0) slashAt = i;
+      if (ev(st, 'BLOCK')) blocked = true;
     }
-    const { st } = hBlk.step('0 0 0 0 0 0');
-    if (ev(st, 'SLASH') && blkOffset < 0) blkOffset = i;
-    if (ev(st, 'BLOCK')) dartBlocked = true;
+    return { slashAt, blocked };
+  };
+  const blockRuns = [2, 3, 4, 5].map((k) => ({ k, ...blockRun(k) }));
+  for (const r of blockRuns) {
+    assert.equal(r.slashAt, r.k, `dash-slash pressed before moving tick ${r.k} fires on it (got ${r.slashAt})`);
   }
-  assert.ok(blkOffset >= 2 && blkOffset <= 5, `Smart dash-melee should trigger mid-dash when dart enters window, got offset ${blkOffset}`);
-  assert.ok(dartBlocked, 'Smart dash-melee auto-trigger must block the incoming dart');
+  assert.ok(blockRuns.some((r) => r.blocked), `an assisted dash-slash in the dart's window must block it (${JSON.stringify(blockRuns)})`);
 
-  console.log('  [TEST 5 PASS] mobile dash-slash/kick (manual) + smart dash-melee (auto-hit enemy, auto-block dart, full-dash fallback)');
+  console.log('  [TEST 5 PASS] mobile dash-slash/kick fires on the press tick with pre-input / assist on or off (cuts the dash, assisted kill & dart block)');
 }
 
 // ---------- 6. Hold right stick with dart on the ground → recall channel → CALL ----------
