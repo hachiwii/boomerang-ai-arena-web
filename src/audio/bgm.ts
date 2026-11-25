@@ -4,6 +4,7 @@ export type BgmTrackId = 'main' | 'boss' | 'astra_solo' | 'astra_win';
 
 export const FABLE_BOT_ID = 'claude-fable-5.2';
 export const ASTRA_BOT_ID = 'gpt-6.2-astra';
+export const ASTRA_RLHF_BOT_ID = 'astra-rlhf';
 
 /** Crossfade duration between any two BGM tracks (seconds). */
 export const BGM_FADE_SEC = 0.5;
@@ -48,7 +49,11 @@ export function generateBgmSeed(): number {
 }
 
 export function isBossSlot(slot: SlotConfig | undefined): boolean {
-  return !!slot && slot.kind === 'bot' && (slot.botId === FABLE_BOT_ID || slot.botId === ASTRA_BOT_ID);
+  return (
+    !!slot &&
+    slot.kind === 'bot' &&
+    (slot.botId === FABLE_BOT_ID || slot.botId === ASTRA_BOT_ID || slot.botId === ASTRA_RLHF_BOT_ID)
+  );
 }
 
 export function isAstraSlot(slot: SlotConfig | undefined): boolean {

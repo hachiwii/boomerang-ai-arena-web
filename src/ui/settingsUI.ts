@@ -638,7 +638,7 @@ export class SettingsModal {
               <div class="settings-toggle-row ${s.bgmEnabled ? '' : 'is-dim'}" id="settings-boss-music-row">
                 <div class="settings-toggle-meta">
                   <div class="settings-toggle-title">BOSS 战特殊音乐</div>
-                  <div class="settings-toggle-desc">场上仅剩 2 人且包含 Fable 或 Astra 时切换特殊 BGM</div>
+                  <div class="settings-toggle-desc">场上仅剩 2 人且包含 Fable、Astra 或 Astra RLHF 时切换特殊 BGM</div>
                 </div>
                 <button
                   type="button"
