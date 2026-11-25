@@ -75,12 +75,14 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
   }
 
   enter() {
-    if (!this.tabOpen) this.replaced = false;
+    if (this.tabOpen) return;
+    this.replaced = false;
     this.tabOpen = true;
     this.syncPresence();
   }
 
   leave() {
+    if (!this.tabOpen) return;
     this.tabOpen = false;
     this.syncPresence();
   }
