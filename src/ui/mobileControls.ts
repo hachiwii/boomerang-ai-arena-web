@@ -112,6 +112,9 @@ const LIFTOFF_MAX_AGE_MS = 95;
  * - Slash & Dash buttons around the aim stick (icons follow current function; dash shows cooldown).
  */
 export class MobileControls {
+  /** PvP: false disables aim bullet time (slow-mo and its 50% move scaling) entirely. TODO(UI): implement. */
+  public setBulletTimeAllowed(_allowed: boolean): void {}
+
   private readonly layer: HTMLDivElement;
   private readonly moveZone: HTMLDivElement;
   private readonly els: Record<LiveControlKey, HTMLDivElement>;

@@ -61,7 +61,7 @@ export interface MapMeta {
 }
 
 export type RankedMode = 'solo' | 'ffa';
-export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'cricket' | 'custom' | 'training';
+export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'cricket' | 'custom' | 'training' | 'pvp';
 
 export function isRankedMatchMode(mode: MatchMode): boolean {
   return mode === 'ranked-solo' || mode === 'ranked-ffa';
@@ -109,6 +109,8 @@ export interface MatchConfig {
   dashGuard?: boolean; // Dash-tail 25% cliff save in WASM engine
   meleeAssist?: boolean; // Client-side aim assist (no longer alters WASM dart-block cone)
   humanSlashTicks?: number; // 3 (normal: melee 2f / block 3f) | 2 (strict: melee AI / block 2f) | 0 (AI exact)
+  // Online 1v1 only (matchMode 'pvp'): both slots are kind 'human'; mySeat is the local player
+  pvp?: { matchId: string; mySeat: 0 | 1 };
 }
 
 /**

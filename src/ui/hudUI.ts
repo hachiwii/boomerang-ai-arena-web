@@ -1,3 +1,4 @@
+import type { PvpNetStats } from '../net/pvpTypes';
 import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
 import { GifClipExportResult } from '../game/gifExporter';
 import { CountdownStage } from '../game/matchController';
@@ -1527,6 +1528,9 @@ export class HudUI {
       }
     }
   }
+
+  /** PvP: latency to the relay server (shown in the perf line); null outside PvP. TODO(UI): implement. */
+  public setNetStats(_stats: PvpNetStats | null): void {}
 
   public updateTelemetry(logicHz: number, renderHz: number, frameWorkMs: number, botMaxMs: number, speed = 1.0) {
     if (!this.perfEl) return;
