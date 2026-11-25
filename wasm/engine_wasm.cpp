@@ -2,6 +2,7 @@
 #define DART_TRAINING  // 网页引擎带训练场规则（engine_init_training）；dart.hpp 的其他使用者不定义它
 #include "dart.hpp"
 #include <emscripten/emscripten.h>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -16,6 +17,67 @@ std::unique_ptr<dart::Game> g_game;
 size_t g_last_event_idx = 0;
 std::string g_ret_buf;
 std::string g_err_buf;
+
+struct Checkpoint {
+    std::unique_ptr<dart::Game> game;
+    size_t event_idx = 0;
+};
+
+std::array<Checkpoint, 64> g_checkpoints;
+
+std::unique_ptr<dart::Game> copy_game(const dart::Game& game) {
+    auto copy = std::make_unique<dart::Game>(game);
+    // Map and live maps are immutable. Only the observation ring needs a separate allocation.
+    if (game.hist) copy->hist = std::make_shared<std::vector<dart::Game::Snap>>(*game.hist);
+    return copy;
+}
+
+struct StateHash {
+    uint64_t value = 14695981039346656037ULL;
+
+    void byte(uint8_t b) {
+        value ^= b;
+        value *= 1099511628211ULL;
+    }
+
+    void add(uint64_t v) {
+        for (int i = 0; i < 8; ++i, v >>= 8) byte(uint8_t(v));
+    }
+
+    void add_player(const dart::Player& p) {
+        for (auto v : {p.alive, p.vis, p.x, p.y, p.vx, p.vy, p.face, p.st, p.timer, p.ax, p.ay,
+                       p.cd, p.expose, p.kills, p.msg, p.team, p.dashing, p.kicked_by, p.kick_t,
+                       p.dead_t, p.cause, p.killer, p.px, p.py, p.mvx, p.mvy, p.retired, p.unknown,
+                       p.slash_win, p.melee_win, p.slash_win_hits, p.melee_win_used, p.block_win_used,
+                       p.swing_emitted, p.dash_has_target, p.dash_rem_x, p.dash_rem_y, p.dash_total_len,
+                       p.n_throw, p.n_slash, p.n_kick, p.n_dash, p.n_recall, p.n_catch, p.n_pick, p.n_drop,
+                       p.n_block, p.n_call_done, p.n_clash, p.n_dash_melee, p.k_dart, p.k_slash, p.k_fall,
+                       p.k_team, p.kick_hits, p.kick_hits_team, p.ret_kills, p.multi, p.grass_steps,
+                       p.hidden_steps, p.empty_steps, p.dash_steps, p.curve_kills, p.gap_dash, p.dash_pit}) add(v);
+        add(p.dash_pt_n);
+        for (int i = 0; i < 6; ++i) { add(p.dash_pt_x[i]); add(p.dash_pt_y[i]); }
+    }
+
+    void add_dart(const dart::Dart& d) {
+        for (auto v : {d.st, d.x, d.y, d.vx, d.vy, d.left, d.age, d.hits, d.bent, d.ldir}) add(v);
+    }
+};
+
+void append_step_events(std::string& out) {
+    out += '[';
+    for (size_t i = g_last_event_idx; i < g_game->events.size(); ++i) {
+        if (i > g_last_event_idx) out += ',';
+        const dart::Event& e = g_game->events[i];
+        out += "{\"t\":" + std::to_string(e.t);
+        out += ",\"type\":" + std::to_string(e.type);
+        out += ",\"name\":\"" + std::string(dart::EV_NAME[e.type]) + "\"";
+        out += ",\"a\":" + std::to_string(e.a);
+        out += ",\"b\":" + std::to_string(e.b);
+        out += ",\"c\":" + std::to_string(e.c);
+        out += ",\"d\":" + std::to_string(e.d) + "}";
+    }
+    out += ']';
+}
 
 enum SymOp : int {
     SYM_ID = 0,
@@ -385,6 +447,7 @@ int init_engine_impl(const char* map_text, int n_players, unsigned int seed, uns
     }
 
     g_last_event_idx = 0;
+    g_checkpoints = {};
     return 1;
 }
 
@@ -461,14 +524,20 @@ int engine_init_training(const char* map_text) {
     for (int k = 6; k <= 7 && k < g.n; ++k) g.train_flags[k] = dart::Game::TF_NODIE | dart::Game::TF_ANCHOR;
     g.snapshot();
     g_last_event_idx = 0;
+    g_checkpoints = {};
     return 1;
 }
 
 EMSCRIPTEN_KEEPALIVE
 void engine_set_human_seat(int seat) {
     if (g_game) {
-        g_game->human_slash_seat = seat;
+        g_game->human_seats = seat >= 0 && seat < g_game->n ? 1u << seat : 0;
     }
+}
+
+EMSCRIPTEN_KEEPALIVE
+void engine_set_human_seats(unsigned int seats) {
+    if (g_game) g_game->human_seats = seats & ((1u << g_game->n) - 1);
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -538,6 +607,82 @@ int engine_step(const char* actions_text) {
     g_last_event_idx = g_game->events.size();
     g_game->step(acts);
     return g_game->over ? 0 : 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int engine_snapshot_save(unsigned int slot) {
+    if (!g_game || slot >= g_checkpoints.size()) return 0;
+    g_checkpoints[slot] = {copy_game(*g_game), g_last_event_idx};
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int engine_snapshot_restore(unsigned int slot) {
+    if (slot >= g_checkpoints.size() || !g_checkpoints[slot].game) return 0;
+    g_game = copy_game(*g_checkpoints[slot].game);
+    g_last_event_idx = g_checkpoints[slot].event_idx;
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char* engine_state_hash() {
+    g_ret_buf.clear();
+    if (!g_game) return g_ret_buf.c_str();
+    const dart::Game& g = *g_game;
+    StateHash hash;
+    for (const auto& item : dart::cfg_items()) hash.add(g.cf.*item.f);
+    hash.add(g.seed); // SplitMix is local to spawn generation; there is no persistent RNG cursor.
+    hash.add(g.n);
+    hash.add(g.t);
+    hash.add(g.over);
+    hash.add(g.winner);
+    hash.add(g.human_seats);
+    hash.add(g.human_slash_ticks);
+    hash.add(g.human_melee_ticks);
+    hash.add(g.human_cliff_guard);
+    hash.add(g.human_melee_assist);
+    hash.add(g.human_dash_target_active);
+    hash.add(g.human_dash_target_x);
+    hash.add(g.human_dash_target_y);
+    hash.add(g.training);
+    hash.add(g.record);
+    hash.add(g.M().nx);
+    hash.add(g.M().ny);
+    hash.add(g.M().nwave);
+    for (auto c : g.M().c) hash.byte(uint8_t(c));
+    for (auto w : g.M().w) hash.byte(uint8_t(w));
+    // Cache allocation and refresh timing are immaterial; collapse state follows the map and tick.
+    for (int k = 0; k < g.n; ++k) {
+        hash.add(g.spx[k]); hash.add(g.spy[k]);
+        hash.add_player(g.p[k]);
+        hash.add_dart(g.d[k]);
+        hash.add(g.train_flags[k]); hash.add(g.train_revive[k]); hash.add(g.train_face[k]);
+    }
+    if (g.hist) {
+        for (const auto& snap : *g.hist) {
+            hash.add(snap.t);
+            if (snap.t < 0) continue;
+            for (int k = 0; k < g.n; ++k) {
+                hash.add_player(snap.p[k]);
+                hash.add_dart(snap.d[k]);
+                hash.add(snap.vis[k]);
+            }
+        }
+    }
+    for (const auto& e : g.events) {
+        for (auto v : {e.t, e.type, e.a, e.b, e.c, e.d}) hash.add(v);
+    }
+    char hex[17];
+    std::snprintf(hex, sizeof(hex), "%016llx", static_cast<unsigned long long>(hash.value));
+    g_ret_buf = hex;
+    return g_ret_buf.c_str();
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char* engine_get_events_json() {
+    g_ret_buf.clear();
+    if (g_game) append_step_events(g_ret_buf);
+    return g_ret_buf.c_str();
 }
 
 EMSCRIPTEN_KEEPALIVE
@@ -654,22 +799,9 @@ const char* engine_get_state_json() {
         o += ",\"age\":" + std::to_string(D.age);
         o += "}";
     }
-    o += "],\"events\":[";
-    bool first_ev = true;
-    for (size_t i = g_last_event_idx; i < g.events.size(); ++i) {
-        const dart::Event& e = g.events[i];
-        if (!first_ev) o += ',';
-        first_ev = false;
-        o += "{\"t\":" + std::to_string(e.t);
-        o += ",\"type\":" + std::to_string(e.type);
-        o += ",\"name\":\"" + std::string(dart::EV_NAME[e.type]) + "\"";
-        o += ",\"a\":" + std::to_string(e.a);
-        o += ",\"b\":" + std::to_string(e.b);
-        o += ",\"c\":" + std::to_string(e.c);
-        o += ",\"d\":" + std::to_string(e.d);
-        o += "}";
-    }
-    o += "]}";
+    o += "],\"events\":";
+    append_step_events(o);
+    o += '}';
     g_ret_buf = std::move(o);
     return g_ret_buf.c_str();
 }

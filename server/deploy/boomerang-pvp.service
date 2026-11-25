@@ -1,0 +1,21 @@
+[Unit]
+Description=Boomerang PvP relay
+After=network.target
+
+[Service]
+Type=simple
+User=boomerang-pvp
+Group=boomerang-pvp
+WorkingDirectory=/opt/boomerang-pvp
+Environment=NODE_ENV=production
+EnvironmentFile=-/etc/boomerang-pvp.env
+ExecStart=/usr/bin/node /opt/boomerang-pvp/dist/relay.mjs
+Restart=on-failure
+RestartSec=2
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

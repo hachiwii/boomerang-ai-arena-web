@@ -81,6 +81,7 @@ export class HumanInputController {
   private recallHoldDelayMs = 160;
   private mapData: EngineMapData | null = null;
   private cliffGuard = true;
+  private fixedMatchRules: { meleeAssist: boolean; humanSlashTicks: number; bulletTime: boolean } | null = null;
   private canvas: HTMLCanvasElement;
   private settings: SettingsStore;
 
@@ -108,6 +109,18 @@ export class HumanInputController {
 
   public setCliffGuard(enabled: boolean) {
     this.cliffGuard = enabled;
+  }
+
+  public setFixedMatchRules(rules: { meleeAssist: boolean; humanSlashTicks: number; bulletTime: boolean } | null) {
+    this.fixedMatchRules = rules;
+  }
+
+  private meleeAssistEnabled(): boolean {
+    return this.fixedMatchRules?.meleeAssist ?? this.settings.get().meleeAssist;
+  }
+
+  private slashTicks(): number {
+    return this.fixedMatchRules?.humanSlashTicks ?? getSlashJudgmentTicks(this.settings.get().slashJudgment);
   }
 
   public isCliffGuard(): boolean {
@@ -475,7 +488,7 @@ export class HumanInputController {
     if (press.kind === 'melee') {
       if (!canStartNew && !canDashMelee) return null;
       let [ax, ay] = this.getAimVectorForPress(press, me.x, me.y, me.face);
-      if (this.settings.get().meleeAssist && this.mapData) {
+      if (this.meleeAssistEnabled() && this.mapData) {
         [ax, ay] = applyMeleeAssist(this.mapData, state, seat, ax, ay);
       }
       return { mx, my, act: ActType.MELEE, ax, ay, msg: 0 };
@@ -670,7 +683,8 @@ export class HumanInputController {
   private getVirtualMoveVector(): [number, number] {
     const m = Math.hypot(this.vMoveX, this.vMoveY);
     if (m < 0.06) return [0, 0];
-    const scale = this.vAiming && this.settings.get().bulletTime ? 500 : 1000;
+    const bulletTime = this.fixedMatchRules?.bulletTime ?? this.settings.get().bulletTime;
+    const scale = this.vAiming && bulletTime ? 500 : 1000;
     return [Math.round((this.vMoveX / m) * scale), Math.round((this.vMoveY / m) * scale)];
   }
 
@@ -702,9 +716,9 @@ export class HumanInputController {
         ax = faceX;
         ay = faceY;
       }
-      if (this.settings.get().meleeAssist && this.mapData) {
+      if (this.meleeAssistEnabled() && this.mapData) {
         // Touch: 360° auto-turn toward the first dart entering reach within the slash judgment window
-        const ticks = getSlashJudgmentTicks(this.settings.get().slashJudgment);
+        const ticks = this.slashTicks();
         [ax, ay] = applyMobileMeleeAssist(this.mapData, state, seat, ax, ay, ticks);
       }
       return { mx, my, act: ActType.MELEE, ax, ay, msg: 0 };
@@ -760,7 +774,7 @@ export class HumanInputController {
     }
 
     const preInputEnabled = this.settings.get().dashInputBuffer;
-    const meleeAssistEnabled = this.settings.get().meleeAssist;
+    const meleeAssistEnabled = this.meleeAssistEnabled();
     if (!preInputEnabled) {
       this.touchLockedPreInput = null;
     }
@@ -788,7 +802,7 @@ export class HumanInputController {
               this.mapData,
               state,
               seat,
-              getSlashJudgmentTicks(this.settings.get().slashJudgment),
+              this.slashTicks(),
             );
           if (!smartWait) {
             const cmd = this.touchLockedPreInput;
