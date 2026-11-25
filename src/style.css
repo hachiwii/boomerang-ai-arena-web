@@ -7858,11 +7858,6 @@ body.is-mobile .lobby-nav-actions {
   gap: 5px;
 }
 
-@media (max-width: 735px) {
-  body.is-mobile .lobby-nav-row .nav-ico {
-    display: none;
-  }
-}
 
 /* Training is endless and the scarecrows are not opponents: hide the match timer / collapse countdown
    and the scarecrows' player cards (desktop) / avatars (mobile); the status pill takes the timer's place. */
@@ -9529,25 +9524,41 @@ body.is-mobile .lobby-header.is-tight-1 .lobby-nav-row {
   gap: 6px;
 }
 
-body.is-mobile .lobby-header.is-tight-2 .lobby-platform-btn {
-  width: 32px;
-  padding: 0;
-}
-
-body.is-mobile .lobby-header.is-tight-2 .lobby-platform-btn span {
+body.is-mobile .lobby-header.is-tight-2 .lobby-tab .nav-ico {
   display: none;
 }
 
-body.is-mobile .lobby-header.is-tight-3 .lobby-nav-row .nav-ico {
-  display: none;
-}
-
-body.is-mobile .lobby-header.is-tight-3 h1 {
+body.is-mobile .lobby-header.is-tight-2 h1 {
   font-size: 15px;
 }
 
-body.is-mobile .lobby-header.is-tight-3 .lobby-settings-btn {
-  padding: 0 6px;
+/* Mobile lobby header: action / platform buttons are icon-only 36 px squares (text stays in title + aria-label) */
+body.is-mobile .lobby-header .lobby-settings-btn,
+body.is-mobile .lobby-header .lobby-bgm-btn,
+body.is-mobile .lobby-header .lobby-platform-btn,
+body.is-mobile .lobby-header .lobby-fullscreen-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border-radius: 11px;
+}
+
+body.is-mobile .lobby-header .lobby-bots-btn,
+body.is-mobile .lobby-header .lobby-github-btn {
+  display: none;
+}
+
+body.is-mobile .lobby-header .lobby-settings-btn .nav-label,
+body.is-mobile .lobby-header .lobby-platform-btn span {
+  display: none;
+}
+
+body.is-mobile .lobby-header .lobby-settings-btn .nav-ico {
+  font-size: 17px;
+  line-height: 1;
 }
 
 body.is-mobile .start-btn.pvp-fight-btn {
