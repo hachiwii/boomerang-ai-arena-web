@@ -5972,19 +5972,14 @@ body.is-mobile .result-card {
   display: none;
 }
 
-.m-move-zone {
+/* The move stick starts only from its own circle; this invisible ring adds a small finger tolerance around it
+   (--hit-slop, capped in MobileControls so it never reaches another control) */
+.m-move-hit {
   position: absolute;
-  left: 0;
-  top: 26%;
-  bottom: 0;
-  width: 46%;
+  inset: calc(-1 * var(--hit-slop, 0px));
+  border-radius: 50%;
   pointer-events: auto;
   touch-action: none;
-}
-
-.m-move-zone.is-right {
-  left: auto;
-  right: 0;
 }
 
 .m-ctl {
