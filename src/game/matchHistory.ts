@@ -204,12 +204,29 @@ export class MatchHistoryStore {
   }
 
   public async saveBundle(bundle: MatchReplayBundle): Promise<void> {
-    const targetBucket = getHistoryModeBucket(bundle.summary.matchMode);
+    await this.saveBundlesBatch([bundle]);
+  }
+
+  /**
+   * Saves one or more replay bundles in a single IndexedDB transaction, pruning each
+   * affected mode bucket once at the end and emitting a single change notification.
+   */
+  public async saveBundlesBatch(bundles: MatchReplayBundle[]): Promise<void> {
+    if (bundles.length === 0) return;
+    const touchedBuckets = new Set<HistoryModeBucket>();
+    for (const b of bundles) {
+      touchedBuckets.add(getHistoryModeBucket(b.summary.matchMode));
+    }
+
     const db = await this.openDb();
     if (!db) {
-      this.memSummaries.set(bundle.summary.id, bundle.summary);
-      this.memReplays.set(bundle.replay.id, bundle.replay);
-      this.pruneMemory(targetBucket);
+      for (const b of bundles) {
+        this.memSummaries.set(b.summary.id, b.summary);
+        this.memReplays.set(b.replay.id, b.replay);
+      }
+      for (const bucket of touchedBuckets) {
+        this.pruneMemory(bucket);
+      }
       this.emitChange();
       return;
     }
@@ -220,16 +237,20 @@ export class MatchHistoryStore {
         const sumStore = tx.objectStore(STORE_SUMMARIES);
         const repStore = tx.objectStore(STORE_REPLAYS);
 
-        sumStore.put(bundle.summary);
-        repStore.put(bundle.replay);
+        for (const b of bundles) {
+          sumStore.put(b.summary);
+          repStore.put(b.replay);
+        }
 
         const allReq = sumStore.getAll();
         allReq.onsuccess = () => {
           const rows = (allReq.result as MatchHistorySummary[]) || [];
-          const staleIds = this.findOverflowIds(rows, targetBucket);
-          for (const oldId of staleIds) {
-            sumStore.delete(oldId);
-            repStore.delete(oldId);
+          for (const bucket of touchedBuckets) {
+            const staleIds = this.findOverflowIds(rows, bucket);
+            for (const oldId of staleIds) {
+              sumStore.delete(oldId);
+              repStore.delete(oldId);
+            }
           }
         };
 
@@ -239,9 +260,13 @@ export class MatchHistoryStore {
       });
     } catch (err) {
       console.warn('MatchHistoryStore IndexedDB save failed, falling back to memory:', err);
-      this.memSummaries.set(bundle.summary.id, bundle.summary);
-      this.memReplays.set(bundle.replay.id, bundle.replay);
-      this.pruneMemory(targetBucket);
+      for (const b of bundles) {
+        this.memSummaries.set(b.summary.id, b.summary);
+        this.memReplays.set(b.replay.id, b.replay);
+      }
+      for (const bucket of touchedBuckets) {
+        this.pruneMemory(bucket);
+      }
     }
     this.emitChange();
   }

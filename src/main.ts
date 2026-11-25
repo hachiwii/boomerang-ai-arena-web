@@ -1,6 +1,7 @@
 import './style.css';
 import { BgmManager, generateBgmSeed } from './audio/bgm';
 import { SoundFX } from './audio/sfx';
+import { runCricketBatch } from './game/cricketBatchRunner';
 import { CricketStore } from './game/cricketStore';
 import { HumanInputController } from './game/humanInput';
 import { CinematicDirector } from './game/killCamDirector';
@@ -36,8 +37,9 @@ import { BotCompiler } from './game/customBots/botCompiler';
 import { CustomBotStore, customBotRosterEntry } from './game/customBots/customBotStore';
 import { GameRenderer } from './render/renderer';
 import { BotManagerModal } from './ui/botManagerUI';
+import { CricketBatchModal } from './ui/cricketBatchModal';
 import { HistoryModal } from './ui/historyUI';
-import { HudUI } from './ui/hudUI';
+import { HudUI, ReplayPlaylistState } from './ui/hudUI';
 import { AutoFitter } from './ui/autoFit';
 import { showLaunchScreen } from './ui/launchScreen';
 import { LobbyUI, makeHoodieAvatarDataUrl, resolveSlots } from './ui/lobbyUI';
@@ -191,6 +193,26 @@ async function bootstrap() {
   let controller: MatchController;
   let replayController: ReplayController;
   let historyModal: HistoryModal;
+  let replayPlaylist: string[] = [];
+  let replayPlaylistIndex = -1;
+  let replaySwitchSeq = 0;
+  let replaySwitching = false;
+
+  const getReplayPlaylistState = (): ReplayPlaylistState | null => {
+    if (replayIsLiveAi || replayPlaylist.length === 0 || replayPlaylistIndex < 0) return null;
+    return {
+      index: replayPlaylistIndex,
+      total: replayPlaylist.length,
+      loading: replaySwitching,
+    };
+  };
+
+  const clearReplayPlaylist = () => {
+    replaySwitchSeq++;
+    replaySwitching = false;
+    replayPlaylist = [];
+    replayPlaylistIndex = -1;
+  };
 
   const clearMatchOverTimer = () => {
     if (matchOverTimer !== null) {
@@ -251,6 +273,83 @@ async function bootstrap() {
       else resumeMatchOverTimer();
     } else if (mode === 'replay') {
       replayController.setExternalPaused(want);
+    }
+  };
+
+  const cricketBatchModal = new CricketBatchModal({
+    onOpenCricketHistory: () => {
+      void historyModal.open({ filter: 'cricket', resetFilters: true });
+    },
+  });
+
+  const startCricketBatchRun = async (count: number) => {
+    if (mode !== 'lobby' || cricketBatchModal.isRunning()) return;
+    if (!cricketStore.canStartMatch().ok) return;
+
+    const abortController = new AbortController();
+    const format = cricketStore.getFormat();
+    const mapPoolCount = cricketStore.getMapPoolMetas().length;
+    cricketBatchModal.openRunning({
+      total: count,
+      format,
+      mapPoolCount,
+      abortController,
+    });
+
+    const SAVE_CHUNK_SIZE = 10;
+    let pendingBundles: MatchReplayBundle[] = [];
+    let saveQueue: Promise<void> = Promise.resolve();
+
+    const flushPendingBundles = (force: boolean) => {
+      if (pendingBundles.length === 0) return;
+      if (!force && pendingBundles.length < SAVE_CHUNK_SIZE) return;
+      const chunk = pendingBundles;
+      pendingBundles = [];
+      saveQueue = saveQueue
+        .then(() => matchHistory.saveBundlesBatch(chunk))
+        .catch((err) => {
+          console.error('Failed to save Cricket batch history chunk:', err);
+        });
+    };
+
+    try {
+      const result = await runCricketBatch({
+        totalMatches: count,
+        format,
+        mapPoolCount,
+        createConfig: () => lobbyUI.createCricketMatchConfig(),
+        signal: abortController.signal,
+        onMatchComplete: (bundle) => {
+          const finalSum = bundle.summary;
+          cricketStore.recordMatchResult(
+            finalSum.players.map((p) => ({
+              botId: p.botId,
+              kills: p.kills,
+              alive: p.alive,
+              won: finalSum.winner >= 0 && finalSum.winner === p.seat,
+            })),
+          );
+          pendingBundles.push(bundle);
+          flushPendingBundles(false);
+        },
+        onProgress: (p) => {
+          cricketBatchModal.updateProgress(p);
+        },
+      });
+      flushPendingBundles(true);
+      await saveQueue;
+      lobbyUI.refreshFromStores();
+      if (result.cancelled && result.completedMatches === 0) {
+        cricketBatchModal.close();
+      } else {
+        cricketBatchModal.showResult(result);
+      }
+    } catch (err) {
+      flushPendingBundles(true);
+      await saveQueue;
+      lobbyUI.refreshFromStores();
+      console.error('Cricket batch simulation error:', err);
+      cricketBatchModal.showError(err instanceof Error ? err.message : String(err));
     }
   };
 
@@ -372,6 +471,7 @@ async function bootstrap() {
     resultOverlayShown = false;
     restarting = false;
     replayIsLiveAi = false;
+    clearReplayPlaylist();
     controller.stop();
     replayController.stop();
     input.setEnabled(false);
@@ -398,6 +498,7 @@ async function bootstrap() {
     historyRecorded = false;
     pendingMatchElo = null;
     resultOverlayShown = false;
+    clearReplayPlaylist();
     controller.stop();
     replayController.stop();
     renderer.resetCameraToOverview();
@@ -482,7 +583,11 @@ async function bootstrap() {
     });
   };
 
-  const startReplayBundle = async (bundle: MatchReplayBundle, fallbackOpenHistory = false) => {
+  const startReplayBundle = async (
+    bundle: MatchReplayBundle,
+    fallbackOpenHistory = false,
+    opts?: { keepPlaylist?: boolean; speed?: number },
+  ) => {
     setTrainingChrome(false);
     clearMatchOverTimer();
     matchRecorded = false;
@@ -491,6 +596,9 @@ async function bootstrap() {
     resultOverlayShown = false;
     restarting = false;
     replayIsLiveAi = false;
+    if (!opts?.keepPlaylist) {
+      clearReplayPlaylist();
+    }
     controller.stop();
     replayController.stop();
     renderer.resetCameraToOverview();
@@ -509,8 +617,9 @@ async function bootstrap() {
     historyModal.close();
     lobbyUI.hide();
     mode = 'replay';
+    const speed = opts?.speed ?? 1.0;
     try {
-      await replayController.start(bundle, 1.0, getCinematicOptions(settings.get()), true);
+      await replayController.start(bundle, speed, getCinematicOptions(settings.get()), true);
     } catch (err) {
       console.error('Failed to start replay:', err);
       alert(`回放加载失败：${err instanceof Error ? err.message : String(err)}`);
@@ -533,6 +642,7 @@ async function bootstrap() {
     resultOverlayShown = false;
     restarting = false;
     replayIsLiveAi = false;
+    clearReplayPlaylist();
     lastFinishedBundle = null;
     replayController.stop();
     renderer.resetCameraToOverview();
@@ -548,13 +658,73 @@ async function bootstrap() {
     });
   };
 
-  const startReplayById = async (matchId: string) => {
+  const startReplayById = async (matchId: string, playlistIds?: string[]) => {
     const bundle = await matchHistory.getReplayBundle(matchId);
     if (!bundle) {
       alert('未找到该场对局的回放数据（可能已被清理）。');
       return;
     }
-    await startReplayBundle(bundle, true);
+    if (playlistIds && playlistIds.length > 0) {
+      const idx = playlistIds.indexOf(matchId);
+      if (idx >= 0) {
+        replayPlaylist = playlistIds.slice();
+        replayPlaylistIndex = idx;
+      } else {
+        replayPlaylist = [matchId];
+        replayPlaylistIndex = 0;
+      }
+      replaySwitchSeq++;
+      replaySwitching = false;
+    } else {
+      clearReplayPlaylist();
+    }
+    await startReplayBundle(bundle, true, { keepPlaylist: true });
+  };
+
+  const switchReplayPlaylist = async (delta: -1 | 1) => {
+    if (mode !== 'replay' || replayIsLiveAi || replaySwitching || replayPlaylist.length === 0) return;
+    let targetIdx = replayPlaylistIndex + delta;
+    if (targetIdx < 0 || targetIdx >= replayPlaylist.length) return;
+
+    const mySeq = ++replaySwitchSeq;
+    replaySwitching = true;
+    hudUI.setReplayPlaylist(getReplayPlaylistState());
+
+    try {
+      let bundle: MatchReplayBundle | null = null;
+      while (targetIdx >= 0 && targetIdx < replayPlaylist.length) {
+        const candidateId = replayPlaylist[targetIdx];
+        const loaded = await matchHistory.getReplayBundle(candidateId);
+        if (mySeq !== replaySwitchSeq || mode !== 'replay') return;
+        if (loaded) {
+          bundle = loaded;
+          break;
+        }
+        // Drop stale/deleted record from playlist and continue walking in the same direction
+        replayPlaylist.splice(targetIdx, 1);
+        if (delta < 0) targetIdx--;
+        if (replayPlaylistIndex >= replayPlaylist.length) {
+          replayPlaylistIndex = replayPlaylist.length - 1;
+        }
+      }
+
+      if (!bundle) {
+        replaySwitching = false;
+        hudUI.setReplayPlaylist(getReplayPlaylistState());
+        return;
+      }
+
+      const curSpeed = replayController.getState().speed || 1.0;
+      replayPlaylistIndex = targetIdx;
+      replaySwitching = false;
+      await startReplayBundle(bundle, true, { keepPlaylist: true, speed: curSpeed });
+    } catch (err) {
+      console.error('Failed to switch replay playlist item:', err);
+      if (mySeq === replaySwitchSeq) {
+        replaySwitching = false;
+        hudUI.setReplayPlaylist(getReplayPlaylistState());
+      }
+    }
   };
 
   const canQuickRestart = (): boolean => {
@@ -688,7 +858,7 @@ async function bootstrap() {
   const startRenderLoop = () => {
     stopRenderLoop();
     const tickRender = () => {
-      platform.setAutoSwitchAllowed(mode === 'lobby' && !settingsOpen);
+      platform.setAutoSwitchAllowed(mode === 'lobby' && !settingsOpen && !cricketBatchModal.isOpen());
       renderer.renderFrame(input);
       const now = performance.now();
       if (mode === 'playing' && now - lastTelemetryUpdateMs >= 200) {
@@ -838,6 +1008,12 @@ async function bootstrap() {
     onReplayRestart: () => {
       replayController.restart();
     },
+    onReplayPrev: () => {
+      void switchReplayPlaylist(-1);
+    },
+    onReplayNext: () => {
+      void switchReplayPlaylist(1);
+    },
     onReplaySeek: (tickIdx) => {
       replayController.seekTo(tickIdx);
     },
@@ -926,7 +1102,10 @@ async function bootstrap() {
         },
         bundle.replay.ticks[0],
       );
-      hudUI.showReplay(bundle, state, { liveAiSpectator: replayIsLiveAi });
+      hudUI.showReplay(bundle, state, {
+        liveAiSpectator: replayIsLiveAi,
+        playlist: getReplayPlaylistState(),
+      });
       hudUI.updateTick(
         bundle.replay.ticks[0],
         bundle.replay.mapData.colStart,
@@ -1121,6 +1300,7 @@ async function bootstrap() {
       resultOverlayShown = false;
       restarting = false;
       replayIsLiveAi = false;
+      clearReplayPlaylist();
       lastFinishedBundle = null;
       replayController.stop();
       renderer.resetCameraToOverview();
@@ -1137,6 +1317,9 @@ async function bootstrap() {
         lobbyUI.setLoading(null);
         alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);
       });
+    },
+    onStartCricketBatch: (count) => {
+      void startCricketBatchRun(count);
     },
     onOpenHistory: () => {
       void historyModal.open();
@@ -1218,7 +1401,7 @@ async function bootstrap() {
 
   // Match & Replay keyboard/mouse shortcuts
   window.addEventListener('keydown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen()) return;
     if (!e.repeat && !isTextEditableTarget(e.target) && matchesActionKeyEvent(settings.get().keybindings, 'toggleHideUi', e)) {
       e.preventDefault();
       setUiHidden(!uiHidden, true);
@@ -1281,7 +1464,7 @@ async function bootstrap() {
   });
 
   window.addEventListener('mousedown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen()) return;
     const code = `Mouse${e.button}`;
     if (isBoundToAction(settings.get().keybindings, 'toggleHideUi', code)) {
       e.preventDefault();

@@ -30,6 +30,7 @@ interface DraftSlot {
 export interface LobbyCallbacks {
   onSelectMap: (map: MapMeta) => void;
   onStartMatch: (config: MatchConfig) => void;
+  onStartCricketBatch?: (count: number) => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
   /** Enters the training ground (训练场). */
@@ -424,6 +425,11 @@ export class LobbyUI {
         btn.textContent = this.hasHuman() ? '开始对战' : '开始 AI 观战';
       }
     }
+    const batchBtn = this.container.querySelector<HTMLButtonElement>('#btn-cricket-batch50');
+    if (batchBtn && this.activeTab === 'cricket') {
+      const ready = this.cricket.canStartMatch();
+      batchBtn.disabled = Boolean(msg) || !ready.ok;
+    }
   }
 
   private renderPlatformButtonsHtml(): string {
@@ -608,6 +614,16 @@ export class LobbyUI {
     const cfg = this.createCricketMatchConfig();
     if (!cfg) return;
     this.callbacks.onStartMatch(cfg);
+  }
+
+  private startCricketBatch(count: number) {
+    if (this.loadingMessage) return;
+    const check = this.cricket.canStartMatch();
+    if (!check.ok) {
+      this.showCricketNotice(check.reason || '当前配置无法开局', 'warn');
+      return;
+    }
+    this.callbacks.onStartCricketBatch?.(count);
   }
 
   private showCricketNotice(text: string, kind: 'warn' | 'ok') {
@@ -1222,6 +1238,15 @@ export class LobbyUI {
           <div class="cricket-toolbar-right">
             <button
               type="button"
+              class="cricket-batch-btn"
+              id="btn-cricket-batch50"
+              title="按当前规则在后台连续模拟 50 场，自动计入战绩与对局历史并汇总统计"
+              ${this.loadingMessage || !ready.ok ? 'disabled' : ''}
+            >
+              🎲 50 连抽
+            </button>
+            <button
+              type="button"
               class="start-btn cricket-start-btn"
               id="btn-start-match"
               ${this.loadingMessage || !ready.ok ? 'disabled' : ''}
@@ -1420,6 +1445,10 @@ export class LobbyUI {
 
     this.container.querySelector('#btn-open-cricket-mappool')?.addEventListener('click', () => {
       this.openMapPoolModal('cricket');
+    });
+
+    this.container.querySelector('#btn-cricket-batch50')?.addEventListener('click', () => {
+      this.startCricketBatch(50);
     });
 
     this.container.querySelector('#btn-start-match')?.addEventListener('click', () => {

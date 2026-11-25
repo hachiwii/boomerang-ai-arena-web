@@ -24,6 +24,12 @@ import {
   iconStar,
 } from './icons';
 
+export interface ReplayPlaylistState {
+  index: number;
+  total: number;
+  loading?: boolean;
+}
+
 export interface HudCallbacks {
   onReturnToLobby: (opts?: { openLeaderboard?: boolean; openHistory?: boolean; rankedMode?: RankedMode }) => void;
   onRestartMatch: () => void;
@@ -35,6 +41,8 @@ export interface HudCallbacks {
   onRankCue?: (kind: 'up' | 'down') => void;
   onReplayTogglePause?: () => void;
   onReplayRestart?: () => void;
+  onReplayPrev?: () => void;
+  onReplayNext?: () => void;
   onReplaySeek?: (tickIndex: number) => void;
   onReplaySpeed?: (speed: number) => void;
   onReplayToggleFavorite?: (bundle: MatchReplayBundle, nextFavorite: boolean) => Promise<void> | void;
@@ -138,6 +146,10 @@ export class HudUI {
   // Cached replay controls DOM
   private replayIsLiveAi = false;
   private replayComputing = false;
+  private replayPlaylist: ReplayPlaylistState | null = null;
+  private replayPrevBtn: HTMLButtonElement | null = null;
+  private replayNextBtn: HTMLButtonElement | null = null;
+  private replayPlaylistPosEl: HTMLElement | null = null;
   private replayPlayBtn: HTMLButtonElement | null = null;
   private replaySlider: HTMLInputElement | null = null;
   private replayMarkersEl: HTMLElement | null = null;
@@ -426,9 +438,21 @@ export class HudUI {
 
     const maxTick = replay.ticks[playback.maxIndex]?.t ?? playback.maxIndex;
     const totalSec = (maxTick / 20).toFixed(1);
+    const pl = this.replayPlaylist;
+    const plPrevDisabled = !pl || Boolean(pl.loading) || pl.index <= 0;
+    const plNextDisabled = !pl || Boolean(pl.loading) || pl.index >= pl.total - 1;
+    const playlistHtml = pl
+      ? `
+        <div class="m-replay-playlist" id="replay-playlist-nav" role="group" aria-label="对局历史切换">
+          <button type="button" class="m-playlist-btn" id="replay-prev-btn" aria-label="上一个" ${plPrevDisabled ? 'disabled' : ''}>‹ 上一个</button>
+          <span class="m-playlist-pos" id="replay-playlist-pos">${pl.index + 1} / ${pl.total}</span>
+          <button type="button" class="m-playlist-btn" id="replay-next-btn" aria-label="下一个" ${plNextDisabled ? 'disabled' : ''}>下一个 ›</button>
+        </div>`
+      : '';
     this.bottomBar.innerHTML = `
       <div class="m-replay-dock m-chrome">
         <div class="replay-end-banner hidden" id="replay-end-banner">${this.buildReplayEndBannerText(bundle)}</div>
+        ${playlistHtml}
         <div class="m-replay-bar">
           <button type="button" class="m-icon-btn m-dock-btn" id="replay-play-btn" aria-label="播放 / 暂停">${ICON_PAUSE}</button>
           <button type="button" class="m-icon-btn m-dock-btn" id="replay-restart-btn" aria-label="从头重播">${ICON_SKIP_START}</button>
@@ -462,6 +486,9 @@ export class HudUI {
     this.replayExportBtn = this.topBar.querySelector('#replay-export-btn');
     this.replayGifBtn = this.topBar.querySelector('#replay-gif-btn');
     this.mExportBtn = this.topBar.querySelector('#m-export-btn');
+    this.replayPrevBtn = this.bottomBar.querySelector('#replay-prev-btn');
+    this.replayNextBtn = this.bottomBar.querySelector('#replay-next-btn');
+    this.replayPlaylistPosEl = this.bottomBar.querySelector('#replay-playlist-pos');
     this.replayPlayBtn = this.bottomBar.querySelector('#replay-play-btn');
     this.replaySlider = this.bottomBar.querySelector('#replay-slider');
     this.replayMarkersEl = this.bottomBar.querySelector('#replay-markers');
@@ -505,6 +532,16 @@ export class HudUI {
       this.closeMobileMenus();
       this.startReplayGifExport();
     });
+    this.replayPrevBtn?.addEventListener('click', () => {
+      this.closeMobileMenus();
+      this.showMobileChrome();
+      this.callbacks.onReplayPrev?.();
+    });
+    this.replayNextBtn?.addEventListener('click', () => {
+      this.closeMobileMenus();
+      this.showMobileChrome();
+      this.callbacks.onReplayNext?.();
+    });
     this.replayPlayBtn?.addEventListener('click', () => {
       this.callbacks.onReplayTogglePause?.();
     });
@@ -542,7 +579,11 @@ export class HudUI {
     }
 
     this.mReplayTap.classList.remove('hidden');
-    this.setMobileChromeVisible(false);
+    if (this.replayPlaylist) {
+      this.showMobileChrome();
+    } else {
+      this.setMobileChromeVisible(false);
+    }
     this.lastTickState = null;
     this.updateReplayControls(playback);
   }
@@ -707,6 +748,10 @@ export class HudUI {
     }
     this.replayIsLiveAi = false;
     this.replayComputing = false;
+    this.replayPlaylist = null;
+    this.replayPrevBtn = null;
+    this.replayNextBtn = null;
+    this.replayPlaylistPosEl = null;
     this.replayPlayBtn = null;
     this.replaySlider = null;
     this.replayMarkersEl = null;
@@ -774,15 +819,31 @@ export class HudUI {
       : `${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span>`;
   }
 
+  public setReplayPlaylist(playlist: ReplayPlaylistState | null) {
+    this.replayPlaylist = playlist;
+    if (!playlist) return;
+    const prevDisabled = Boolean(playlist.loading) || playlist.index <= 0;
+    const nextDisabled = Boolean(playlist.loading) || playlist.index >= playlist.total - 1;
+    if (this.replayPrevBtn) this.replayPrevBtn.disabled = prevDisabled;
+    if (this.replayNextBtn) this.replayNextBtn.disabled = nextDisabled;
+    if (this.replayPlaylistPosEl) {
+      this.replayPlaylistPosEl.textContent = this.mobile
+        ? `${playlist.index + 1} / ${playlist.total}`
+        : `${playlist.index + 1}/${playlist.total}`;
+    }
+  }
+
   public showReplay(
     bundle: MatchReplayBundle,
     playback: ReplayPlaybackState,
-    opts?: { liveAiSpectator?: boolean },
+    opts?: { liveAiSpectator?: boolean; playlist?: ReplayPlaylistState | null },
   ) {
     this.clearTimers();
+    this.clearReplayRefs();
     this.isReplayMode = true;
     this.replayIsLiveAi = Boolean(opts?.liveAiSpectator);
     this.replayComputing = Boolean(playback.computing);
+    this.replayPlaylist = opts?.playlist ?? null;
     this.replayBundle = bundle;
     const { summary, replay } = bundle;
     this.slots = summary.slots;
@@ -914,12 +975,24 @@ export class HudUI {
     const totalSec = (maxTick / 20).toFixed(1);
     const endBannerText = this.buildReplayEndBannerText(bundle);
     const exportPreset = this.getExportPresetLabel();
+    const pl = this.replayPlaylist;
+    const plPrevDisabled = !pl || Boolean(pl.loading) || pl.index <= 0;
+    const plNextDisabled = !pl || Boolean(pl.loading) || pl.index >= pl.total - 1;
+    const desktopPlaylistHtml = pl
+      ? `
+          <div class="replay-playlist-nav" id="replay-playlist-nav" role="group" aria-label="对局历史切换">
+            <button type="button" class="replay-ctrl-btn replay-nav-btn" id="replay-prev-btn" title="上一场历史对局" ${plPrevDisabled ? 'disabled' : ''}>‹ 上一个</button>
+            <span class="replay-playlist-pos" id="replay-playlist-pos" title="当前筛选列表中的位置">${pl.index + 1}/${pl.total}</span>
+            <button type="button" class="replay-ctrl-btn replay-nav-btn" id="replay-next-btn" title="下一场历史对局" ${plNextDisabled ? 'disabled' : ''}>下一个 ›</button>
+          </div>`
+      : '';
 
     this.bottomBar.innerHTML = `
-      <div class="replay-dock">
+      <div class="replay-dock ${pl ? 'has-playlist' : ''}">
         <div class="replay-export-status hidden" id="replay-export-status"></div>
         <div class="replay-end-banner hidden" id="replay-end-banner">${endBannerText}</div>
         <div class="replay-bar">
+          ${desktopPlaylistHtml}
           <button type="button" class="replay-ctrl-btn replay-play-btn" id="replay-play-btn" title="播放 / 暂停 (Space)">⏸ 暂停</button>
           <button type="button" class="replay-ctrl-btn" id="replay-restart-btn" title="从头重播">↺ 重播</button>
 
@@ -974,6 +1047,9 @@ export class HudUI {
     this.humanHintRight = null;
     this.humanHintShift = null;
 
+    this.replayPrevBtn = this.bottomBar.querySelector('#replay-prev-btn');
+    this.replayNextBtn = this.bottomBar.querySelector('#replay-next-btn');
+    this.replayPlaylistPosEl = this.bottomBar.querySelector('#replay-playlist-pos');
     this.replayPlayBtn = this.bottomBar.querySelector('#replay-play-btn');
     this.replaySlider = this.bottomBar.querySelector('#replay-slider');
     this.replayMarkersEl = this.bottomBar.querySelector('#replay-markers');
@@ -984,6 +1060,12 @@ export class HudUI {
     this.replayGifBtn = this.bottomBar.querySelector('#replay-gif-btn');
     this.replayExportStatusEl = this.bottomBar.querySelector('#replay-export-status');
 
+    this.replayPrevBtn?.addEventListener('click', () => {
+      this.callbacks.onReplayPrev?.();
+    });
+    this.replayNextBtn?.addEventListener('click', () => {
+      this.callbacks.onReplayNext?.();
+    });
     this.replayPlayBtn?.addEventListener('click', () => {
       this.callbacks.onReplayTogglePause?.();
     });

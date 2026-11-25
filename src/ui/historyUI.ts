@@ -7,10 +7,15 @@ import {
 import { Mp4ExportResult } from '../game/mp4Exporter';
 import { formatExportPresetLabel, SettingsStore } from '../game/settings';
 
-type HistoryFilter = 'all' | 'ranked' | 'cricket' | 'custom';
+export type HistoryFilter = 'all' | 'ranked' | 'cricket' | 'custom';
+
+export interface HistoryOpenOptions {
+  filter?: HistoryFilter;
+  resetFilters?: boolean;
+}
 
 export interface HistoryModalCallbacks {
-  onReplay: (matchId: string) => Promise<void> | void;
+  onReplay: (matchId: string, playlistIds: string[]) => Promise<void> | void;
   onExportMp4: (
     matchId: string,
     signal: AbortSignal,
@@ -29,6 +34,19 @@ interface ActiveExportState {
   progress: number;
   phaseText: string;
   controller: AbortController;
+}
+
+function getMatchWinnerInfo(m: MatchHistorySummary): { key: string; label: string } | null {
+  if (m.winner < 0) return null;
+  const p = m.players.find((pl) => pl.seat === m.winner) ?? m.players[m.winner];
+  if (!p) return null;
+  if (p.kind === 'human') {
+    return { key: 'human', label: '玩家' };
+  }
+  const slot = m.slots[p.seat];
+  const label = slot?.copyNumber ? p.displayName.replace(/\s+\d+$/, '') : p.displayName;
+  const key = p.botId ? `bot:${p.botId}` : `name:${label}`;
+  return { key, label };
 }
 
 function escapeHtml(s: string): string {
@@ -81,6 +99,8 @@ export class HistoryModal {
   private readonly filterBtns: HTMLButtonElement[];
   private readonly favOnlyBtn: HTMLButtonElement;
   private readonly favCountEl: HTMLElement;
+  private readonly winnerFilterWrap: HTMLElement;
+  private readonly winnerSelectEl: HTMLSelectElement;
   private readonly exportSlotEl: HTMLDivElement;
   private readonly noticeSlotEl: HTMLDivElement;
   private readonly bodyEl: HTMLDivElement;
@@ -88,6 +108,8 @@ export class HistoryModal {
   private openState = false;
   private filter: HistoryFilter = 'all';
   private favoritesOnly = false;
+  private winnerFilter = '';
+  private winnerFilterLabel = '';
   private page = 0;
   private suppressStoreRefreshCount = 0;
   private summaries: MatchHistorySummary[] = [];
@@ -146,6 +168,12 @@ export class HistoryModal {
             <span>只看收藏</span>
             <span class="hff-count" id="history-fav-count">0</span>
           </button>
+          <label class="history-winner-filter" id="history-winner-filter" title="按赢家角色筛选，仅显示该角色获胜的对局">
+            <span class="hwf-label">🏆 赢家</span>
+            <select class="history-winner-select" id="history-winner-select" aria-label="按赢家筛选">
+              <option value="">全部赢家</option>
+            </select>
+          </label>
         </div>
         <button
           type="button"
@@ -167,6 +195,8 @@ export class HistoryModal {
     this.filterBtns = Array.from(this.card.querySelectorAll<HTMLButtonElement>('[data-hfilter]'));
     this.favOnlyBtn = this.card.querySelector<HTMLButtonElement>('#history-fav-only')!;
     this.favCountEl = this.card.querySelector<HTMLElement>('#history-fav-count')!;
+    this.winnerFilterWrap = this.card.querySelector<HTMLElement>('#history-winner-filter')!;
+    this.winnerSelectEl = this.card.querySelector<HTMLSelectElement>('#history-winner-select')!;
     this.exportSlotEl = this.card.querySelector<HTMLDivElement>('#history-export-slot')!;
     this.noticeSlotEl = this.card.querySelector<HTMLDivElement>('#history-notice-slot')!;
     this.bodyEl = this.card.querySelector<HTMLDivElement>('#history-body')!;
@@ -223,6 +253,15 @@ export class HistoryModal {
       this.render();
     });
 
+    this.winnerSelectEl.addEventListener('change', () => {
+      this.winnerFilter = this.winnerSelectEl.value;
+      const selectedOpt = this.winnerSelectEl.selectedOptions[0];
+      this.winnerFilterLabel = this.winnerFilter ? selectedOpt?.dataset.winnerLabel || '' : '';
+      this.page = 0;
+      this.bodyEl.scrollTop = 0;
+      this.render();
+    });
+
     this.store.onChange(() => {
       if (this.suppressStoreRefreshCount > 0) {
         this.suppressStoreRefreshCount--;
@@ -259,10 +298,18 @@ export class HistoryModal {
     return this.activeExport !== null;
   }
 
-  public async open() {
+  public async open(opts?: HistoryOpenOptions) {
     this.openState = true;
     this.page = 0;
     this.loadingReplayId = null;
+    if (opts?.resetFilters) {
+      this.favoritesOnly = false;
+      this.winnerFilter = '';
+      this.winnerFilterLabel = '';
+    }
+    if (opts?.filter) {
+      this.filter = opts.filter;
+    }
     this.clearConfirmReset();
     this.callbacks.onOpenChange?.(true);
     try {
@@ -367,8 +414,18 @@ export class HistoryModal {
     this.exportCfgBtn.disabled = busy;
   }
 
+  private matchesWinnerFilter(m: MatchHistorySummary): boolean {
+    if (!this.winnerFilter) return true;
+    const w = getMatchWinnerInfo(m);
+    return w !== null && w.key === this.winnerFilter;
+  }
+
   private syncFilterControls() {
-    const modePool = this.favoritesOnly ? this.summaries.filter((m) => m.favorite) : this.summaries;
+    const modePool = this.summaries.filter((m) => {
+      if (this.favoritesOnly && !m.favorite) return false;
+      if (!this.matchesWinnerFilter(m)) return false;
+      return true;
+    });
     const filterCounts: Record<HistoryFilter, number> = {
       all: modePool.length,
       ranked: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'ranked').length,
@@ -385,11 +442,48 @@ export class HistoryModal {
     const modeScopedFavCount = this.summaries.filter((m) => {
       if (!m.favorite) return false;
       if (this.filter !== 'all' && getHistoryModeBucket(m.matchMode) !== this.filter) return false;
+      if (!this.matchesWinnerFilter(m)) return false;
       return true;
     }).length;
     this.favOnlyBtn.classList.toggle('active', this.favoritesOnly);
     this.favOnlyBtn.setAttribute('aria-checked', String(this.favoritesOnly));
     this.favCountEl.textContent = String(modeScopedFavCount);
+
+    // Populate winner dropdown from the current mode + favorite scope
+    const winnerCounts = new Map<string, { key: string; label: string; wins: number }>();
+    for (const m of this.summaries) {
+      if (this.favoritesOnly && !m.favorite) continue;
+      if (this.filter !== 'all' && getHistoryModeBucket(m.matchMode) !== this.filter) continue;
+      const w = getMatchWinnerInfo(m);
+      if (!w) continue;
+      const prev = winnerCounts.get(w.key);
+      if (prev) prev.wins += 1;
+      else winnerCounts.set(w.key, { key: w.key, label: w.label, wins: 1 });
+    }
+    const sortedWinners = Array.from(winnerCounts.values()).sort(
+      (a, b) => b.wins - a.wins || a.label.localeCompare(b.label, 'zh-Hans-CN'),
+    );
+    if (this.winnerFilter && !winnerCounts.has(this.winnerFilter)) {
+      sortedWinners.push({
+        key: this.winnerFilter,
+        label: this.winnerFilterLabel || this.winnerFilter.replace(/^(bot|name):/, ''),
+        wins: 0,
+      });
+    } else if (this.winnerFilter) {
+      this.winnerFilterLabel = winnerCounts.get(this.winnerFilter)?.label || this.winnerFilterLabel;
+    }
+
+    const optsHtml = [
+      `<option value="">全部赢家</option>`,
+      ...sortedWinners.map(
+        (w) =>
+          `<option value="${escapeHtml(w.key)}" data-winner-label="${escapeHtml(w.label)}">${escapeHtml(w.label)} (${w.wins}胜)</option>`,
+      ),
+    ].join('');
+    this.winnerSelectEl.innerHTML = optsHtml;
+    this.winnerSelectEl.value = this.winnerFilter;
+    this.winnerSelectEl.disabled = this.activeExport !== null;
+    this.winnerFilterWrap.classList.toggle('is-active', this.winnerFilter !== '');
   }
 
   private async refresh() {
@@ -408,6 +502,7 @@ export class HistoryModal {
     return this.summaries.filter((m) => {
       if (this.favoritesOnly && !m.favorite) return false;
       if (this.filter !== 'all' && getHistoryModeBucket(m.matchMode) !== this.filter) return false;
+      if (!this.matchesWinnerFilter(m)) return false;
       return true;
     });
   }
@@ -617,16 +712,22 @@ export class HistoryModal {
       bodyHtml = `<div class="history-empty"><div class="he-title">加载对局历史中...</div></div>`;
     } else if (visible.length === 0) {
       const hasAnyFav = this.summaries.some((m) => m.favorite);
-      const emptyIcon = this.favoritesOnly ? '★' : '📜';
-      const emptyTitle = this.favoritesOnly ? '暂无收藏的对局' : '暂无对局记录';
+      const emptyIcon = this.winnerFilter ? '🏆' : this.favoritesOnly ? '★' : '📜';
+      const emptyTitle = this.winnerFilter
+        ? `暂无 ${escapeHtml(this.winnerFilterLabel || '该角色')} 获胜的对局`
+        : this.favoritesOnly
+          ? '暂无收藏的对局'
+          : '暂无对局记录';
       const emptyHint =
         totalCount === 0
           ? `完成任意排位赛、斗蛐蛐或自定义对局后，每个模式各自动保存最近 ${MAX_HISTORY_PER_MODE} 场的完整观战回放。`
-          : this.favoritesOnly
-            ? hasAnyFav && this.filter !== 'all'
-              ? '当前模式下暂无收藏的对局，试试切换到「全部」或关闭「只看收藏」。'
-              : `点击对局右侧的星标即可永久收藏，不受每模式 ${MAX_HISTORY_PER_MODE} 场上限限制。`
-            : '当前筛选条件下暂无对局记录，试试切换到「全部」。';
+          : this.winnerFilter
+            ? '当前筛选条件下暂无该角色获胜的记录，试试将赢家切换回「全部赢家」或调整模式筛选。'
+            : this.favoritesOnly
+              ? hasAnyFav && this.filter !== 'all'
+                ? '当前模式下暂无收藏的对局，试试切换到「全部」或关闭「只看收藏」。'
+                : `点击对局右侧的星标即可永久收藏，不受每模式 ${MAX_HISTORY_PER_MODE} 场上限限制。`
+              : '当前筛选条件下暂无对局记录，试试切换到「全部」。';
       bodyHtml = `
         <div class="history-empty">
           <div class="he-icon">${emptyIcon}</div>
@@ -692,9 +793,10 @@ export class HistoryModal {
       btn.addEventListener('click', () => {
         const id = btn.dataset.replayId!;
         if (this.loadingReplayId !== null || this.activeExport !== null) return;
+        const playlistIds = this.filteredSummaries().map((m) => m.id);
         this.loadingReplayId = id;
         this.render();
-        Promise.resolve(this.callbacks.onReplay(id)).catch((err) => {
+        Promise.resolve(this.callbacks.onReplay(id, playlistIds)).catch((err) => {
           console.error('Replay launch failed:', err);
           this.loadingReplayId = null;
           if (this.openState) this.render();
