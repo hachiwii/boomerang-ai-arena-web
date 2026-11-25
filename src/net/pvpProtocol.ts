@@ -35,7 +35,7 @@ export interface MatchEnd {
 }
 
 export type MatchTerminal =
-  | { reason: 'forfeit'; winner: Seat; through: number }
+  | { reason: 'forfeit'; winner: Seat; through: number; cause?: 'quit' | 'disconnect' }
   | { reason: 'cancelled' | 'timeout' | 'complete'; through: number };
 
 export type ClientMessage =

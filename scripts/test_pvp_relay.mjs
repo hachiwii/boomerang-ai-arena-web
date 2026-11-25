@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { makeEngine, stepPair } from './pvp_test_engine.mjs';
 import { PvpSimulation } from '../src/workers/pvpSimulation.ts';
 import { PvpTimeline } from '../src/net/pvpTimeline.ts';
-import { NEUTRAL, PVP_TICK_MS, withoutAct } from '../src/net/pvpProtocol.ts';
+import { NEUTRAL, PVP_TICK_MS } from '../src/net/pvpProtocol.ts';
 
 const require = createRequire(new URL('../server/package.json', import.meta.url));
 const WebSocket = require('ws');
@@ -188,10 +188,11 @@ class Peer {
       const a = (Math.imul(future + 7, 16777619) ^ (mySeat * 1225971)) >>> 0;
       const b = (Math.imul(a ^ (a >>> 13), 2246822507) >>> 0) % 4096;
       let input = [b % 25 - 12, (b >>> 5) % 25 - 12, b % 16 < 4 ? b % 4 + 1 : 0, mySeat ? 1000 : -1000, 0, 0];
-      // Keep the opening safe while exercising actions, then walk P1 off the
-      // board so both clients can naturally finish and report to the relay.
       if (input[2] === 3) input[2] = 4;
-      if (frame >= 150) input = mySeat ? NEUTRAL : [-1000, 0, 0, 0, 0, 0];
+      // Both players hold outward near their spawn cliffs through the stalls.
+      // P1 eventually dashes off deliberately to produce a confirmed end.
+      if (frame < 112) input = [mySeat ? 1000 : -1000, 0, ...input.slice(2)];
+      if (frame >= 150) input = mySeat ? NEUTRAL : [-1000, 0, frame >= 175 ? 3 : 0, -1000, 0, 0];
       const late = mySeat === 0 && future === 28;
       if (late) {
         input = [0, 900, 2, 0, -1000, 23];
@@ -298,9 +299,9 @@ try {
   assert.ok(a.play.late);
   assert.ok(a.requestLog.some((m) => m.type === 'input' && m.action === a.play.late), 'late input was transmitted');
   assert.notDeepEqual(canonical[28][0], a.play.late);
-  assert.deepEqual(canonical[28][0], withoutAct(canonical[27][0]));
-  const filledDuringStall = canonical[55][0];
-  assert.deepEqual(filledDuringStall, withoutAct(canonical[54][0]));
+  assert.equal(canonical[27][0][0], -1000);
+  assert.deepEqual(canonical[28][0], NEUTRAL);
+  assert.deepEqual(canonical[55][0], NEUTRAL);
   assert.ok(!a.requestLog.some((m) => m.type === 'input' && m.frame === 55));
   assert.ok(a.play.rollbacks > 0 && b.play.rollbacks > 0);
   assert.ok(a.play.maxBatch >= 35 && b.play.maxBatch >= 20);
@@ -316,6 +317,9 @@ try {
     if ((frame + 1) % 20 === 0) assert.equal(a.play.hashes.get(frame), offline.hash());
   }
   assert.equal(offline.hash(), end.hash);
+  assert.deepEqual(offlineTicks[40].players.map((p) => [p.alive, p.x]), [[1, 500], [1, 17500]]);
+  assert.ok(offlineTicks.slice(0, -1).every((tick) => tick.players.every((p) => p.alive)));
+  assert.ok(offlineTicks.slice(-10).some((tick) => tick.events.some((e) => e.name === 'DASH' && e.a === 0)));
   assert.deepEqual(a.play.sim.recorded(end.frame + 1), offlineTicks);
   assert.deepEqual(b.play.sim.recorded(end.frame + 1), offlineTicks);
   assert.ok(!logs.some(({ event }) => event === 'desync' || event === 'end-desync'));
@@ -332,13 +336,13 @@ try {
   const quitId = await startMatch(c, d, false);
   c.send({ type: 'quit', matchId: quitId });
   const quit = await until(() => getTerminal(d, quitId), 'quit forfeit');
-  assert.deepEqual(quit, { type: 'terminal', matchId: quitId, reason: 'forfeit', winner: 1, through: -1 });
+  assert.deepEqual(quit, { type: 'terminal', matchId: quitId, reason: 'forfeit', cause: 'quit', winner: 1, through: -1 });
   const goneId = await startMatch(c, d, false);
   const disconnectedAt = Date.now();
   d.resumeMatchId = goneId;
   d.cut();
   const gone = await until(() => getTerminal(c, goneId), 'disconnect forfeit', 13_000);
-  assert.deepEqual(gone, { type: 'terminal', matchId: goneId, reason: 'forfeit', winner: 0, through: -1 });
+  assert.deepEqual(gone, { type: 'terminal', matchId: goneId, reason: 'forfeit', cause: 'disconnect', winner: 0, through: -1 });
   const forfeitMs = Date.now() - disconnectedAt;
   assert.ok(forfeitMs >= 10_000);
   d.connect();

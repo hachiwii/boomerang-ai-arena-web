@@ -48,7 +48,7 @@ export function mockPvpMatchLink(matchId: string): PvpMatchLink {
     quit: () => {
       if (startAt) flush();
       stop();
-      listener?.({ type: 'terminal', matchId, reason: 'forfeit', winner: 1, through: next - 1 });
+      listener?.({ type: 'terminal', matchId, reason: 'forfeit', cause: 'quit', winner: 1, through: next - 1 });
     },
     setRollbackFrames: () => {},
   };

@@ -6,7 +6,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import maps from '../public/assets/maps/manifest.json' with { type: 'json' };
 import { PVP_CODE_TTL_MS, type PvpChallengeFailReason, type PvpMatchInfo } from '../src/net/pvpTypes.ts';
 import {
-  PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_TICK_MS, NEUTRAL, isAction, withoutAct,
+  PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_TICK_MS, NEUTRAL, isAction,
   type Action, type ClientMessage, type Go, type InputRow, type MatchEnd, type MatchTerminal,
   type Seat, type ServerMessage,
 } from '../src/net/pvpProtocol.ts';
@@ -67,7 +67,6 @@ interface Match {
   hashes: Map<number, [string?, string?]>;
   ends: [MatchEnd?, MatchEnd?];
   inputs: [Action?, Action?][];
-  last: [Action, Action];
   nextDeadline: number;
   readyBy: number;
   go?: Go;
@@ -180,8 +179,7 @@ function finish(match: Match, terminal: MatchTerminal, time: number) {
   log('match-ended', { matchId, ...terminal });
 }
 
-// The deadline cursor is strictly increasing. A fill inherits from the previous
-// canonical frame of that seat, even if later frames have already arrived.
+// Finalize each frame once. A missed input stops movement and starts no action.
 function finalizeThrough(match: Match, through: number) {
   const rows: InputRow[] = [];
   through = Math.min(through, PVP_MAX_FRAMES - 1);
@@ -190,11 +188,9 @@ function finalizeThrough(match: Match, through: number) {
     const pair = match.inputs[frame] ?? (match.inputs[frame] = []);
     for (const seat of [0, 1] as const) {
       if (!pair[seat]) {
-        const fill = withoutAct(match.last[seat]);
-        pair[seat] = fill;
-        rows.push([frame, seat, fill]);
+        pair[seat] = NEUTRAL;
+        rows.push([frame, seat, NEUTRAL]);
       }
-      match.last[seat] = pair[seat]!;
     }
     if (rows.length >= 64) broadcast(match, { type: 'inputs', matchId: match.info.matchId, rows: rows.splice(0) });
   }
@@ -212,7 +208,7 @@ function maintainMatch(match: Match, time: number): boolean {
     if (disconnected !== null && time - disconnected >= RECONNECT_MS) {
       const through = Math.max(-1, due(match, disconnected + RECONNECT_MS));
       finalizeThrough(match, through);
-      finish(match, { reason: 'forfeit', winner: other(seat), through }, time);
+      finish(match, { reason: 'forfeit', cause: 'disconnect', winner: other(seat), through }, time);
       return false;
     }
   }
@@ -237,7 +233,6 @@ function makeMatch(challenger: Reservation, target: Reservation, msg: Extract<Cl
     hashes: new Map(),
     ends: [],
     inputs: [],
-    last: [NEUTRAL, NEUTRAL],
     nextDeadline: 0,
     readyBy: time + READY_MS,
   };
@@ -364,7 +359,7 @@ function onMessage(conn: Connection, raw: string) {
   if (msg.type === 'quit') {
     const through = Math.max(-1, due(match, time));
     finalizeThrough(match, through);
-    finish(match, { reason: 'forfeit', winner: other(seat), through }, time);
+    finish(match, { reason: 'forfeit', cause: 'quit', winner: other(seat), through }, time);
     return;
   }
   if (msg.type === 'ready') {

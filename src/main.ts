@@ -1435,11 +1435,12 @@ async function bootstrap() {
         activeDirector && activeDirector.isEnabled()
           ? Math.round(activeDirector.getRecommendedOutroRealSec(1.6) * 1000)
           : 1600;
+      const note = pvpController?.getResultNote();
       scheduleMatchOverTimer(celebrateMs, () => {
         if (mode === 'playing') {
           resultOverlayShown = true;
           pendingMatchElo = null;
-          hudUI.showMatchResult(finalState, eloResult, Boolean(lastFinishedBundle?.summary.favorite));
+          hudUI.showMatchResult(finalState, eloResult, Boolean(lastFinishedBundle?.summary.favorite), { note });
         }
       });
     },

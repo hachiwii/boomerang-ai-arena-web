@@ -54,8 +54,8 @@ epoch time and a shared input delay.
 
 The first valid input for each seat and frame becomes canonical. The relay
 broadcasts accepted input to both seats. After the 125 ms grace window it fills
-missing inputs with the previous canonical input for that seat with its action
-cleared. Reconnects replay the bounded match input log. After 10 seconds gone
-or a quit, the relay closes the match with a forfeit and a canonical cutoff
-frame. It compares periodic confirmed hashes and both confirmed end reports,
-and never runs the simulation.
+missing inputs with zero movement and no action. The match engine applies
+walking cliff protection to each input as it simulates that frame. Reconnects
+replay the bounded match input log. After 10 seconds gone or a quit, the relay
+closes the match with a forfeit, a cause, and a canonical cutoff frame. It
+compares periodic confirmed hashes and both confirmed end reports.

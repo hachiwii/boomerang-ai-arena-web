@@ -19,6 +19,7 @@ let engineHash: (() => string) | null = null;
 let engineSetHumanSeat: ((seat: number) => void) | null = null;
 let engineSetHumanSlashTicks: ((ticks: number) => void) | null = null;
 let engineSetHumanCliffGuard: ((enabled: number) => void) | null = null;
+let engineSetHumanWalkGuard: ((enabled: number) => void) | null = null;
 let engineSetHumanMeleeAssist: ((enabled: number) => void) | null = null;
 let engineLastErr: (() => string) | null = null;
 let engineGetHeader: ((seat: number) => string) | null = null;
@@ -54,6 +55,7 @@ async function ensureLoaded(origin: string, buildId?: string) {
   engineSetHumanSeat = mod.cwrap('engine_set_human_seat', null, ['number']) as (s: number) => void;
   engineSetHumanSlashTicks = mod.cwrap('engine_set_human_slash_ticks', null, ['number']) as (t: number) => void;
   engineSetHumanCliffGuard = mod.cwrap('engine_set_human_cliff_guard', null, ['number']) as (e: number) => void;
+  engineSetHumanWalkGuard = mod.cwrap('engine_set_human_walk_guard', null, ['number']) as (e: number) => void;
   engineSetHumanMeleeAssist = mod.cwrap('engine_set_human_melee_assist', null, ['number']) as (e: number) => void;
   engineLastErr = mod.cwrap('engine_last_error', 'string', []) as () => string;
   engineGetHeader = mod.cwrap('engine_get_header', 'string', ['number']) as (s: number) => string;
@@ -67,7 +69,7 @@ self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      const { reqId, origin, buildId, mapText, nPlayers, seed, spawnSeed, botSeats, humanSeat, humanSeats, cliffGuard, meleeAssist, humanSlashTicks, training } = msg as {
+      const { reqId, origin, buildId, mapText, nPlayers, seed, spawnSeed, botSeats, humanSeat, humanSeats, cliffGuard, walkGuard, meleeAssist, humanSlashTicks, training } = msg as {
         reqId: number;
         origin: string;
         buildId?: string;
@@ -79,6 +81,7 @@ self.onmessage = async (ev: MessageEvent) => {
         humanSeat?: number;
         humanSeats?: number;
         cliffGuard?: boolean;
+        walkGuard?: boolean;
         meleeAssist?: boolean;
         humanSlashTicks?: number;
         training?: boolean;
@@ -99,6 +102,7 @@ self.onmessage = async (ev: MessageEvent) => {
       else engineSetHumanSeat!(typeof humanSeat === 'number' ? humanSeat : -1);
       engineSetHumanSlashTicks!(typeof humanSlashTicks === 'number' ? humanSlashTicks : 3);
       engineSetHumanCliffGuard!(cliffGuard ? 1 : 0);
+      engineSetHumanWalkGuard!(walkGuard ? 1 : 0);
       engineSetHumanMeleeAssist!(meleeAssist === false ? 0 : 1);
       const mapData = JSON.parse(engineGetMapJson!());
       const state = JSON.parse(engineGetStateJson!());
