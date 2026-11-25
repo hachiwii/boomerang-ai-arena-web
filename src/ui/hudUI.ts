@@ -1536,6 +1536,15 @@ export class HudUI {
 
     const me = state.players[this.humanSeat];
     const md = state.darts[this.humanSeat];
+    // PvP: once the match is over the result card (再来一局 / 退出) owns the screen, no control hints underneath
+    const pvpOver = this.matchMode === 'pvp' && state.over;
+    if (this.humanHintLeft) this.humanHintLeft.style.display = pvpOver ? 'none' : '';
+    if (pvpOver) {
+      if (this.humanHintMove) this.humanHintMove.style.display = 'none';
+      if (this.humanHintRight) this.humanHintRight.style.display = 'none';
+      if (this.humanHintShift) this.humanHintShift.style.display = 'none';
+      return;
+    }
     if (!me.alive) {
       if (this.humanHintMove) this.humanHintMove.style.display = 'none';
       if (this.humanHintLeft) {
