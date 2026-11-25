@@ -49,7 +49,10 @@ export function mockPvpMatchLink(matchId: string): PvpMatchLink {
       flush();
     },
     hash: () => {},
-    end: stop,
+    end: ({ frame }) => {
+      stop();
+      listener?.({ type: 'terminal', matchId, reason: 'complete', through: frame });
+    },
     quit: () => {
       if (startAt) flush(serverNow());
       stop();

@@ -4,7 +4,7 @@ import type { EngineMapData, MatchConfig, TickSnapshot } from './types';
 import type { PvpSimulationResult } from '../workers/pvpSimulation';
 import type { PvpMatchLink } from '../net/pvpMatchLink';
 import {
-  PVP_TICK_MS, type Go, type MatchMessage, type MatchTerminal, type Seat,
+  PVP_MAX_FRAMES, PVP_TICK_MS, type Go, type MatchMessage, type MatchTerminal, type Seat,
 } from '../net/pvpProtocol';
 import { PvpEventDedup, PvpTimeline, pvpSampleFrame, pvpTargetTick } from '../net/pvpTimeline';
 import { PVP_FIXED_RULES } from '../net/pvpTypes';
@@ -30,6 +30,7 @@ export class PvpMatchController {
   private stopped = false;
   private finished = false;
   private quitRequested = false;
+  private awaitingTerminal = false;
   private updating = false;
   private inputsChanged = false;
   private targetT = 0;
@@ -193,10 +194,11 @@ export class PvpMatchController {
     this.updating = true;
     try {
       const terminal = this.terminal;
+      if (this.awaitingTerminal && !terminal) return;
       const terminalT = terminal && terminal.reason !== 'cancelled' ? terminal.through + 1 : undefined;
       const go = this.go;
       const elapsed = go ? this.link.serverNow() - go.startAt : -Infinity;
-      if (terminalT === undefined && elapsed < 0) {
+      if (terminalT === undefined && this.targetT === 0 && elapsed < 0) {
         this.inputsChanged = false; // Countdown rows stay in the timeline until frame zero is due.
         if (go) this.setStage(Math.min(3, Math.ceil(-elapsed / 1000)) as CountdownStage);
         return;
@@ -221,7 +223,11 @@ export class PvpMatchController {
       this.confirmedT = result.confirmedT;
       this.timeline.commit(update, result.state.t);
       for (const { frame, hash } of result.hashes) this.link.hash(frame, hash);
-      if (result.end) this.link.end(result.end);
+      if (result.end) {
+        this.awaitingTerminal = true;
+        this.input.setInputMode('off');
+        this.link.end(result.end);
+      }
       if (update.rollbackFrames) this.link.setRollbackFrames(update.rollbackFrames);
 
       const ended = result.confirmedOver || terminalT !== undefined;
@@ -247,15 +253,21 @@ export class PvpMatchController {
         const previous = display.t <= current.t ? display : current;
         this.callbacks.onTick(previous, display, PVP_TICK_MS, Boolean(update.rollbackFrames));
       }
-      if (ended) {
-        // An administrative close can arrive after an already confirmed game over.
+      if (terminal) {
+        // Only the relay knows the final cutoff if a quit races an end report.
         await this.finish(display, result.confirmedOver && terminal?.reason !== 'timeout' ? null : terminal);
       }
     } catch (err) {
       if (!this.stopped) this.fail(err instanceof Error ? err.message : String(err));
     } finally {
       this.updating = false;
-      this.schedule(this.inputsChanged ? 0 : 15);
+      if (this.terminal || (this.inputsChanged && !this.awaitingTerminal)) {
+        this.schedule(0);
+      } else if (this.go && !this.awaitingTerminal && this.targetT < PVP_MAX_FRAMES) {
+        const untilGo = this.go.startAt - this.link.serverNow();
+        const untilNext = untilGo > 0 ? (untilGo % 1000 || 1000) : untilGo + this.targetT * PVP_TICK_MS;
+        this.schedule(Math.max(0, Math.ceil(untilNext)));
+      }
     }
   }
 

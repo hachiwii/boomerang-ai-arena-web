@@ -25,6 +25,7 @@ interface MatchConnection {
   ready: boolean;
   quit: boolean;
   peerConnected?: boolean;
+  hashes: Map<number, string>;
   end?: Extract<ClientMessage, { type: 'end' }>;
   postgameChoice?: 'rematch' | 'left';
 }
@@ -145,7 +146,10 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
         send({ type: 'ready', matchId });
       },
       input: (frame, action) => send({ type: 'input', matchId, frame, action }),
-      hash: (frame, hash) => send({ type: 'hash', matchId, frame, hash }),
+      hash: (frame, hash) => {
+        match.hashes.set(frame, hash);
+        send({ type: 'hash', matchId, frame, hash });
+      },
       end: (result) => {
         match.end = { type: 'end', matchId, ...result };
         send(match.end);
@@ -297,12 +301,16 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
         const match = this.match;
         if (match?.info.matchId === message.info.matchId) {
           this.emit('notice', '已重新连接');
+          // Reports whose socket closed in flight are safe to repeat on resume.
+          for (const [frame, hash] of match.hashes) {
+            this.send({ type: 'hash', matchId: match.info.matchId, frame, hash });
+          }
           if (match.quit) this.send({ type: 'quit', matchId: match.info.matchId });
           else if (match.end) this.send(match.end);
           else if (match.ready) this.send({ type: 'ready', matchId: match.info.matchId });
         } else {
           this.postgame = null;
-          this.match = { info: message.info, ready: false, quit: false, listeners: new Set() };
+          this.match = { info: message.info, ready: false, quit: false, listeners: new Set(), hashes: new Map() };
           this.emit('matchStart', message.info);
         }
         return;
