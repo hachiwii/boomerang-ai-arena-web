@@ -78,6 +78,7 @@ function setup({ preInput = true, rows = openRows, spawn = '4 6 14 6', bindDashT
 
   assert.equal(mod.ccall('engine_init', 'number', ['string', 'number', 'number'], [makeMap(rows, spawn), 2, 0]), 1);
   mod.ccall('engine_set_human_seat', 'void', ['number'], [0]);
+  mod.ccall('engine_set_human_walk_guard', 'void', ['number'], [0]);
   mod.ccall('engine_set_human_slash_ticks', 'void', ['number'], [3]);
 
   const mapData = JSON.parse(mod.ccall('engine_get_map_json', 'string', [], []));
@@ -85,7 +86,6 @@ function setup({ preInput = true, rows = openRows, spawn = '4 6 14 6', bindDashT
 
   const input = new HumanInputController(canvas, settings);
   input.setMapData(mapData);
-  input.setCliffGuard(false);
   input.setInputMode('active');
   input.hasMouse = true;
   input.aimWorldMmX = state.players[0].x + 4000;

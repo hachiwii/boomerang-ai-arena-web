@@ -205,10 +205,10 @@ export class MatchController {
   }
 
   public setCliffGuard(enabled: boolean) {
-    this.input.setCliffGuard(enabled);
     if (this.config) {
       this.config.cliffGuard = enabled;
     }
+    this.engineWorker?.postMessage({ type: 'set_walk_guard', enabled });
   }
 
   public setDashGuard(enabled: boolean) {
@@ -306,6 +306,7 @@ export class MatchController {
       botSeats: this.botSeats,
       humanSeat: this.humanSeat,
       cliffGuard: config.dashGuard ?? config.cliffGuard,
+      walkGuard: config.cliffGuard,
       meleeAssist: config.meleeAssist ?? true,
       humanSlashTicks: config.humanSlashTicks ?? 3,
       training: isTraining,
@@ -438,7 +439,6 @@ export class MatchController {
     // Configure human input timing & pre-dispatch tick 0 bot decisions immediately
     this.input.reset();
     this.input.setMapData(mapData);
-    this.input.setCliffGuard(config.cliffGuard);
     this.input.setTickIntervalMs(this.tickIntervalMs);
     this.dispatchBots(initialObs);
 

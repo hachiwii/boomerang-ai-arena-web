@@ -58,6 +58,7 @@ function initMatch(rows, spawn) {
   assert.equal(rc, 1, 'engine_init should succeed');
   mod.ccall('engine_set_human_seat', 'void', ['number'], [0]);
   mod.ccall('engine_set_human_cliff_guard', 'void', ['number'], [1]);
+  mod.ccall('engine_set_human_walk_guard', 'void', ['number'], [1]);
   return {
     mapData: JSON.parse(mod.ccall('engine_get_map_json', 'string', [], [])),
     state: JSON.parse(mod.ccall('engine_get_state_json', 'string', [], [])),
@@ -80,7 +81,6 @@ function setup(rows = openRows, opts = {}) {
   input.setTouchMode(true);
   const { mapData, state } = initMatch(rows, opts.spawn);
   input.setMapData(mapData);
-  input.setCliffGuard(true);
   input.setTickIntervalMs(50);
   input.setInputMode('active');
   let st = state;

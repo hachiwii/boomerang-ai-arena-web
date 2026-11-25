@@ -20,6 +20,7 @@ let engineSetHumanSeat: ((seat: number) => void) | null = null;
 let engineSetHumanSlashTicks: ((ticks: number) => void) | null = null;
 let engineSetHumanCliffGuard: ((enabled: number) => void) | null = null;
 let engineSetHumanWalkGuard: ((enabled: number) => void) | null = null;
+let walkGuardEnabled = false;
 let engineSetHumanMeleeAssist: ((enabled: number) => void) | null = null;
 let engineLastErr: (() => string) | null = null;
 let engineGetHeader: ((seat: number) => string) | null = null;
@@ -86,6 +87,7 @@ self.onmessage = async (ev: MessageEvent) => {
         humanSlashTicks?: number;
         training?: boolean;
       };
+      walkGuardEnabled = walkGuard === true;
       await ensureLoaded(origin, buildId);
       const ss = typeof spawnSeed === 'number' && spawnSeed !== 0 ? (spawnSeed >>> 0) : 0;
       // Training ground: fixed 8-seat layout with training-only rules (see engine_init_training in engine_wasm.cpp)
@@ -102,7 +104,7 @@ self.onmessage = async (ev: MessageEvent) => {
       else engineSetHumanSeat!(typeof humanSeat === 'number' ? humanSeat : -1);
       engineSetHumanSlashTicks!(typeof humanSlashTicks === 'number' ? humanSlashTicks : 3);
       engineSetHumanCliffGuard!(cliffGuard ? 1 : 0);
-      engineSetHumanWalkGuard!(walkGuard ? 1 : 0);
+      engineSetHumanWalkGuard!(walkGuardEnabled ? 1 : 0);
       engineSetHumanMeleeAssist!(meleeAssist === false ? 0 : 1);
       const mapData = JSON.parse(engineGetMapJson!());
       const state = JSON.parse(engineGetStateJson!());
@@ -119,6 +121,10 @@ self.onmessage = async (ev: MessageEvent) => {
         obs[seat] = engineGetObs!(seat);
       }
       self.postMessage({ type: 'init_done', reqId, mapData, state, headers, obs });
+    } else if (msg.type === 'set_walk_guard') {
+      // Keep changes that arrive while the WASM module is loading.
+      walkGuardEnabled = msg.enabled === true;
+      engineSetHumanWalkGuard?.(walkGuardEnabled ? 1 : 0);
     } else if (msg.type === 'set_cliff_guard') {
       if (engineSetHumanCliffGuard) {
         engineSetHumanCliffGuard(msg.enabled ? 1 : 0);

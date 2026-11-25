@@ -1,4 +1,3 @@
-import { applyCliffGuard } from './cliffGuard';
 import { applyMeleeAssist, applyMobileMeleeAssist, hasMobileMeleeHitOpportunity } from './meleeAssist';
 import { ActionBindKey, getSlashJudgmentTicks, isBoundToAction, SettingsStore } from './settings';
 import {
@@ -80,7 +79,6 @@ export class HumanInputController {
   private bufferMs = 140;
   private recallHoldDelayMs = 160;
   private mapData: EngineMapData | null = null;
-  private cliffGuard = true;
   private fixedMatchRules: { meleeAssist: boolean; humanSlashTicks: number; bulletTime: boolean } | null = null;
   private canvas: HTMLCanvasElement;
   private settings: SettingsStore;
@@ -99,16 +97,11 @@ export class HumanInputController {
   constructor(canvas: HTMLCanvasElement, settings: SettingsStore) {
     this.canvas = canvas;
     this.settings = settings;
-    this.cliffGuard = settings.get().cliffGuard;
     this.bindEvents();
   }
 
   public setMapData(mapData: EngineMapData | null) {
     this.mapData = mapData;
-  }
-
-  public setCliffGuard(enabled: boolean) {
-    this.cliffGuard = enabled;
   }
 
   public setFixedMatchRules(rules: { meleeAssist: boolean; humanSlashTicks: number; bulletTime: boolean } | null) {
@@ -121,10 +114,6 @@ export class HumanInputController {
 
   private slashTicks(): number {
     return this.fixedMatchRules?.humanSlashTicks ?? getSlashJudgmentTicks(this.settings.get().slashJudgment);
-  }
-
-  public isCliffGuard(): boolean {
-    return this.cliffGuard;
   }
 
   public setTickIntervalMs(tickMs: number) {
@@ -527,14 +516,6 @@ export class HumanInputController {
    * Sample human action at the exact logic tick boundary.
    */
   public sampleAction(state: TickSnapshot | null, seat: number): HumanAction {
-    const raw = this.sampleRawAction(state, seat);
-    if (this.cliffGuard && this.mapData && state && this.inputMode === 'active' && !this.paused) {
-      return applyCliffGuard(this.mapData, state, seat, raw);
-    }
-    return raw;
-  }
-
-  private sampleRawAction(state: TickSnapshot | null, seat: number): HumanAction {
     if (this.paused || this.inputMode !== 'active' || !state || seat < 0 || seat >= state.n) {
       return { mx: 0, my: 0, act: ActType.NONE, ax: 0, ay: 0, msg: 0 };
     }
