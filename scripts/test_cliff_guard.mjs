@@ -7,7 +7,7 @@ const ROOT = path.resolve(import.meta.dirname, '..');
 const ENGINE_JS = path.join(ROOT, 'public/wasm/engine.js');
 const MAPS_DIR = path.join(ROOT, 'public/assets/maps');
 
-// Bundle src/game/cliffGuard.ts in memory so we test the exact production TypeScript code!
+// Load the terrain query for checking the new rim after collapse.
 const built = await esbuild.build({
   entryPoints: [path.join(ROOT, 'src/game/cliffGuard.ts')],
   bundle: true,
@@ -16,27 +16,33 @@ const built = await esbuild.build({
 });
 const code = built.outputFiles[0].text;
 const modUrl = `data:text/javascript;base64,${Buffer.from(code).toString('base64')}`;
-const { applyCliffGuard, cellOfPoint } = await import(modUrl);
+const { cellOfPoint } = await import(modUrl);
 
 const { default: createEngineModule } = await import(pathToFileURL(ENGINE_JS).href);
 const engineMod = await createEngineModule({ printErr: () => {} });
 const engineInit = engineMod.cwrap('engine_init', 'number', ['string', 'number', 'number']);
 const engineSetHumanSeat = engineMod.cwrap('engine_set_human_seat', null, ['number']);
+const engineSetHumanSeats = engineMod.cwrap('engine_set_human_seats', null, ['number']);
+const engineSetHumanWalkGuard = engineMod.cwrap('engine_set_human_walk_guard', null, ['number']);
 const engineSetHumanCliffGuard = engineMod.cwrap('engine_set_human_cliff_guard', null, ['number']);
 const engineSetHumanDashTarget = engineMod.cwrap('engine_set_human_dash_target', null, ['number', 'number', 'number']);
 const engineGetMap = engineMod.cwrap('engine_get_map_json', 'string', []);
 const engineStep = engineMod.cwrap('engine_step', 'number', ['string']);
 const engineGetState = engineMod.cwrap('engine_get_state_json', 'string', []);
 
-function startMap(mapName, seed = 0, humanSeat = -1, cliffGuard = false) {
-  const mapText = fs.readFileSync(path.join(MAPS_DIR, `${mapName}.txt`), 'utf8');
-  if (!engineInit(mapText, 2, seed)) throw new Error(`init failed for ${mapName}`);
-  engineSetHumanSeat(humanSeat);
-  engineSetHumanCliffGuard(cliffGuard ? 1 : 0);
+function startMapText(mapText, seed = 0, { humanSeats = 1, walkGuard = true, dashGuard = false } = {}) {
+  if (!engineInit(mapText, 2, seed)) throw new Error('engine_init failed');
+  engineSetHumanSeats(humanSeats);
+  engineSetHumanWalkGuard(Number(walkGuard));
+  engineSetHumanCliffGuard(Number(dashGuard));
   return {
     map: JSON.parse(engineGetMap()),
     state: JSON.parse(engineGetState()),
   };
+}
+
+function startMap(mapName, seed, options) {
+  return startMapText(fs.readFileSync(path.join(MAPS_DIR, `${mapName}.txt`), 'utf8'), seed, options);
 }
 
 function actStr(a) {
@@ -58,7 +64,7 @@ const dirs = [
 
 for (const mapName of ['twinlakes', 'skybridge', 'icefloes', 'yinyang', 'canyon']) {
   for (const [dmx, dmy] of dirs) {
-    let { map, state } = startMap(mapName, 7);
+    let { state } = startMap(mapName, 7);
     let maxDist = 0;
     const x0 = state.players[0].x;
     const y0 = state.players[0].y;
@@ -72,8 +78,7 @@ for (const mapName of ['twinlakes', 'skybridge', 'icefloes', 'yinyang', 'canyon'
         ay: dmy,
         msg: 0,
       };
-      const guarded = applyCliffGuard(map, state, 0, raw);
-      engineStep(`${actStr(guarded)}\n0 0 0 0 0 0`);
+      engineStep(`${actStr(raw)}\n0 0 0 0 0 0`);
       state = JSON.parse(engineGetState());
       const me = state.players[0];
       assert(me.alive === 1, `Human fell on ${mapName} walking (${dmx},${dmy}) at tick=${tick}, pos=(${me.x},${me.y}), cause=${me.cause}`);
@@ -89,7 +94,7 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
 // Test 2: High-momentum 90-degree turn right at the cliff rim (vx=+250, pressing W/S)
 // ---------------------------------------------------------------------------
 {
-  let { map, state } = startMap('twinlakes', 0);
+  let { state } = startMap('twinlakes', 0);
   // Walk straight up (-y) until we stop at the top cliff edge, then verify rapid direction switches never slip over!
   const seq = [
     [0, -1000], [0, -1000], [0, -1000], [0, -1000], [0, -1000],
@@ -101,8 +106,7 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
   ];
   for (let i = 0; i < 180 && !state.over; i++) {
     const [dmx, dmy] = seq[i % seq.length];
-    const guarded = applyCliffGuard(map, state, 0, { mx: dmx, my: dmy, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(guarded)}\n0 0 0 0 0 0`);
+    engineStep(`${dmx} ${dmy} 0 0 0 0\n0 0 0 0 0 0`);
     state = JSON.parse(engineGetState());
     assert(state.players[0].alive === 1, `High-momentum turn fell at step ${i}!`);
   }
@@ -110,10 +114,10 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
 }
 
 // ---------------------------------------------------------------------------
-// Test 3: Control check — with cliffGuard OFF, walking into the cliff DOES fall!
+// Test 3: Walking guard can be disabled during a match and only applies to humans.
 // ---------------------------------------------------------------------------
 {
-  let { map, state } = startMap('twinlakes', 0);
+  let { state } = startMap('twinlakes', 0, { walkGuard: false });
   let fell = false;
   for (let i = 0; i < 60 && !state.over; i++) {
     engineStep(`-1000 0 0 0 0 0\n0 0 0 0 0 0`);
@@ -124,34 +128,43 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
     }
   }
   assert(fell, 'Without cliffGuard, walking left off twinlakes should fall');
-  console.log('  [TEST 3 PASS] Without cliffGuard, walking off cliff falls as expected (cause=FALL).');
+
+  ({ state } = startMap('stonecircle', 0));
+  for (let i = 0; i < 30; i++) engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
+  state = JSON.parse(engineGetState());
+  assert(state.players[0].alive && state.players[0].x === 500, 'Guarded human should reach the rim');
+  engineSetHumanWalkGuard(0);
+  engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
+  state = JSON.parse(engineGetState());
+  assert(!state.players[0].alive && state.players[0].cause === 3, 'Live toggle should let the human walk off');
+
+  ({ state } = startMap('stonecircle', 0, { humanSeats: 2 }));
+  for (let i = 0; i < 30; i++) engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
+  state = JSON.parse(engineGetState());
+  assert(!state.players[0].alive && state.players[0].cause === 3, 'Walking guard must leave bot movement alone');
+  console.log('  [TEST 3 PASS] Walking falls with the guard disabled at init or during play, and for bots.');
 }
 
 // ---------------------------------------------------------------------------
 // Test 4: Dashing off a cliff with cliffGuard ON MUST STILL FALL (dash unaffected)!
 // ---------------------------------------------------------------------------
 {
-  let { map, state } = startMap('twinlakes', 0);
+  let { state } = startMap('twinlakes', 0);
   // First walk all the way left to the cliff rim with cliffGuard ON
   for (let i = 0; i < 40; i++) {
-    const guarded = applyCliffGuard(map, state, 0, { mx: -1000, my: 0, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(guarded)}\n0 0 0 0 0 0`);
+    engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
     state = JSON.parse(engineGetState());
   }
   assert(state.players[0].alive === 1, 'Should be safely stopped at left cliff rim before dash');
   const rimX = state.players[0].x;
 
   // Now press Shift (ActType.DASH = 3) left into the abyss!
-  const dashRaw = { mx: -1000, my: 0, act: 3, ax: -1000, ay: 0, msg: 0 };
-  const dashGuarded = applyCliffGuard(map, state, 0, dashRaw);
-  assert(dashGuarded.act === 3, 'Cliff guard must NOT cancel ActType.DASH');
-  engineStep(`${actStr(dashGuarded)}\n0 0 0 0 0 0`);
+  engineStep('-1000 0 3 -1000 0 0\n0 0 0 0 0 0');
   state = JSON.parse(engineGetState());
 
   let fellFromDash = false;
   for (let i = 0; i < 20 && !state.over; i++) {
-    const nextGuarded = applyCliffGuard(map, state, 0, { mx: -1000, my: 0, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(nextGuarded)}\n0 0 0 0 0 0`);
+    engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
     state = JSON.parse(engineGetState());
     if (!state.players[0].alive && state.players[0].cause === 3) {
       fellFromDash = true;
@@ -166,11 +179,10 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
 // Test 5: Platform collapse underneath player with cliffGuard ON MUST STILL FALL!
 // ---------------------------------------------------------------------------
 {
-  let { map, state } = startMap('twinlakes', 0);
+  let { state } = startMap('twinlakes', 0);
   // Walk to the outer wave-0 rim (left edge) with cliffGuard ON, then stand still until colStart (240) collapses under us!
   for (let i = 0; i < 40; i++) {
-    const guarded = applyCliffGuard(map, state, 0, { mx: -1000, my: 0, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(guarded)}\n0 0 0 0 0 0`);
+    engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
     state = JSON.parse(engineGetState());
   }
   assert(state.players[0].alive === 1, 'Should be standing safely at outer wave-0 rim before collapse');
@@ -180,8 +192,7 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
   let fellFromCollapse = false;
   for (let i = 0; i < 350 && !state.over; i++) {
     // Player stands still (or keeps pushing outward); when floor underneath collapses, must fall!
-    const guarded = applyCliffGuard(map, state, 0, { mx: 0, my: 0, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(guarded)}\n0 0 0 0 0 0`);
+    engineStep('0 0 0 0 0 0\n0 0 0 0 0 0');
     state = JSON.parse(engineGetState());
     if (!state.players[0].alive && state.players[0].cause === 3) {
       fellFromCollapse = true;
@@ -197,11 +208,10 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
 // ---------------------------------------------------------------------------
 {
   // Use stonecircle (open ground between spawns and outer rim) so seat 1 cleanly approaches seat 0 and kicks them off!
-  let { map, state } = startMap('stonecircle', 0);
+  let { state } = startMap('stonecircle', 0, { humanSeats: 3 });
   // 1) Seat 0 walks straight left to the outer cliff rim with cliffGuard ON
   for (let i = 0; i < 40; i++) {
-    const g0 = applyCliffGuard(map, state, 0, { mx: -1000, my: 0, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(g0)}\n0 0 0 0 0 0`);
+    engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
     state = JSON.parse(engineGetState());
   }
   assert(state.players[0].alive === 1, 'Seat 0 alive at left cliff rim');
@@ -215,7 +225,7 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
     const q0 = state.players[0];
     const q1 = state.players[1];
     // Stay at left cliff rim before kick; once kicked, even trying to walk right doesn't stop stun slide!
-    const g0 = applyCliffGuard(map, state, 0, { mx: kicked ? 1000 : 0, my: 0, act: 0, ax: 0, ay: 0, msg: 0 });
+    const p0MoveX = kicked ? 1000 : 0;
 
     const dx = q0.x + 900 - q1.x;
     const dy = q0.y - q1.y;
@@ -236,9 +246,7 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
     } else {
       raw1 = { mx: 0, my: 0, act: 0, ax: 0, ay: 0, msg: 0 };
     }
-    const g1 = applyCliffGuard(map, state, 1, raw1);
-
-    engineStep(`${actStr(g0)}\n${actStr(g1)}`);
+    engineStep(`${p0MoveX} 0 0 0 0 0\n${actStr(raw1)}`);
     state = JSON.parse(engineGetState());
     if (state.events.some((e) => e.name === 'KICKHIT' && e.b === 0)) {
       kickHit = true;
@@ -257,18 +265,16 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
 // Test 7: Diagonal cliff sliding — holding W+D near right cliff slides smoothly upward!
 // ---------------------------------------------------------------------------
 {
-  let { map, state } = startMap('twinlakes', 0);
+  let { state } = startMap('twinlakes', 0);
   // Walk to left rim first
   for (let i = 0; i < 30; i++) {
-    const g0 = applyCliffGuard(map, state, 0, { mx: -1000, my: 0, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(g0)}\n0 0 0 0 0 0`);
+    engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
     state = JSON.parse(engineGetState());
   }
   const yBefore = state.players[0].y;
   // Hold down-left (-707, +707) along the left cliff edge for 15 ticks — should slide down smoothly without falling!
   for (let i = 0; i < 15; i++) {
-    const g0 = applyCliffGuard(map, state, 0, { mx: -707, my: 707, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(g0)}\n0 0 0 0 0 0`);
+    engineStep('-707 707 0 0 0 0\n0 0 0 0 0 0');
     state = JSON.parse(engineGetState());
     assert(state.players[0].alive === 1, 'Fell while sliding diagonally along cliff!');
   }
@@ -282,7 +288,7 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
 // is ALSO blocked by cliffGuard!
 // ---------------------------------------------------------------------------
 {
-  let { map, state } = startMap('stonecircle', 0);
+  let { map, state } = startMap('stonecircle', 0, { humanSeats: 3 });
   // Move BOTH players toward center (offset apart so they don't collide) so the match stays alive past wave 1!
   const cx = map.nx * map.cell * 0.5;
   const cy = map.ny * map.cell * 0.5;
@@ -292,10 +298,9 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
       const dx = tx - p.x;
       const dy = ty - p.y;
       const d = Math.hypot(dx, dy);
-      const raw = d > 100
+      return d > 100
         ? { mx: Math.round((dx / d) * 1000), my: Math.round((dy / d) * 1000), act: 0, ax: 0, ay: 0, msg: 0 }
         : { mx: 0, my: 0, act: 0, ax: 0, ay: 0, msg: 0 };
-      return applyCliffGuard(map, state, seat, raw);
     };
     const g0 = moveTo(0, cx - 1500, cy);
     const g1 = moveTo(1, cx + 1500, cy);
@@ -305,8 +310,7 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
   assert(!state.over && state.players[0].alive === 1 && state.fallen >= 2, `Expected match alive after >=2 collapse waves, over=${state.over}, fallen=${state.fallen}`);
   // Walk straight left into the newly collapsed wave-1 rim during t=280..299 (before wave 2 collapses at t=300!)
   for (let i = 0; i < 19 && !state.over; i++) {
-    const g0 = applyCliffGuard(map, state, 0, { mx: -1000, my: 0, act: 0, ax: 0, ay: 0, msg: 0 });
-    engineStep(`${actStr(g0)}\n0 0 0 0 0 0`);
+    engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
     state = JSON.parse(engineGetState());
     assert(state.players[0].alive === 1, `Fell into newly collapsed wave-1 pit at t=${state.t}!`);
   }
@@ -324,7 +328,7 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
 // ---------------------------------------------------------------------------
 {
   const runDashFromX = (startX, humanSeat, cliffGuard, seatToDash = 0) => {
-    let { state } = startMap('stonecircle', 0, humanSeat, cliffGuard);
+    let { state } = startMap('stonecircle', 0, { humanSeats: 1 << humanSeat, dashGuard: cliffGuard });
     // Move seat 0 horizontally to exact startX on y=6000 (stonecircle left rim is at x=500)
     for (let i = 0; i < 40; i++) {
       const dx = startX - state.players[0].x;
@@ -500,4 +504,48 @@ console.log('  [TEST 1 PASS] 0 walking falls across 5 maps x 8 directions (40 ru
   console.log('  [TEST 11 PASS] Mouse-direction dash: mouse sets direction ONLY (full 3000mm dash, never stops at cursor), wall block & 25% cliff guard intact!');
 }
 
-console.log('ALL 11 CLIFF-GUARD & MOUSE-DIRECTION DASH WASM PHYSICS TESTS PASSED!');
+function syntheticMap(name, spawns, rows) {
+  return [`NAME ${name}`, 'MODES 0', `SPAWN 0 ${spawns}`, `GRID ${rows[0].length} ${rows.length}`, ...rows].join('\n');
+}
+
+// Test 12: The angular fan can move around a step in the rim. The held
+// direction points left, but the best safe forward stride angles right.
+{
+  const rows = Array.from({ length: 16 }, (_, y) => y < 8 ? '~' + '.'.repeat(22) + '~' : '~'.repeat(7) + '.'.repeat(16) + '~');
+  startMapText(syntheticMap('steps', '3.38 3.9 9.0 7.5', rows));
+  engineStep('-100 995 0 0 0 0\n0 0 0 0 0 0');
+  const state = JSON.parse(engineGetState());
+  const { x, y, alive } = state.players[0];
+  assert(alive && x === 3538 && y === 4094, `Expected diagonal corner slide to (3538, 4094), got (${x}, ${y})`);
+  console.log('  [TEST 12 PASS] Angular search slides across a stepped rim to (3538, 4094).');
+}
+
+// Test 13: Action startup determines walking speed and movement can cancel a
+// recall from the rim even when the guard clamps that movement to a stop.
+{
+  const rows = Array.from({ length: 16 }, () => '~' + '.'.repeat(6) + '#' + '.'.repeat(15) + '~');
+  startMapText(syntheticMap('action_walk', '0.72 3.5 10.75 5.0', rows));
+  engineStep('-1000 0 1 1000 0 0\n0 0 0 0 0 0');
+  let state = JSON.parse(engineGetState());
+  assert(state.players[0].x === 595 && state.players[0].st === 1, 'Throw windup must walk at 50% speed');
+  engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
+  state = JSON.parse(engineGetState());
+  assert(state.players[0].alive && state.players[0].x === 500 && state.players[0].st === 2, 'Throw-walk must stop at the rim');
+  while (state.t < 40 && (state.darts[0].st !== 3 || state.players[0].st !== 0)) {
+    engineStep('0 0 0 0 0 0\n0 0 0 0 0 0');
+    state = JSON.parse(engineGetState());
+  }
+  assert(state.darts[0].st === 3 && state.players[0].st === 0, 'Dart must land at the wall before recall');
+  engineStep('0 0 4 0 0 0\n0 0 0 0 0 0');
+  state = JSON.parse(engineGetState());
+  assert(state.events.some((e) => e.name === 'RECALL'), 'Player must start recall');
+  engineStep('-1000 0 0 0 0 0\n0 0 0 0 0 0');
+  state = JSON.parse(engineGetState());
+  assert(state.events.some((e) => e.name === 'CANCEL') && state.players[0].x === 500, 'Movement should cancel recall without crossing the rim');
+  engineStep('-1000 0 2 -1000 0 0\n0 0 0 0 0 0');
+  state = JSON.parse(engineGetState());
+  assert(state.events.some((e) => e.name === 'KICK') && state.players[0].x === 500, 'Melee must still begin without walking');
+  console.log('  [TEST 13 PASS] Throw-walk speed, recall cancellation at the rim, and stationary melee.');
+}
+
+console.log('ALL 13 CLIFF-GUARD & MOUSE-DIRECTION DASH WASM PHYSICS TESTS PASSED!');

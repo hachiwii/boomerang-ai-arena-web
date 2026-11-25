@@ -82,8 +82,6 @@ export class PvpMatchController {
       this.input.reset();
       this.input.setFixedMatchRules(PVP_FIXED_RULES);
       this.input.setMapData(map);
-      // PvP walks are guarded in WASM at the frame where they are applied.
-      this.input.setCliffGuard(false);
       this.input.setTickIntervalMs(PVP_TICK_MS);
       await this.callbacks.onMapLoaded(map, initial);
       if (this.stopped) return;

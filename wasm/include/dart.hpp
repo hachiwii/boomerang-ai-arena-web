@@ -1221,7 +1221,7 @@ struct Game {
     i64 human_slash_ticks = 3;  // 人类砍镖窗口帧数：普通 3 帧 / 严格 2 帧（均含本步线段扫掠 ±60°）/ AI 0（原版 ±20° 单点）
     i64 human_melee_ticks = 2;  // 人类砍人/踢人窗口帧数：普通 2 帧 / 严格 0 / AI 0（0 = 1 帧前摇 + 1 帧，与 AI 相同）
     bool human_cliff_guard = false;  // 开启跌落防护时：人类冲刺若原本会坠崖，但末尾 25% 存在安全落点，则停在最远安全点
-    bool human_walk_guard = false;  // PvP guards walking at the tick the input is applied.
+    bool human_walk_guard = false;  // Walking cliff guard for human seats.
     bool human_melee_assist = true;  // 保留字段以兼容 WASM 导出接口（砍镖判定范围不再受近战吸附影响，仅由挥砍判定模式决定）
     bool human_dash_target_active = false;
     i64 human_dash_target_x = 0, human_dash_target_y = 0;
@@ -1471,11 +1471,15 @@ struct Game {
         return P.st == S_DASH && P.timer > cf.dash_post && P.timer <= cf.dash_t + cf.dash_post;
     }
 
+    static bool cancels_recall(const Action& a) {
+        return a.mx || a.my || (a.act != A_NONE && a.act != A_RECALL);
+    }
+
     void start_action(int k, const Action& a) {
         Player& P = p[k];
         Dart& D = d[k];
         // 召回引导中：给了移动或别的动作就中断（镖留在地上），然后照常处理这一步的动作
-        if (P.st == S_RECALL && (a.mx || a.my || (a.act != A_NONE && a.act != A_RECALL))) {
+        if (P.st == S_RECALL && cancels_recall(a)) {
             P.st = S_FREE;
             P.timer = 0;
             D.st = D_GROUND;
@@ -1561,46 +1565,152 @@ struct Game {
         return rdiv(v, 1000);
     }
 
-    void move_walk(const Map& m, Player& P, i64& vx, i64& vy) const {
-        const i64 x = P.x, y = P.y, dx = vx, dy = vy;
-        move_body(m, cf.body_r, P.x, P.y, vx, vy);
-        if (cell_of_point(cf, m, P.x, P.y, t) != C_PIT ||
-            cell_of_point(cf, m, x, y, t) == C_PIT) return;
+    i64 walk_pct(i64 state) const {
+        if (state == S_FREE) return 100;
+        if (state == S_THROW || state == S_THROWN) return cf.throw_move;
+        return 0;
+    }
 
-        // Stay on the rim even if the movement was predicted or the input was
-        // delayed. Try a shorter stride and slides along the two grid axes.
-        // Resolve each candidate against walls before checking its landing.
-        P.x = x; P.y = y;
-        vx = vy = 0;
-        i64 best_progress = 0;
-        auto try_direction = [&](i64 mx, i64 my) {
-            auto try_scale = [&](i64 scale) {
-                i64 tx = x, ty = y;
-                i64 sx = rdiv(mx * scale, UNIT), sy = rdiv(my * scale, UNIT);
-                move_body(m, cf.body_r, tx, ty, sx, sy);
-                if (cell_of_point(cf, m, tx, ty, t) == C_PIT) return false;
-                const i64 progress = (tx - x) * dx + (ty - y) * dy;
-                if (progress > best_progress) {
-                    best_progress = progress;
-                    P.x = tx; P.y = ty;
-                    vx = sx; vy = sy;
-                }
-                return true;
-            };
-            if (try_scale(UNIT)) return;
-            i64 lo = 0, hi = UNIT - 1;
-            while (lo < hi) {
-                const i64 mid = (lo + hi + 1) / 2;
-                if (try_scale(mid)) lo = mid;
-                else hi = mid - 1;
+    i64 guarded_walk_pct(const Player& P, const Dart& D, const Action& a) const {
+        // Look through action startup without mutating the player. Recall
+        // cancellation itself must use the clamped movement below.
+        const i64 state = P.st == S_RECALL && cancels_recall(a) ? S_FREE : P.st;
+        if (state != S_FREE) return walk_pct(state);
+        if (a.act == A_MELEE || (a.act == A_DASH && P.cd <= 0)) return 0;
+        if (a.act == A_RECALL && cf.recall && D.st == D_GROUND) return 0;
+        if (a.act == A_THROW && D.st == D_HAND) return cf.throw_move;
+        return 100;
+    }
+
+    struct WalkStep { i64 x, y, vx, vy; };
+
+    WalkStep walk_step(const Map& m, const Player& P, i64 mx, i64 my, i64 pct) const {
+        i64 tvx = 0, tvy = 0;
+        if (pct > 0 && (mx || my)) {
+            const i64 speed = rdiv(cf.run_v * pct * imin(ilen(mx, my), UNIT), 100 * UNIT);
+            scale_to(mx, my, speed, tvx, tvy);
+        }
+        i64 dvx = tvx - P.vx, dvy = tvy - P.vy;
+        cap_len(dvx, dvy, cf.acc);
+        WalkStep next{P.x, P.y, P.vx + dvx, P.vy + dvy};
+        move_body(m, cf.body_r, next.x, next.y, next.vx, next.vy);
+        return next;
+    }
+
+    void guard_walk(const Map& m, const Player& P, const Dart& D, Action& a) const {
+        const i64 pct = guarded_walk_pct(P, D, a);
+        if (pct <= 0) return;
+        const auto safe = [&](const WalkStep& next) {
+            return cell_of_point(cf, m, next.x, next.y, t) != C_PIT;
+        };
+        if (safe(walk_step(m, P, a.mx, a.my, pct)) ||
+            cell_of_point(cf, m, P.x, P.y, t) == C_PIT) return;
+
+        const i64 mx = a.mx, my = a.my;
+        const i64 len = ilen(mx, my);
+        i64 best_x = 0, best_y = 0, best_proj = 0, best_perp = 0;
+        bool found = false;
+        auto consider = [&](i64 x, i64 y, const WalkStep& next) {
+            const i64 dx = next.x - P.x, dy = next.y - P.y;
+            const i64 proj = dx * mx + dy * my;
+            if (2 * proj < -len) return;
+            const i64 perp = len ? iabs(dx * my - dy * mx) : dx * dx + dy * dy;
+            // Dot and cross products omit the common length denominator.
+            // Doubling the dot difference preserves the 0.5 mm tolerance.
+            const i64 gain = 2 * (proj - best_proj);
+            if (!found || gain > len || (iabs(gain) <= len && perp < best_perp)) {
+                found = true;
+                best_x = x;
+                best_y = y;
+                best_proj = proj;
+                best_perp = perp;
             }
         };
-        try_direction(dx, dy);
-        if (dx && dy) {
-            const i64 speed = ilen(dx, dy);
-            try_direction(dx > 0 ? speed : -speed, 0);
-            try_direction(0, dy > 0 ? speed : -speed);
+        auto try_move = [&](i64 x, i64 y) {
+            const WalkStep next = walk_step(m, P, x, y, pct);
+            if (!safe(next)) return false;
+            consider(x, y, next);
+            return true;
+        };
+
+        struct Move { i64 x, y; };
+        // Find the greatest safe scale along a direction. As in the client
+        // search, commit only the largest safe candidate found by the search.
+        auto scaled_move = [&](i64 x, i64 y) {
+            if (try_move(x, y)) return Move{x, y};
+            i64 lo = 0, hi = UNIT;
+            Move chosen{0, 0};
+            WalkStep landing{};
+            for (int iter = 0; iter < 10; ++iter) {
+                const i64 mid = (lo + hi + 1) / 2;
+                // Match Math.round at a negative half, which rounds upward.
+                const Move candidate{fdiv(x * mid + UNIT / 2, UNIT), fdiv(y * mid + UNIT / 2, UNIT)};
+                const WalkStep next = walk_step(m, P, candidate.x, candidate.y, pct);
+                if (safe(next)) {
+                    lo = mid;
+                    chosen = candidate;
+                    landing = next;
+                } else {
+                    hi = mid - 1;
+                }
+            }
+            if (lo > 0) consider(chosen.x, chosen.y, landing);
+            return chosen;
+        };
+
+        try_move(0, 0);
+        if (len > 0) {
+            scaled_move(mx, my);
+            const i64 full_x = mx < 0 ? -UNIT : UNIT, full_y = my < 0 ? -UNIT : UNIT;
+            i64 axis_x = 0, axis_y = 0;
+            if (mx) {
+                axis_x = scaled_move(full_x, 0).x;
+                if (mx != full_x) try_move(mx, 0);
+            }
+            if (my) {
+                axis_y = scaled_move(0, full_y).y;
+                if (my != full_y) try_move(0, my);
+            }
+            if (mx && my) {
+                if (axis_x) {
+                    try_move(axis_x, full_y);
+                    try_move(axis_x, my);
+                }
+                if (axis_y) {
+                    try_move(full_x, axis_y);
+                    try_move(mx, axis_y);
+                }
+            }
+
+            // The fan uses signed rotations at 15, 30, 45, 60 and 75 degrees.
+            // Fixed-point coefficients and a scaled norm keep rounding stable.
+            constexpr i64 trig_scale = 1000000000;
+            constexpr i64 rotations[][2] = {
+                {965925826, 258819045}, {866025404, 500000000}, {707106781, 707106781},
+                {500000000, 866025404}, {258819045, 965925826},
+            };
+            const i64 input_scale = trig_scale / imax(iabs(mx), iabs(my));
+            const i64 x = mx * input_scale, y = my * input_scale;
+            const i64 divisor = ilen(x, y) * (trig_scale / UNIT);
+            for (const auto& rot : rotations) {
+                for (int sign : {1, -1}) {
+                    const i64 c = rot[0], s = rot[1] * sign;
+                    const i64 rx = fdiv(x * c - y * s + divisor / 2, divisor);
+                    const i64 ry = fdiv(x * s + y * c + divisor / 2, divisor);
+                    if (!try_move(rx, ry)) try_move(fdiv(rx + 1, 2), fdiv(ry + 1, 2));
+                }
+            }
         }
+        if (!found) {
+            i64 bx = 0, by = 0;
+            if (scale_to(-P.vx, -P.vy, UNIT, bx, by)) try_move(bx, by);
+        }
+        // Preserve a recall cancel when the best safe walk is a stop. This
+        // one-unit input cancels the recall without moving a default player.
+        if (P.st == S_RECALL && (mx || my) && a.act == A_NONE && !best_x && !best_y &&
+            safe(walk_step(m, P, 1, 0, pct))) best_x = 1;
+        a.mx = best_x;
+        a.my = best_y;
     }
 
     void step(const Action* acts) {
@@ -1623,6 +1733,7 @@ struct Game {
             if (P.st != S_STUN) P.kicked_by = -1;
             if (P.retired && P.st != S_DASH && P.st != S_STUN) P.vx = P.vy = 0;
             if (!a.ok || P.retired || !action_in_range(a, cf)) a = Action();
+            if (human_walk_guard && is_human(k)) guard_walk(m, P, d[k], a);
             P.msg = a.msg;
             P.mvx = a.mx;
             P.mvy = a.my;
@@ -1746,22 +1857,11 @@ struct Game {
                 P.vy = rdiv(vy * cf.kick_keep, 1000);
                 continue;
             }
-            i64 pct = 0;
-            if (P.st == S_FREE) pct = 100;
-            else if (P.st == S_THROW || P.st == S_THROWN) pct = cf.throw_move;
-            i64 tvx = 0, tvy = 0;
-            if (pct > 0 && (P.mvx || P.mvy)) {
-                i64 L = ilen(P.mvx, P.mvy);
-                const i64 sp = rdiv(cf.run_v * pct * imin(L, 1000), 100 * 1000);
-                scale_to(P.mvx, P.mvy, sp, tvx, tvy);
-            }
-            i64 dvx = tvx - P.vx, dvy = tvy - P.vy;
-            cap_len(dvx, dvy, cf.acc);
-            i64 vx = P.vx + dvx, vy = P.vy + dvy;
-            if (human_walk_guard && is_human(k) && pct > 0) move_walk(m, P, vx, vy);
-            else move_body(m, cf.body_r, P.x, P.y, vx, vy);
-            P.vx = vx;  // 速度 = 去掉了撞墙分量的速度（位置可能还被墙推开了一点）
-            P.vy = vy;
+            const WalkStep next = walk_step(m, P, P.mvx, P.mvy, walk_pct(P.st));
+            P.x = next.x;
+            P.y = next.y;
+            P.vx = next.vx;  // 速度 = 去掉了撞墙分量的速度（位置可能还被墙推开了一点）
+            P.vy = next.vy;
             if (P.st == S_FREE && (P.vx || P.vy) && ilen(P.vx, P.vy) >= 20) P.face = iatan2(P.vy, P.vx);
         }
         // 3. 互相推开（地上的活人；同时算、同时推）
