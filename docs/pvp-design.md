@@ -74,10 +74,14 @@ browser ──wss://pvp.biao.oinkvm.cn/ws──► Aliyun CDN (WebSocket on, sec
 - Each client sends its input for frame `f + D` as soon as it is sampled. The server **accepts** an input if it arrives
   before that frame's deadline (`due + grace`, grace ≈ 100–150 ms), and forwards it to the opponent at once (and
   acknowledges it to the sender).
-- At the deadline, a missing input is **filled** by the server: the seat's previous canonical input with the one-shot
-  action cleared (`act = 0`). The fill goes to both clients — including the late one, who must roll back its own
-  input. Inputs that arrive after the fill are dropped. Every (seat, frame) therefore has exactly one canonical
-  value, the same on both clients, so the simulation is identical.
+- At the deadline, a missing input is **filled** by the server with a **neutral** input: no movement, no action (a
+  lagging player stands still instead of running on — repeating the last move used to walk players off cliffs). The
+  fill goes to both clients — including the late one, who must roll back its own input. Inputs that arrive after the
+  fill are dropped. Every (seat, frame) therefore has exactly one canonical value, the same on both clients, so the
+  simulation is identical.
+- The walking cliff guard for PvP human seats runs **inside the engine step** (deterministic, applied to every
+  canonical input including fills), not on the client at sampling time: with input delay the client only knows a
+  stale position. Single-player keeps its client-side guard.
 - Remote input prediction: the last canonical remote input with `act = 0`.
 - When a canonical input differs from the one used, restore the engine snapshot at that frame and re-simulate to the
   present. Keep snapshots for at least the deadline window (≈ 16 frames).
