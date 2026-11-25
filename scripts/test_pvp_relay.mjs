@@ -319,7 +319,11 @@ async function verifyConvergence(a, b, delay) {
   assert.deepEqual(a.play.sim.recorded(end.frame + 1), offlineTicks);
   assert.deepEqual(b.play.sim.recorded(end.frame + 1), offlineTicks);
   assert.ok(!logs.some(({ event }) => event === 'desync' || event === 'end-desync'));
-  const fills = [0, 1].map((seat) => canonical.slice(delay).filter((pair) => pair[seat].every((v) => v === 0)).length);
+  const countFills = (pairs) => [0, 1].map((seat) => pairs.filter((pair) => pair[seat].every((v) => v === 0)).length);
+  const fills = countFills(canonical.slice(delay));
+  if (delay === 0) {
+    assert.deepEqual(countFills(canonical.slice(0, 44)), [1, 0], 'only the deliberately late input missed before the stalls');
+  }
   console.log(`PvP relay convergence: ${end.frame + 1} canonical ticks, 3 equal hashes ${end.hash}, delay ${a.play.go.delay}, ` +
     `${a.play.hashes.size} periodic hashes, rollback counts ${a.play.rollbacks}/${b.play.rollbacks}, ` +
     `largest rollback ${a.play.maxRollback}/${b.play.maxRollback}, fills ${fills.join('/')}, catch-up batches ${a.play.maxBatch}/${b.play.maxBatch}`);

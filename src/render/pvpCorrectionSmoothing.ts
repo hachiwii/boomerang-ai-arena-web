@@ -59,10 +59,17 @@ export class PvpCorrectionSmoothing {
       next.events.some((event) => event.name === 'DASH' && event.a === seat);
     // On an advancing tick, px/py is the corrected start of this stride.
     // An unrelated rollback can leave ordinary remote movement intact.
-    const corrected = rollback && (next.t !== old.t + 1 || p.px !== oldP.x || p.py !== oldP.y || cut);
-    this.player.tick(p, corrected, cut, now);
+    const sameTick = next.t === old.t;
+    if (!sameTick || cut || p.x !== oldP.x || p.y !== oldP.y || p.px !== oldP.px || p.py !== oldP.py) {
+      const corrected = rollback && (next.t !== old.t + 1 || p.px !== oldP.x || p.py !== oldP.y || cut);
+      this.player.tick(p, corrected, cut, now);
+    }
     const dart = next.darts[seat];
-    this.dart.tick(dart, rollback, cut || dart.st !== old.darts[seat].st, now);
+    const oldDart = old.darts[seat];
+    const dartCut = cut || dart.st !== oldDart.st;
+    if (!sameTick || dartCut || dart.x !== oldDart.x || dart.y !== oldDart.y) {
+      this.dart.tick(dart, rollback, dartCut, now);
+    }
   }
 
   draw(prev: TickSnapshot, next: TickSnapshot, alpha: number, now: number) {

@@ -930,7 +930,22 @@ export class GameRenderer {
   }
 
   public pushTick(prev: TickSnapshot, next: TickSnapshot, tickDurationMs?: number, pvpRollback?: boolean) {
+    const samePvpTick = pvpRollback !== undefined && this.currState?.t === next.t && !next.over;
     if (pvpRollback !== undefined && this.currState) {
+      // A second message for this tick should not restart local interpolation.
+      if (samePvpTick && this.prevState) prev = this.prevState;
+      if (pvpRollback) {
+        const local = next.players[this.humanSeat];
+        const old = this.currState.players[this.humanSeat];
+        const from = prev.players[this.humanSeat];
+        if (from.x !== local.px || from.y !== local.py) {
+          prev = this.withPlayer(prev, this.humanSeat, { ...from, x: local.px, y: local.py });
+        }
+        // Bypass any existing touch-prediction offset on a corrected local stride.
+        if (samePvpTick ? old.x !== local.x || old.y !== local.y : old.x !== local.px || old.y !== local.py) {
+          this.resetHumanPrediction();
+        }
+      }
       this.pvpSmoothing ??= new PvpCorrectionSmoothing(1 - this.humanSeat, this.currState);
       this.pvpSmoothing.tick(this.currState, next, pvpRollback, performance.now());
     } else {
@@ -942,7 +957,7 @@ export class GameRenderer {
     if (tickDurationMs && tickDurationMs > 0) {
       this.tickIntervalMs = tickDurationMs;
     }
-    this.prevTickRenderedSimSec = prev.t * 0.05;
+    if (!samePvpTick) this.prevTickRenderedSimSec = prev.t * 0.05;
     if (!next.over) {
       this.overElapsedSimSec = 0;
       this.overElapsedRealSec = 0;
@@ -966,7 +981,7 @@ export class GameRenderer {
     } else {
       this.liveKillStop = null;
     }
-    this.tickReceivedAtMs = performance.now();
+    if (!samePvpTick) this.tickReceivedAtMs = performance.now();
     this.pausedAlpha = 1.0;
     this.processEvents(prev, next, next.events, next.over ? 0 : 0.05);
   }
