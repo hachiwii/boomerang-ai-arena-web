@@ -265,6 +265,7 @@ export class LobbyUI {
   private pvpCodeNoteTimer: number | null = null;
   private pvpCopied = false;
   private pvpCopyTimer: number | null = null;
+  private fitHeaderRaf = 0;
 
   constructor(
     root: HTMLElement,
@@ -346,16 +347,16 @@ export class LobbyUI {
         }
       }
     });
-    let fitRaf = 0;
     window.addEventListener('resize', () => {
       if (this.openSlotIdx !== null) this.closeDropdown();
-      if (!fitRaf) {
-        fitRaf = requestAnimationFrame(() => {
-          fitRaf = 0;
-          this.fitHeader();
-        });
-      }
     });
+    // Re-fit the mobile header whenever the lobby's box changes (window resize, forced-landscape rotation,
+    // fullscreen enter / exit) — including transient sizes that are later restored
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => this.scheduleFitHeader()).observe(this.container);
+    } else {
+      window.addEventListener('resize', () => this.scheduleFitHeader());
+    }
     // PvP presence = PvP tab shown AND page visible (a hidden browser tab must not auto-accept challenges)
     document.addEventListener('visibilitychange', () => this.syncPvpPresence());
 
@@ -540,6 +541,14 @@ export class LobbyUI {
    * phone's logical width (narrow phones, notch safe areas), step down: tighter tabs → icon-only platform toggle →
    * smaller title. Measured, so it also works under the forced-landscape CSS rotation.
    */
+  private scheduleFitHeader() {
+    if (this.fitHeaderRaf) return;
+    this.fitHeaderRaf = requestAnimationFrame(() => {
+      this.fitHeaderRaf = 0;
+      this.fitHeader();
+    });
+  }
+
   private fitHeader() {
     const hdr = this.container.querySelector<HTMLElement>('.lobby-header');
     if (!hdr) return;
@@ -574,6 +583,8 @@ export class LobbyUI {
     });
     this.syncKeyHintsInPlace();
     this.fitHeader();
+    // Platform switches also flip body classes / safe areas in the same tick: measure again once styles settle
+    this.scheduleFitHeader();
   }
 
   public getSelectedMap(): MapMeta {
