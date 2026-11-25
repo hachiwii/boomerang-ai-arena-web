@@ -10,7 +10,7 @@ import { CountdownStage, MatchController, type MatchCallbacks } from './game/mat
 import { buildPvpMatchConfig } from './game/pvpConfig';
 import { PvpMatchController } from './game/pvpMatchController';
 import { getPvpLobbyClient, getPvpMatchLink } from './net/pvpLobbyClient';
-import type { PvpRematchState } from './net/pvpTypes';
+import type { PvpRematchState, PvpSeriesStats } from './net/pvpTypes';
 import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
 import { buildMatchHistoryBundle, MatchHistoryStore, MatchReplayBundle } from './game/matchHistory';
 import { exportReplayToMp4, triggerMp4Download } from './game/mp4Exporter';
@@ -1447,13 +1447,14 @@ async function bootstrap() {
           : 1600;
       const note = pvpController?.getResultNote();
       const isPvp = activeConfig?.matchMode === 'pvp';
+      const series = isPvp ? countPvpSeriesGame(finalState) : undefined;
       scheduleMatchOverTimer(celebrateMs, () => {
         if (mode === 'playing') {
           resultOverlayShown = true;
           pendingMatchElo = null;
           const favorite = Boolean(lastFinishedBundle?.summary.favorite);
           if (isPvp) {
-            hudUI.showMatchResult(finalState, null, favorite, { note, pvpRematch: true });
+            hudUI.showMatchResult(finalState, null, favorite, { note, pvpRematch: true, pvpSeries: series });
             hudUI.setPvpRematchState(pvpRematchState);
           } else {
             hudUI.showMatchResult(finalState, eloResult, favorite);
@@ -1585,6 +1586,24 @@ async function bootstrap() {
     },
   });
 
+  // Rematch chain with the same opponent: counted per finished match id; a fresh challenge starts a new series
+  let pvpSeries: { counted: Set<string>; stats: PvpSeriesStats } | null = null;
+  const countPvpSeriesGame = (finalState: TickSnapshot): PvpSeriesStats | undefined => {
+    const matchId = activeConfig?.pvp?.matchId;
+    if (!matchId) return undefined;
+    if (!pvpSeries) pvpSeries = { counted: new Set(), stats: { games: 0, wins: [0, 0], draws: 0 } };
+    if (!pvpSeries.counted.has(matchId)) {
+      pvpSeries.counted.add(matchId);
+      const s = pvpSeries.stats;
+      s.games += 1;
+      // winner is the canonical result (forfeits included); anything but a seat is a draw / no winner
+      if (finalState.winner === 0 || finalState.winner === 1) s.wins[finalState.winner] += 1;
+      else s.draws += 1;
+    }
+    const { games, wins, draws } = pvpSeries.stats;
+    return { games, wins: [wins[0], wins[1]], draws };
+  };
+
   pvpLobby.on('matchStart', (info) => {
     if (activeConfig?.pvp?.matchId === info.matchId) return;
     const map = maps.find((entry) => entry.id === info.mapId);
@@ -1595,6 +1614,7 @@ async function bootstrap() {
       disposePvpMatch();
       startInteractiveMatch(buildPvpMatchConfig(info, map));
     } else if (map && mode === 'lobby' && !pvpController && !info.rematchOf) {
+      pvpSeries = null; // a new challenge (even against the same player) starts a new series
       startInteractiveMatch(buildPvpMatchConfig(info, map));
     } else {
       getPvpMatchLink(info.matchId)?.quit();

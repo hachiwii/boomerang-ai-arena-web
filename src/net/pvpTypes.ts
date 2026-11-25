@@ -47,6 +47,16 @@ export interface PvpMatchInfo {
   rematchOf?: string; // previous matchId when both players chose 再来一局
 }
 
+/**
+ * Running tally of one rematch chain with the same opponent (a fresh challenge starts a new series).
+ * Seat-indexed like the match: wins[0] = P1 (blue), wins[1] = P2 (red). Win rate = wins / games (draws count as games).
+ */
+export interface PvpSeriesStats {
+  games: number; // finished games in the series, including the one just shown
+  wins: [number, number];
+  draws: number;
+}
+
 /** Post-match choice on the PvP result screen. A disconnect after the match counts as 'left'. */
 export type PvpRematchChoice = 'undecided' | 'rematch' | 'left';
 

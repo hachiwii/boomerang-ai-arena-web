@@ -1,4 +1,4 @@
-import type { PvpNetStats, PvpRematchState } from '../net/pvpTypes';
+import type { PvpNetStats, PvpRematchState, PvpSeriesStats } from '../net/pvpTypes';
 import { EloUpdateResult, LadderEntrySnap } from '../game/leaderboard';
 import { GifClipExportResult } from '../game/gifExporter';
 import { CountdownStage } from '../game/matchController';
@@ -1747,7 +1747,7 @@ export class HudUI {
     finalState: TickSnapshot,
     eloResult: EloUpdateResult | null = null,
     initialFavorite = false,
-    opts?: { note?: string; pvpRematch?: boolean },
+    opts?: { note?: string; pvpRematch?: boolean; pvpSeries?: PvpSeriesStats },
   ) {
     this.clearTimers();
     const isRanked = this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa';
