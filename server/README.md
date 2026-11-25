@@ -59,3 +59,10 @@ walking cliff protection to each input as it simulates that frame. Reconnects
 replay the bounded match input log. After 10 seconds gone or a quit, the relay
 closes the match with a forfeit, a cause, and a canonical cutoff frame. It
 compares periodic confirmed hashes and both confirmed end reports.
+
+Clients send their `mapPool` and challenge by code. The relay selects the
+map from the challenged player's valid pool and draws the seeds. An empty
+pool includes every standard and large map. At the result screen, both players
+can request another round in the same seats or leave. A disconnect counts as
+leaving. The relay marks undecided players as left after three minutes.
+`PVP_REMATCH_TIMEOUT_MS` can shorten that window for local testing.

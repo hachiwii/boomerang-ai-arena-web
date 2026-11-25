@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { createInterface } from 'node:readline';
 import { setTimeout as sleep } from 'node:timers/promises';
@@ -14,7 +15,7 @@ const WebSocket = require('ws');
 const originKey = 'relay-integration-test-key';
 const headers = { 'x-pvp-origin-key': originKey };
 const child = spawn(process.execPath, [fileURLToPath(new URL('../server/dist/relay.mjs', import.meta.url))], {
-  env: { ...process.env, PORT: '0', HOST: '127.0.0.1', PVP_ORIGIN_KEY: originKey },
+  env: { ...process.env, PORT: '0', HOST: '127.0.0.1', PVP_ORIGIN_KEY: originKey, PVP_REMATCH_TIMEOUT_MS: '2300' },
   stdio: ['ignore', 'pipe', 'inherit'],
 });
 const lines = createInterface({ input: child.stdout });
@@ -23,6 +24,14 @@ lines.on('line', (line) => logs.push(JSON.parse(line)));
 const peers = [];
 let url;
 let request = 0;
+
+// Keep the cliff regression independent of the relay's randomized spawns.
+const edgeMap = [
+  'NAME relay-cliff', 'MODES 0', 'SPAWN 0 3.4 6 14.6 6', 'GRID 36 24',
+  ...Array.from({ length: 24 }, () => '~' + '.'.repeat(34) + '~'),
+].join('\n');
+const makeMatchEngine = (info) => makeEngine({ ...info, map: edgeMap });
+const manifest = JSON.parse(readFileSync(new URL('../public/assets/maps/manifest.json', import.meta.url), 'utf8'));
 
 async function until(find, label, timeout = 5000) {
   const stop = Date.now() + timeout;
@@ -126,7 +135,7 @@ class Peer {
   }
 
   async readyPlay(info) {
-    const engine = await makeEngine(info);
+    const engine = await makeMatchEngine(info);
     this.play = {
       info, go: null, terminal: null, timeline: new PvpTimeline(info.mySeat), log: [], hashes: new Map(),
       sim: new PvpSimulation(engine, JSON.parse(engine.state())), confirmedT: 0, predictedT: 0,
@@ -192,6 +201,7 @@ class Peer {
       // Both players hold outward near their spawn cliffs through the stalls.
       // P1 eventually dashes off deliberately to produce a confirmed end.
       if (frame < 112) input = [mySeat ? 1000 : -1000, 0, ...input.slice(2)];
+      if (frame < 36) input[2] = 0;
       if (frame >= 150) input = mySeat ? NEUTRAL : [-1000, 0, frame >= 175 ? 3 : 0, -1000, 0, 0];
       const late = mySeat === 0 && future === 28;
       if (late) {
@@ -226,7 +236,6 @@ class Peer {
   }
 }
 
-let challengeOpts = { mapId: 'stonecircle', seed: 0, spawnSeed: 0, bgmSeed: 23 };
 async function startMatch(a, b, runSimulation = true) {
   const nA = a.messages.length;
   const nB = b.messages.length;
@@ -234,13 +243,18 @@ async function startMatch(a, b, runSimulation = true) {
   b.send({ type: 'presence', present: true });
   await until(() => a.messages.slice(nA).some((m) => m.type === 'code') &&
     b.messages.slice(nB).some((m) => m.type === 'code'), 'both presences');
-  assert.deepEqual((await a.request('challenge', { code: b.welcome.code, ...challengeOpts })).result, { ok: true });
+  assert.deepEqual((await a.request('challenge', { code: b.welcome.code })).result, { ok: true });
   const getInfo = (peer, start) => until(() =>
     peer.messages.slice(start).find((m) => m.type === 'matchStart')?.info, 'matchStart');
   const [aInfo, bInfo] = await Promise.all([getInfo(a, nA), getInfo(b, nB)]);
   assert.equal(aInfo.mySeat, 0);
   assert.equal(bInfo.mySeat, 1);
   assert.equal(aInfo.matchId, bInfo.matchId);
+  assert.equal(aInfo.mapId, bInfo.mapId);
+  for (const field of ['seed', 'spawnSeed', 'bgmSeed']) {
+    assert.ok(Number.isSafeInteger(aInfo[field]) && aInfo[field] >= 0 && aInfo[field] <= 0xffffffff);
+    assert.equal(aInfo[field], bInfo[field]);
+  }
   if (runSimulation) await Promise.all([a.readyPlay(aInfo), b.readyPlay(bInfo)]);
   return aInfo.matchId;
 }
@@ -270,7 +284,7 @@ try {
   a.send({ type: 'presence', present: true });
   a.send({ type: 'ping', t: 1, rttMs: a.rtt });
   b.send({ type: 'ping', t: 1, rttMs: b.rtt });
-  const ask = (code) => a.request('challenge', { code, ...challengeOpts });
+  const ask = (code) => a.request('challenge', { code });
   assert.deepEqual((await ask(oldCode)).result, { ok: false, reason: 'not_found' });
   assert.deepEqual((await ask(next.code)).result, { ok: false, reason: 'offline' });
   b.send({ type: 'presence', present: true });
@@ -284,8 +298,11 @@ try {
   await until(() => b.welcome.code === next.code, 'token reclaim');
   assert.equal(b.welcome.token, token);
   b.send({ type: 'ping', t: 2, rttMs: b.rtt });
+  a.send({ type: 'mapPool', ids: ['twinlakes'] });
+  b.send({ type: 'mapPool', ids: ['invalid-map', 'stonecircle', 'stonecircle'] });
 
   const matchId = await startMatch(a, b);
+  assert.equal(a.play.info.mapId, 'stonecircle');
   await until(() => a.play.end && b.play.end && a.play.terminal && b.play.terminal, 'confirmed finish', 20_000);
   assert.equal(a.play.terminal.reason, 'complete');
   assert.equal(a.play.go.delay, 4);
@@ -308,7 +325,7 @@ try {
   assert.deepEqual(a.messages.filter((m) => m.type === 'peer').map((m) => m.connected), [false, true]);
   assert.equal(b.messages.filter((m) => m.type === 'matchStart' && m.info.matchId === matchId).length, 2);
 
-  const offline = await makeEngine(a.play.info);
+  const offline = await makeMatchEngine(a.play.info);
   const offlineTicks = [JSON.parse(offline.state())];
   for (const [frame, pair] of canonical.entries()) {
     assert.ok(pair[0] && pair[1]);
@@ -327,16 +344,55 @@ try {
     `${a.play.hashes.size} periodic hashes, rollback counts ${a.play.rollbacks}/${b.play.rollbacks}, ` +
     `largest rollback ${a.play.maxRollback}/${b.play.maxRollback}, catch-up batches ${a.play.maxBatch}/${b.play.maxBatch}`);
 
+  const getRematch = (peer, id, me, opponent) => peer.messages.find((m) =>
+    m.type === 'rematch' && m.matchId === id && m.me === me && m.opponent === opponent);
+  const choose = (peer, matchId, choice) => peer.send({ type: 'rematch', matchId, choice });
+  await until(() => getRematch(a, matchId, 'undecided', 'undecided') &&
+    getRematch(b, matchId, 'undecided', 'undecided'), 'both result-screen choices');
+  choose(a, matchId, 'rematch');
+  await until(() => getRematch(b, matchId, 'undecided', 'rematch'), 'peer rematch request');
+  b.send({ type: 'mapPool', ids: ['forest', 'missing'] });
+  choose(b, matchId, 'rematch');
+  const getRound = (peer) => peer.messages.find((m) => m.type === 'matchStart' && m.info.rematchOf === matchId)?.info;
+  const [roundA, roundB] = await until(() => getRound(a) && getRound(b) && [getRound(a), getRound(b)], 'new round on both sockets');
+  assert.equal(roundA.mapId, 'forest');
+  assert.equal(roundA.mySeat, 0);
+  assert.equal(roundB.mySeat, 1);
+  assert.notEqual(roundA.matchId, matchId);
+  assert.deepEqual(roundA, { ...roundB, mySeat: 0, challenger: true });
+  assert.notDeepEqual([roundA.seed, roundA.spawnSeed, roundA.bgmSeed], [a.play.info.seed, a.play.info.spawnSeed, a.play.info.bgmSeed]);
+
   const c = new Peer({ ip: '192.0.2.3', rtt: 10 });
   const d = new Peer({ ip: '192.0.2.4', rtt: 10 });
   c.connect();
   d.connect();
   await until(() => c.welcome && d.welcome, 'forfeit welcomes');
   const getTerminal = (p, id) => p.messages.find((m) => m.type === 'terminal' && m.matchId === id);
+  d.send({ type: 'mapPool', ids: ['not-on-manifest', 'canyon'] });
   const quitId = await startMatch(c, d, false);
+  assert.equal(c.messages.find((m) => m.type === 'matchStart' && m.info.matchId === quitId).info.mapId, 'canyon');
   c.send({ type: 'quit', matchId: quitId });
   const quit = await until(() => getTerminal(d, quitId), 'quit forfeit');
   assert.deepEqual(quit, { type: 'terminal', matchId: quitId, reason: 'forfeit', cause: 'quit', winner: 1, through: -1 });
+  await until(() => getRematch(d, quitId, 'undecided', 'undecided'), 'quit result choices');
+  choose(c, quitId, 'left');
+  await until(() => getRematch(d, quitId, 'undecided', 'left'), 'opponent left the result');
+  choose(d, quitId, 'left');
+  await until(() => getRematch(d, quitId, 'left', 'left'), 'both players left');
+
+  // An empty pool restores all standard and large maps.
+  d.send({ type: 'mapPool', ids: [] });
+  const waitingId = await startMatch(c, d, false);
+  const waitingInfo = d.messages.find((m) => m.type === 'matchStart' && m.info.matchId === waitingId).info;
+  assert.ok(manifest.some((map) => map.id === waitingInfo.mapId));
+  c.send({ type: 'quit', matchId: waitingId });
+  await until(() => getRematch(c, waitingId, 'undecided', 'undecided'), 'postgame before waiting timeout');
+  choose(c, waitingId, 'rematch');
+  await until(() => getRematch(c, waitingId, 'rematch', 'left') &&
+    getRematch(d, waitingId, 'left', 'rematch'), 'undecided player timed out');
+  choose(c, waitingId, 'left');
+  await until(() => getRematch(c, waitingId, 'left', 'left'), 'waiting player exited');
+
   const goneId = await startMatch(c, d, false);
   const disconnectedAt = Date.now();
   d.resumeMatchId = goneId;
@@ -345,9 +401,20 @@ try {
   assert.deepEqual(gone, { type: 'terminal', matchId: goneId, reason: 'forfeit', cause: 'disconnect', winner: 0, through: -1 });
   const forfeitMs = Date.now() - disconnectedAt;
   assert.ok(forfeitMs >= 10_000);
+  await until(() => getRematch(c, goneId, 'undecided', 'left'), 'disconnected player left postgame');
   d.connect();
   assert.deepEqual(await until(() => getTerminal(d, goneId), 'forfeit replay after reconnect'), gone);
+  await until(() => getRematch(d, goneId, 'left', 'undecided'), 'postgame choices replayed to disconnected player');
+  choose(c, goneId, 'left');
+  await until(() => getRematch(c, goneId, 'left', 'left'), 'connected player exited after a forfeit');
+
+  const dropAtResultId = await startMatch(c, d, false);
+  c.send({ type: 'quit', matchId: dropAtResultId });
+  await until(() => getRematch(d, dropAtResultId, 'undecided', 'undecided'), 'postgame before socket close');
+  d.cut();
+  await until(() => getRematch(c, dropAtResultId, 'undecided', 'left'), 'postgame socket close');
   console.log(`PvP relay lobby/origin checks and quit/disconnect forfeits passed; disconnect forfeit after ${forfeitMs} ms`);
+  console.log('PvP map pool and rematch passed: challenged pools, large maps, fresh seeds and same seats, explicit exit, disconnect, and 2300 ms undecided timeout.');
 } finally {
   for (const peer of peers) peer.close();
   lines.close();

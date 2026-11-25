@@ -1,4 +1,4 @@
-import type { PvpChallengeResult, PvpMatchInfo } from './pvpTypes.ts';
+import type { PvpChallengeResult, PvpMatchInfo, PvpRematchState } from './pvpTypes.ts';
 
 export const PVP_TICK_MS = 50;
 export const PVP_INPUT_GRACE_MS = 125;
@@ -43,8 +43,9 @@ export type ClientMessage =
   | { type: 'presence'; present: boolean }
   | { type: 'ping'; t: number; rttMs?: number }
   | { type: 'resetCode'; request: number }
-  | ({ type: 'challenge'; request: number; code: string } &
-      Pick<PvpMatchInfo, 'mapId' | 'seed' | 'spawnSeed' | 'bgmSeed'>)
+  | { type: 'mapPool'; ids: string[] }
+  | { type: 'challenge'; request: number; code: string }
+  | { type: 'rematch'; matchId: string; choice: 'rematch' | 'left' }
   | ({ matchId: string } & (
       | { type: 'ready' | 'quit' }
       | { type: 'input'; frame: number; action: Action }
@@ -65,4 +66,5 @@ export type ServerMessage =
   | { type: 'pong'; t: number; serverTime: number; expiresAt: number }
   | { type: 'challengeResult'; request: number; result: PvpChallengeResult }
   | { type: 'matchStart'; info: PvpMatchInfo }
+  | ({ type: 'rematch' } & PvpRematchState)
   | MatchMessage;
