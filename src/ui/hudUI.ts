@@ -309,9 +309,10 @@ export class HudUI {
 
     this.topBar.innerHTML = `
       <div class="hud-players">
-        ${config.slots
-          .map(
-            (s, i) => `
+        ${this.seatDisplayOrder(config.slots.length)
+          .map((i) => {
+            const s = config.slots[i];
+            return `
           <div class="hud-pcard ${this.isLocalSlot(i, s) ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}">
             <img class="hud-avatar" src="${s.avatar || ''}" alt="" />
             <div class="hud-pmeta">
@@ -322,8 +323,8 @@ export class HudUI {
               </div>
               <div class="hud-cd-track"><div class="hud-cd-fill" data-pcd="${i}"></div></div>
             </div>
-          </div>`,
-          )
+          </div>`;
+          })
           .join('')}
       </div>
 
@@ -380,13 +381,14 @@ export class HudUI {
   private renderMobileTop(slots: SlotConfig[], centerHtml: string, actionsHtml: string, chrome = false) {
     this.topBar.innerHTML = `
       <div class="m-hud-avatars">
-        ${slots
-          .map(
-            (s, i) => `
+        ${this.seatDisplayOrder(slots.length)
+          .map((i) => {
+            const s = slots[i];
+            return `
           <div class="m-av ${this.isLocalSlot(i, s) ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${s.ringAccent || s.color}" title="${s.displayName}">
             <img src="${s.avatar || ''}" alt="" draggable="false" />
-          </div>`,
-          )
+          </div>`;
+          })
           .join('')}
       </div>
       <div class="m-hud-center">${centerHtml}</div>
@@ -1706,6 +1708,16 @@ export class HudUI {
     return this.matchMode === 'pvp' ? seat === this.localSeat : slot.kind === 'human';
   }
 
+  /**
+   * Order of the top player cards / avatars. Live PvP: your own card always first (left), whatever your seat.
+   * Everything else (single player, replays) keeps seat order. Cards keep data-pcard = seat, so ticks still map.
+   */
+  private seatDisplayOrder(count: number): number[] {
+    const seats = Array.from({ length: count }, (_, i) => i);
+    if (this.matchMode !== 'pvp' || this.isReplayMode || this.localSeat < 0 || this.localSeat >= count) return seats;
+    return [this.localSeat, ...seats.filter((i) => i !== this.localSeat)];
+  }
+
   private syncResultFavoriteBtn(btn: HTMLButtonElement, isFav: boolean) {
     btn.classList.toggle('is-fav', isFav);
     btn.setAttribute('aria-pressed', String(isFav));
@@ -1777,6 +1789,9 @@ export class HudUI {
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
 
     let remainSec = 4;
+    // PvP rematch series: the tally takes the middle of the card (the outcome is already in the header and the
+    // winner is the gold #1 row), which keeps the card within a 360 px tall phone screen
+    const seriesHtml = isPvp && opts?.pvpSeries && opts.pvpSeries.games > 0 ? this.renderPvpSeriesHtml(opts.pvpSeries) : '';
     const cornerActionsHtml =
       canWatchReplay || canToggleFav
         ? `<div class="result-corner-actions">
@@ -1802,14 +1817,18 @@ export class HudUI {
     this.resultOverlay.innerHTML = `
       <div class="result-card ${cornerActionsHtml && !isPvp ? 'has-corner-actions' : ''} ${isPvp ? 'is-pvp-result' : ''}">
         ${isPvp ? this.renderPvpOutcomeHtml(finalState, cornerActionsHtml, opts?.note) : cornerActionsHtml}
-        <div class="result-kicker">${winner ? '本局胜者' : '平局结束'}</div>
         ${
-          winner
-            ? `<div class="result-winner">
-                <img src="${winner.avatar || ''}" class="result-avatar" alt="" />
-                <div class="result-wname" style="color:${winner.ringAccent || winner.color}">${winner.displayName}</div>
-              </div>`
-            : `<div class="result-wname">平局 (Draw)</div>`
+          seriesHtml
+            ? seriesHtml
+            : `<div class="result-kicker">${winner ? '本局胜者' : '平局结束'}</div>
+              ${
+                winner
+                  ? `<div class="result-winner">
+                      <img src="${winner.avatar || ''}" class="result-avatar" alt="" />
+                      <div class="result-wname" style="color:${winner.ringAccent || winner.color}">${winner.displayName}</div>
+                    </div>`
+                  : `<div class="result-wname">平局 (Draw)</div>`
+              }`
         }
         <div class="result-table">
           ${rows
@@ -1902,6 +1921,53 @@ export class HudUI {
     });
 
     startAutoReturnCountdown(4);
+  }
+
+  /**
+   * Rematch-series tally: your side always on the left. One stacked bar — your wins | draws (grey) | opponent wins —
+   * in each side's character colour; zero-count segments collapse. Win rate = wins / games (draws count as games).
+   */
+  private renderPvpSeriesHtml(series: PvpSeriesStats): string {
+    const games = Math.max(1, series.games);
+    const mySeat = this.humanSeat === 1 ? 1 : 0;
+    const side = (seat: 0 | 1) => {
+      const slot = this.slots[seat];
+      const wins = Math.max(0, series.wins[seat] ?? 0);
+      return {
+        name: slot?.displayName ?? `P${seat + 1}`,
+        color: slot?.color ?? (seat === 0 ? '#3D7EFF' : '#E8483D'),
+        wins,
+        pct: Math.round((wins / games) * 100),
+      };
+    };
+    const me = side(mySeat);
+    const opp = side(mySeat === 0 ? 1 : 0);
+    const draws = Math.max(0, series.draws);
+    const seg = (count: number, cls: string, color?: string) =>
+      count > 0
+        ? `<span class="pvp-series-seg ${cls}" style="flex-grow:${count};${color ? `background:${color};` : ''}"></span>`
+        : '';
+    // Draw count sits under the middle of the grey segment (kept away from the bar ends)
+    const drawCenterPct = Math.max(14, Math.min(86, ((me.wins + draws / 2) / games) * 100));
+    const label = `系列赛第 ${series.games} 局：${me.name} ${me.wins} 胜（${me.pct}%），${opp.name} ${opp.wins} 胜（${opp.pct}%），平局 ${draws}`;
+    return `
+      <div class="pvp-series" role="img" aria-label="${label}" title="${label}">
+        <div class="pvp-series-top">
+          <span class="pvp-series-side is-me">
+            <span class="pvp-series-name" style="color:${me.color}">${me.name}</span>
+            <span class="pvp-series-stat"><strong>${me.wins}</strong> 胜 · ${me.pct}%</span>
+          </span>
+          <span class="pvp-series-game">第 ${series.games} 局</span>
+          <span class="pvp-series-side is-opp">
+            <span class="pvp-series-stat"><strong>${opp.wins}</strong> 胜 · ${opp.pct}%</span>
+            <span class="pvp-series-name" style="color:${opp.color}">${opp.name}</span>
+          </span>
+        </div>
+        <div class="pvp-series-bar">
+          ${seg(me.wins, 'is-me', me.color)}${seg(draws, 'is-draw')}${seg(opp.wins, 'is-opp', opp.color)}
+        </div>
+        ${draws > 0 ? `<div class="pvp-series-draw-row"><span class="pvp-series-draws" style="left:${drawCenterPct.toFixed(1)}%">平局 ${draws}</span></div>` : ''}
+      </div>`;
   }
 
   /** PvP result header: outcome from the local player's side (+ optional server note such as a forfeit). */

@@ -9844,3 +9844,122 @@ body.is-mobile .result-card.is-pvp-result .result-pvp-exit-btn {
   padding-top: 11px;
   padding-bottom: 11px;
 }
+
+/* ---------- PvP result card: rematch series tally (your side always on the left) ---------- */
+.pvp-series {
+  margin: 0 0 14px;
+  padding: 9px 12px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  text-align: left;
+}
+
+.pvp-series-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+  white-space: nowrap;
+}
+
+.pvp-series-side {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pvp-series-name {
+  font-size: 13px;
+  font-weight: 900;
+}
+
+.pvp-series-stat {
+  font-size: 12px;
+  font-weight: 700;
+  color: #dce6f8;
+  font-variant-numeric: tabular-nums;
+}
+
+.pvp-series-stat strong {
+  font-size: 14px;
+  font-weight: 900;
+  color: #fff;
+}
+
+.pvp-series-game {
+  flex-shrink: 0;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.07);
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+}
+
+.pvp-series-bar {
+  display: flex;
+  gap: 2px;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.pvp-series-seg {
+  flex-basis: 0;
+  flex-shrink: 1;
+  min-width: 4px;
+  height: 100%;
+}
+
+.pvp-series-seg.is-draw {
+  background: rgba(190, 200, 218, 0.55);
+}
+
+.pvp-series-draw-row {
+  position: relative;
+  height: 14px;
+  margin-top: 3px;
+}
+
+.pvp-series-draws {
+  position: absolute;
+  top: 0;
+  transform: translateX(-50%);
+  color: #b8c3d8;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+body.is-mobile .result-card.is-pvp-result .pvp-series {
+  margin-bottom: 10px;
+  padding: 7px 12px 8px;
+}
+
+/* Narrow card (desktop mode in a portrait-width window): name over stats on each side, nothing clipped */
+.pvp-series {
+  container-type: inline-size;
+}
+
+@container (max-width: 340px) {
+  .pvp-series-top {
+    align-items: center;
+  }
+
+  .pvp-series-side {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0;
+  }
+
+  .pvp-series-side.is-opp {
+    flex-direction: column-reverse;
+    align-items: flex-end;
+  }
+}
