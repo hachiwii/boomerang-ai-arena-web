@@ -1480,6 +1480,11 @@ async function bootstrap() {
     if (pvp && link) {
       controller.stop();
       pvpLobby.leave();
+      // A challenge starts the match with no confirmation: drop any modal left open over the PvP tab
+      if (settingsModal.isOpen()) settingsModal.close();
+      if (botManager.isOpen()) botManager.close();
+      if (cricketBatchModal.isOpen()) cricketBatchModal.close();
+      if (mobileExportModal.isOpen()) mobileExportModal.close();
       pvpController = new PvpMatchController(input, config, pvp.mySeat, link, {
         ...matchCallbacks,
         onNotice: showPvpNotice,

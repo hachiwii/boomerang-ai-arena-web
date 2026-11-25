@@ -21,6 +21,7 @@ export function buildPvpMatchConfig(info: PvpMatchInfo, mapMeta: MapMeta): Match
       color: st.color,
       ringAccent: st.color,
       avatar: makeHoodieAvatarDataUrl(st.hoodie, st.hair),
+      remote: seat !== info.mySeat,
     };
   });
   return {

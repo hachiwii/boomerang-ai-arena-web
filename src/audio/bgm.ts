@@ -79,7 +79,7 @@ export function shouldUseAstraSoloSpecialBgm(bgmSeed: number): boolean {
 
 export function isAstraSoloSpecialContext(ctx: BgmMatchContext): boolean {
   if (ctx.slots.length !== 2) return false;
-  const humanSeat = ctx.slots.findIndex((s) => s.kind === 'human');
+  const humanSeat = ctx.slots.findIndex((s) => s.kind === 'human' && !s.remote);
   const astraSeat = ctx.slots.findIndex((s) => isAstraSlot(s));
   return humanSeat >= 0 && astraSeat >= 0 && shouldUseAstraSoloSpecialBgm(ctx.bgmSeed);
 }
@@ -148,7 +148,7 @@ export class BgmRuleEngine {
   public beginMatch(ctx: BgmMatchContext, initialSnapshot?: TickSnapshot | null) {
     this.mode = 'match';
     this.ctx = ctx;
-    this.humanSeat = ctx.slots.findIndex((s) => s.kind === 'human');
+    this.humanSeat = ctx.slots.findIndex((s) => s.kind === 'human' && !s.remote);
     this.astraSeat = ctx.slots.findIndex((s) => isAstraSlot(s));
     this.isAstraSoloSpecial = isAstraSoloSpecialContext(ctx);
     this.astraSoloStatus = 'active';

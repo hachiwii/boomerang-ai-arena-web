@@ -439,7 +439,7 @@ export function drawBroadcastOverlay(
     if (!np.visible) continue;
     const slot = slots[np.seat];
     if (!slot) continue;
-    const isHuman = slot.kind === 'human';
+    const isHuman = slot.kind === 'human' && !slot.remote;
     const fontSize = Math.round(11.5 * s);
     ctx.font = `700 ${fontSize}px ${fontStack}`;
     const txtW = ctx.measureText(slot.displayName).width;
@@ -494,7 +494,7 @@ export function drawBroadcastOverlay(
     ctx.fillStyle = 'rgba(15, 21, 36, 0.84)';
     ctx.fill();
     ctx.lineWidth = 1.2 * s;
-    ctx.strokeStyle = slot.kind === 'human' ? 'rgba(102, 163, 255, 0.65)' : 'rgba(255, 255, 255, 0.16)';
+    ctx.strokeStyle = slot.kind === 'human' && !slot.remote ? 'rgba(102, 163, 255, 0.65)' : 'rgba(255, 255, 255, 0.16)';
     ctx.stroke();
 
     // Colored left accent stripe

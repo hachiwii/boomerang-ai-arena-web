@@ -94,6 +94,7 @@ export interface SlotConfig {
   ringAccent?: string;
   avatar: string | null;
   copyNumber?: number; // 1, 2, 3... when same AI has duplicates
+  remote?: boolean; // PvP: the opponent (a human on the other client); "you" styling and audio focus skip it
 }
 
 export interface MatchConfig {

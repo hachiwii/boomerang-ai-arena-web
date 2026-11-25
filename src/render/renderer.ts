@@ -603,7 +603,7 @@ export class GameRenderer {
     const models = await Promise.all(slots.map((s) => this.loadCharModel(s.charKey)));
     this.rigs = slots.map((slot, idx) => {
       const ringCol = slot.ringAccent || slot.color;
-      const rig = new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human', this.scene, hq, this.dartOutline);
+      const rig = new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human' && !slot.remote, this.scene, hq, this.dartOutline);
       rig.setSunDirection(this.sunDirVec.x, this.sunDirVec.y, this.sunDirVec.z);
       return rig;
     });
@@ -763,7 +763,7 @@ export class GameRenderer {
     for (let i = 0; i < this.slots.length; i++) {
       const s = this.slots[i];
       const el = document.createElement('div');
-      el.className = `nameplate ${s.kind === 'human' ? 'nameplate-human' : ''}`;
+      el.className = `nameplate ${s.kind === 'human' && !s.remote ? 'nameplate-human' : ''}`;
       el.innerHTML = `<span class="np-eye" data-eye="none"></span><span class="np-dot" style="background:${s.ringAccent || s.color}"></span><span class="np-txt">${s.displayName}</span>`;
       this.nameplateLayer.appendChild(el);
       this.nameplates.push(el);
