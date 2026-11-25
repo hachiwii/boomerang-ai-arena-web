@@ -17,15 +17,19 @@ DOMAIN="${CF_DOMAIN:-}"
 JOBS="${CF_UPLOAD_JOBS:-6}"
 FORCE_ALL=0
 SKIP_BUILD=0
+MARK_ONLY=0
 
 for arg in "$@"; do
   case "$arg" in
     --all|--force-all) FORCE_ALL=1 ;;
     --skip-build) SKIP_BUILD=1 ;;
+    --mark-uploaded) MARK_ONLY=1; SKIP_BUILD=1 ;;
     --jobs=*) JOBS="${arg#*=}" ;;
     *)
       echo "Unknown option: $arg" >&2
-      echo "Usage: $0 [--all] [--skip-build] [--jobs=N]" >&2
+      echo "Usage: $0 [--all] [--skip-build] [--jobs=N] [--mark-uploaded]" >&2
+      echo "  --all            ignore the upload cache and re-upload every file" >&2
+      echo "  --mark-uploaded  record the current dist/ as live in the upload cache, upload nothing" >&2
       exit 1
       ;;
   esac
@@ -54,15 +58,38 @@ if [[ ! -f "dist/index.html" ]]; then
 fi
 
 echo "==> Uploading dist/ to Cloudflare R2 bucket '${BUCKET}' (concurrency=${JOBS})..."
-CF_R2_BUCKET="$BUCKET" CF_DOMAIN="$DOMAIN" CF_UPLOAD_JOBS="$JOBS" CF_FORCE_ALL="$FORCE_ALL" node --input-type=module <<'EOF'
+# Local record of what is already in the bucket (key -> sha256 + headers): unchanged files are never re-sent.
+# The in-browser C++ compiler alone is ~100 MB and only changes when @yowasp/clang is upgraded.
+CACHE_FILE="$ROOT_DIR/.deploy-cache/cloudflare-r2.json"
+mkdir -p "$(dirname "$CACHE_FILE")"
+
+CF_R2_BUCKET="$BUCKET" CF_DOMAIN="$DOMAIN" CF_UPLOAD_JOBS="$JOBS" CF_FORCE_ALL="$FORCE_ALL" CF_CACHE_FILE="$CACHE_FILE" \
+CF_MARK_ONLY="$MARK_ONLY" node --input-type=module <<'EOF'
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import crypto from 'node:crypto';
 
 const bucket = process.env.CF_R2_BUCKET;
 const domain = (process.env.CF_DOMAIN || '').trim();
 const jobs = Math.max(1, Number.parseInt(process.env.CF_UPLOAD_JOBS || '6', 10) || 6);
 const forceAll = process.env.CF_FORCE_ALL === '1';
+const markOnly = process.env.CF_MARK_ONLY === '1';
+const cacheFile = process.env.CF_CACHE_FILE;
+let cache = { bucket, files: {} };
+try {
+  const loaded = JSON.parse(fs.readFileSync(cacheFile, 'utf8'));
+  if (loaded && loaded.bucket === bucket && loaded.files) cache = loaded;
+} catch {}
+function saveCache() {
+  const tmp = `${cacheFile}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify(cache, null, 1));
+  fs.renameSync(tmp, cacheFile);
+}
+function fingerprint(fileObj, contentType, cacheControl) {
+  const hash = crypto.createHash('sha256').update(fs.readFileSync(fileObj.abs)).digest('hex');
+  return `${hash}|${contentType}|${cacheControl}`;
+}
 const distDir = path.resolve('dist');
 
 const MIME_TYPES = {
@@ -118,7 +145,7 @@ async function alreadyLiveWithMatchingSize(key, expectedSize, expectedContentTyp
   if (!domain || forceAll || !isSkippableLargeHashedAsset(key)) return false;
   try {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 6000);
+    const timer = setTimeout(() => controller.abort(), 20000);
     const resp = await fetch(`https://${domain}/${key}`, {
       method: 'HEAD',
       headers: { 'Accept-Encoding': 'identity' },
@@ -162,13 +189,25 @@ function runWranglerPut(fileObj, contentType, cacheControl) {
 async function uploadWithRetry(fileObj) {
   const ct = getContentType(fileObj.key);
   const cc = getCacheControl(fileObj.key);
+  const fp = fingerprint(fileObj, ct, cc);
+  if (markOnly) {
+    cache.files[fileObj.key] = fp;
+    return { skipped: true, reason: 'marked' };
+  }
+  if (!forceAll && cache.files[fileObj.key] === fp) {
+    return { skipped: true, reason: 'unchanged' };
+  }
   if (await alreadyLiveWithMatchingSize(fileObj.key, fileObj.size, ct)) {
-    return { skipped: true };
+    cache.files[fileObj.key] = fp;
+    saveCache();
+    return { skipped: true, reason: 'already live' };
   }
   let lastErr;
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
       await runWranglerPut(fileObj, ct, cc);
+      cache.files[fileObj.key] = fp;
+      saveCache();
       return { skipped: false };
     } catch (err) {
       lastErr = err;
@@ -213,7 +252,9 @@ async function worker() {
       done++;
       if (res.skipped) {
         skipped++;
-        console.log(`  [${done}/${total}] skip (already live): ${f.key} (${formatSize(f.size)})`);
+        if (res.reason !== 'unchanged' || f.size >= 1024 * 1024) {
+          console.log(`  [${done}/${total}] skip (${res.reason}): ${f.key} (${formatSize(f.size)})`);
+        }
       } else {
         uploaded++;
         if (f.size >= 1024 * 1024 || done % 15 === 0 || done === assetFiles.length) {
@@ -235,11 +276,13 @@ if (failedErr) {
 
 // Upload entry files last so visitors never see new HTML referencing unuploaded assets
 for (const f of entryFiles) {
-  await uploadWithRetry(f);
+  const res = await uploadWithRetry(f);
   done++;
-  uploaded++;
-  console.log(`  [${done}/${total}] uploaded (entry): ${f.key} (${formatSize(f.size)})`);
+  if (res.skipped) skipped++;
+  else uploaded++;
+  console.log(`  [${done}/${total}] ${res.skipped ? `skip (${res.reason})` : 'uploaded'} (entry): ${f.key} (${formatSize(f.size)})`);
 }
+saveCache();
 
 console.log(`==> R2 upload finished: ${uploaded} uploaded, ${skipped} skipped.`);
 EOF

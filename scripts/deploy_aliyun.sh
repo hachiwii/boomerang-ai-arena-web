@@ -31,9 +31,25 @@ fi
 echo "==> Building production bundle (dist/)..."
 npm run build
 
+# The in-browser C++ compiler (@yowasp/clang: assets/llvm*-<hash>.{wasm,tar}, ~100 MB) never changes for a given
+# content hash: skip each file that is already in the bucket with the same size.
+SKIP_ARGS=()
+for f in dist/assets/llvm*; do
+  [[ -f "$f" ]] || continue
+  name="$(basename "$f")"
+  local_size="$(stat -f %z "$f" 2>/dev/null || stat -c %s "$f")"
+  remote_size="$(aliyun ossutil stat "oss://${BUCKET}/assets/${name}" --region "$REGION" 2>/dev/null \
+    | awk -F': *' '/^Content-Length/ {print $2}' | tr -d '[:space:]')"
+  if [[ "$remote_size" == "$local_size" ]]; then
+    SKIP_ARGS+=(--exclude "$name")
+    echo "    skip (already in bucket): assets/${name}"
+  fi
+done
+
 echo "==> Uploading dist/assets/ to oss://${BUCKET}/assets/ (${REGION})..."
 aliyun ossutil cp -r -f dist/assets/ "oss://${BUCKET}/assets/" \
   --region "$REGION" \
+  ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"} \
   --exclude "*.wasm" \
   --cache-control "public, max-age=2592000"
 
@@ -42,6 +58,7 @@ aliyun ossutil cp -r -f dist/assets/ "oss://${BUCKET}/assets/" \
 echo "==> Uploading dist/assets/*.wasm with Content-Type: application/wasm..."
 aliyun ossutil cp -r -f dist/assets/ "oss://${BUCKET}/assets/" \
   --region "$REGION" \
+  ${SKIP_ARGS[@]+"${SKIP_ARGS[@]}"} \
   --include "*.wasm" \
   --content-type "application/wasm" \
   --cache-control "public, max-age=2592000"

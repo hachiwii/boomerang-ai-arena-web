@@ -10,3 +10,6 @@ __pycache__/
 
 # Bot WASM is a build output of wasm/bots/*.cpp (npm run build:wasm); only the C++ sources are versioned
 public/wasm/bots/
+
+# Deploy upload caches (what is already live in the buckets)
+.deploy-cache/
