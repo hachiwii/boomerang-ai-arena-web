@@ -104,8 +104,9 @@ const LIFTOFF_MAX_AGE_MS = 95;
 
 /**
  * Mobile touch controls for live matches:
- * - Left stick: touch-down-as-center + dynamic follow-center beyond maxR (MOBA-style instant reversals),
- *   6% deadzone with instant 100% speed beyond (capped to 50% while actively aiming a throw).
+ * - Left stick: logical touch-down-as-center + dynamic follow-center beyond maxR (MOBA-style instant reversals),
+ *   while the visual stick base stays anchored in place at its configured layout position;
+ *   6% deadzone with instant 100% speed beyond (capped to 50% while actively aiming a throw when bulletTime is on).
  * - Right stick: touch-down-as-center, lift-off drift stabilization, live indicator even in pending/locked
  *   states, seamless transition from in-flight dart into aiming, delayed 0.1x slow-mo, editable cancel target.
  * - Slash & Dash buttons around the aim stick (icons follow current function; dash shows cooldown).
@@ -365,16 +366,7 @@ export class MobileControls {
     this.dashCdText.textContent = ready ? '' : (cd / 20).toFixed(1);
   }
 
-  // ---------- Move stick (touch-down-as-center + dynamic follow-center) ----------
-
-  private clampMoveCenter(cx: number, cy: number, r: number): [number, number] {
-    const w = this.layer.clientWidth || getLogicalViewport().width;
-    const h = this.layer.clientHeight || getLogicalViewport().height;
-    const isRight = this.settings.get().mobileLayout.move.side === 'r';
-    const minX = isRight ? Math.min(w - r, w * 0.45 + r) : r;
-    const maxX = isRight ? w - r : Math.max(r, w * 0.55 - r);
-    return [Math.max(minX, Math.min(maxX, cx)), Math.max(r, Math.min(h - r, cy))];
-  }
+  // ---------- Move stick (logical touch-down + dynamic follow-center; visual base stays fixed in place) ----------
 
   private bindMove() {
     const start = (e: PointerEvent) => {
@@ -382,16 +374,11 @@ export class MobileControls {
       e.preventDefault();
       this.movePointer = e.pointerId;
       safeCapture(e.currentTarget as HTMLElement, e.pointerId);
-      const r = this.px.move.d / 2;
       const [lx, ly] = localPoint(this.layer, e.clientX, e.clientY);
-      // Always center the joystick on the initial touch point so thumb starts neutral with zero drift
-      const [cx, cy] = this.clampMoveCenter(lx, ly, r);
-      this.moveCenterX = cx;
-      this.moveCenterY = cy;
-      const el = this.els.move;
-      el.style.left = `${(cx - r).toFixed(1)}px`;
-      el.style.top = `${(cy - r).toFixed(1)}px`;
-      el.classList.add('is-active');
+      // Logical center starts on the initial touch point (zero initial drift), while the visual base stays fixed
+      this.moveCenterX = lx;
+      this.moveCenterY = ly;
+      this.els.move.classList.add('is-active');
       this.updateMove(lx, ly);
     };
     const move = (e: PointerEvent) => {
@@ -422,21 +409,14 @@ export class MobileControls {
     let dy = ly - this.moveCenterY;
     const len = Math.hypot(dx, dy);
     if (len > maxR) {
-      // Dynamic follow-center: pull the stick center along behind the thumb so reversing only crosses 1×maxR!
+      // Dynamic follow-center: pull the logical center along behind the thumb so reversing only crosses 1×maxR,
+      // while the visual stick element remains stationary at this.px.move.
       const ux = dx / len;
       const uy = dy / len;
-      const [nextCx, nextCy] = this.clampMoveCenter(lx - ux * maxR, ly - uy * maxR, r);
-      this.moveCenterX = nextCx;
-      this.moveCenterY = nextCy;
-      this.els.move.style.left = `${(nextCx - r).toFixed(1)}px`;
-      this.els.move.style.top = `${(nextCy - r).toFixed(1)}px`;
-      dx = lx - nextCx;
-      dy = ly - nextCy;
-      const cl = Math.hypot(dx, dy);
-      if (cl > maxR) {
-        dx = (dx / cl) * maxR;
-        dy = (dy / cl) * maxR;
-      }
+      this.moveCenterX = lx - ux * maxR;
+      this.moveCenterY = ly - uy * maxR;
+      dx = ux * maxR;
+      dy = uy * maxR;
     }
     this.moveKnob.style.transform = `translate(calc(-50% + ${dx.toFixed(1)}px), calc(-50% + ${dy.toFixed(1)}px))`;
     this.input.setVirtualMove(dx / maxR, dy / maxR);
@@ -445,7 +425,6 @@ export class MobileControls {
   private resetMoveStick() {
     this.els.move.classList.remove('is-active');
     this.moveKnob.style.transform = 'translate(-50%, -50%)';
-    placeControl(this.els.move, this.px.move);
   }
 
   // ---------- Aim / recall stick ----------

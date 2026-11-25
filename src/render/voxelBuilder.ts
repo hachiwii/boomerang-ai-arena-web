@@ -269,11 +269,124 @@ function mixHex(hex: string, weight: number, target = 255): string {
   return out;
 }
 
+function boostTeamRimColor(hex: string): THREE.Color {
+  const c = new THREE.Color(hex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  c.getHSL(hsl);
+  const s = Math.max(hsl.s, 0.92);
+  const l = Math.min(0.72, Math.max(0.63, hsl.l * 1.18));
+  return new THREE.Color().setHSL(hsl.h, s, l);
+}
+
+const dartShellGeoCache = new Map<string, THREE.BufferGeometry>();
+let sharedDartInnerOutlineMat: THREE.MeshBasicMaterial | null = null;
+const dartOuterRimMatCache = new Map<string, THREE.MeshBasicMaterial>();
+
+function getDartInnerOutlineMat(): THREE.MeshBasicMaterial {
+  if (!sharedDartInnerOutlineMat) {
+    sharedDartInnerOutlineMat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color('#100C18'),
+      side: THREE.BackSide,
+      toneMapped: false,
+    });
+  }
+  return sharedDartInnerOutlineMat;
+}
+
+function getDartOuterRimMat(colorHex: string): THREE.MeshBasicMaterial {
+  const key = colorHex.toLowerCase();
+  let mat = dartOuterRimMatCache.get(key);
+  if (!mat) {
+    mat = new THREE.MeshBasicMaterial({
+      color: boostTeamRimColor(colorHex),
+      side: THREE.BackSide,
+      toneMapped: false,
+    });
+    dartOuterRimMatCache.set(key, mat);
+  }
+  return mat;
+}
+
+/**
+ * Self-intersection-free rounded Minkowski outline shell (BackSide) around the 42 boomerang voxels.
+ * Top is capped just below the main mesh top face so internal walls never poke through from above,
+ * while bottom & far walls provide a clean, even silhouette from the 58° arena camera at any tilt.
+ */
+function getDartRoundedShellGeo(scale: number, wXY: number, wBot: number, topInset: number): THREE.BufferGeometry {
+  const key = `${scale.toFixed(3)}_${wXY.toFixed(4)}_${wBot.toFixed(4)}_${topInset.toFixed(4)}`;
+  const cached = dartShellGeoCache.get(key);
+  if (cached) return cached;
+
+  const unit = DART_CELL * scale;
+  const halfU = unit * 0.5;
+  const topY = halfU - topInset;
+  const botY = -halfU - wBot;
+
+  const segPerCorner = 3;
+  const ring: [number, number][] = [];
+  const cornerCenters: [number, number, number][] = [
+    [halfU, halfU, 0],
+    [-halfU, halfU, Math.PI * 0.5],
+    [-halfU, -halfU, Math.PI],
+    [halfU, -halfU, Math.PI * 1.5],
+  ];
+  for (const [ox, oz, a0] of cornerCenters) {
+    for (let s = 0; s <= segPerCorner; s++) {
+      const ang = a0 + (Math.PI * 0.5 * s) / segPerCorner;
+      ring.push([ox + Math.cos(ang) * wXY, oz + Math.sin(ang) * wXY]);
+    }
+  }
+
+  const m = ring.length;
+  const voxels = computeDartVoxels();
+  const pos: number[] = [];
+  const idx: number[] = [];
+  let vBase = 0;
+
+  for (const v of voxels) {
+    const cx = v.i * unit;
+    const cz = -v.j * unit;
+    for (let k = 0; k < m; k++) {
+      const k2 = (k + 1) % m;
+      const [rx0, rz0] = ring[k];
+      const [rx1, rz1] = ring[k2];
+      pos.push(
+        cx + rx1, botY, cz + rz1,
+        cx + rx0, botY, cz + rz0,
+        cx + rx0, topY, cz + rz0,
+        cx + rx1, topY, cz + rz1,
+      );
+      idx.push(vBase, vBase + 1, vBase + 2, vBase, vBase + 2, vBase + 3);
+      vBase += 4;
+    }
+    const botCenter = vBase;
+    pos.push(cx, botY, cz);
+    vBase += 1;
+    const botRingStart = vBase;
+    for (let k = 0; k < m; k++) {
+      pos.push(cx + ring[k][0], botY, cz + ring[k][1]);
+    }
+    vBase += m;
+    for (let k = 0; k < m; k++) {
+      const k2 = (k + 1) % m;
+      idx.push(botCenter, botRingStart + k, botRingStart + k2);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  dartShellGeoCache.set(key, geo);
+  return geo;
+}
+
 /**
  * Exact 3-blade voxel boomerang from chars_voxel.py dart_part() + make_dart()!
  * (Pattern lives in dartShape.ts so the mobile HUD icon matches the model exactly.)
+ * When `dualOutline` is enabled (world-space flying/ground dart), adds a high-contrast
+ * dark inner ink shell + vibrant team-colored outer rim shell for clear arena visibility.
  */
-export function buildVoxelDartMesh(colorHex: string, scale = 1.0): THREE.Group {
+export function buildVoxelDartMesh(colorHex: string, scale = 1.0, dualOutline = false): THREE.Group {
   const main = colorHex;
   const light = mixHex(colorHex, 0.5, 255);
   const deep = mixHex(colorHex, 0.28, 20);
@@ -286,13 +399,13 @@ export function buildVoxelDartMesh(colorHex: string, scale = 1.0): THREE.Group {
 
   const part: VoxelPartData = {
     pivot: [0.5, 0.5, 0.5],
-    outline: true,
+    outline: !dualOutline,
     voxels,
     paint: [],
     slabs: [],
   };
 
-  const { mainGeo, outlineGeo } = buildVoxelPartGeometry(part, DART_CELL * scale, 0.012);
+  const { mainGeo, outlineGeo } = buildVoxelPartGeometry(part, DART_CELL * scale, dualOutline ? 0 : 0.015);
   const group = new THREE.Group();
   const mat = new THREE.MeshLambertMaterial({
     vertexColors: true,
@@ -301,7 +414,13 @@ export function buildVoxelDartMesh(colorHex: string, scale = 1.0): THREE.Group {
     emissiveIntensity: 0.14,
   });
   group.add(new THREE.Mesh(mainGeo, mat));
-  if (outlineGeo) {
+  if (dualOutline) {
+    const k = scale / 1.42;
+    const innerGeo = getDartRoundedShellGeo(scale, 0.046 * k, 0.022 * k, 0.002 * k);
+    const outerGeo = getDartRoundedShellGeo(scale, 0.082 * k, 0.048 * k, 0.0045 * k);
+    group.add(new THREE.Mesh(innerGeo, getDartInnerOutlineMat()));
+    group.add(new THREE.Mesh(outerGeo, getDartOuterRimMat(colorHex)));
+  } else if (outlineGeo) {
     group.add(new THREE.Mesh(outlineGeo, getOutlineMaterial()));
   }
   return group;

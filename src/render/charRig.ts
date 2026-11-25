@@ -99,13 +99,13 @@ function getSoftShadowTexture(): THREE.CanvasTexture {
  * Exact port of chars.py make_blur_disc: translucent radial disc with 3 brighter sector wedges
  * rendered just beneath a flying boomerang in high graphics quality.
  */
-function buildDartBlurDiscMesh(colorHex: string, r = 0.56): THREE.Mesh {
+function buildDartBlurDiscMesh(colorHex: string, r = 0.55): THREE.Mesh {
   const seg = 56;
   const col = new THREE.Color(colorHex).lerp(new THREE.Color('#ffffff'), 0.45);
   const radii: [number, number][] = [
     [0.14, 0.0],
-    [0.5, 0.26],
-    [0.85, 0.34],
+    [0.5, 0.13],
+    [0.85, 0.17],
     [1.0, 0.0],
   ];
   const pos: number[] = [];
@@ -325,8 +325,8 @@ export class CharacterRig {
       this.rigRoot.add(this.heldDart);
     }
 
-    // World-space flying / ground boomerang + HQ spinning motion-blur disc
-    this.flyingDart = buildVoxelDartMesh(this.color, 1.42);
+    // World-space flying / ground boomerang (with high-contrast dual outline) + HQ spinning motion-blur disc
+    this.flyingDart = buildVoxelDartMesh(this.color, 1.42, true);
     this.flyingDart.visible = false;
     const dartFirstMesh = this.flyingDart.children[0] as THREE.Mesh | undefined;
     if (dartFirstMesh && dartFirstMesh.material instanceof THREE.MeshLambertMaterial) {
@@ -334,7 +334,7 @@ export class CharacterRig {
     }
     parentScene.add(this.flyingDart);
 
-    this.dartBlurDisc = buildDartBlurDiscMesh(this.color, 0.56);
+    this.dartBlurDisc = buildDartBlurDiscMesh(this.color, 0.55);
     parentScene.add(this.dartBlurDisc);
 
     // Sun-aligned soft radial ground shadows (blob + blob2 for separated upper sliced half!)
@@ -1100,10 +1100,10 @@ export class CharacterRig {
       const sc = !hq && currD.st === DState.BACK && currD.age < 3 ? 1.08 + 0.08 * Math.sin(gt * 2.5) : 1.0;
       this.flyingDart.scale.setScalar(sc);
 
-      // HQ spinning translucent blur disc under flying boomerang (chars.py:273 + render_bl.py:271-276)
+      // HQ spinning translucent blur disc positioned cleanly beneath the boomerang & its dual outline shells
       if (hq) {
         this.dartBlurDisc.visible = true;
-        this.dartBlurDisc.position.set(x, y - 0.01, z);
+        this.dartBlurDisc.position.set(x, y - 0.098, z);
         this.dartBlurDisc.rotation.set(0, spin * 0.37, 0);
       } else {
         this.dartBlurDisc.visible = false;
@@ -1140,7 +1140,7 @@ export class CharacterRig {
         this.flyingDart.rotation.set(tilt, spin, tilt * 0.6);
         this.flyingDart.scale.setScalar(0.84);
       } else {
-        this.flyingDart.position.set(x, 0.08, z);
+        this.flyingDart.position.set(x, 0.12, z);
         const settleSpin = hq && this.lastDartLandTick > -900 ? 2.15 * this.lastDartLandTick + this.seat * 1.3 + 6.0 : this.seat * 1.1;
         this.flyingDart.rotation.set(0.12, settleSpin, 0);
         this.flyingDart.scale.setScalar(hq ? 0.84 : 0.92);
@@ -1527,6 +1527,7 @@ export class CharacterRig {
     if (this.slicedUpper) parentScene.remove(this.slicedUpper);
     if (this.slicedLower) parentScene.remove(this.slicedLower);
     if (this.slicedMat) this.slicedMat.dispose();
+    if (this.flyingDartMat) this.flyingDartMat.dispose();
     for (const m of this.partMaterials) m.dispose();
   }
 }
