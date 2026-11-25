@@ -8,7 +8,7 @@ import {
   PVP_CODE_TTL_MS, type PvpChallengeFailReason, type PvpMatchInfo, type PvpRematchChoice,
 } from '../src/net/pvpTypes.ts';
 import {
-  PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_TICK_MS, NEUTRAL, isAction,
+  PVP_COUNTDOWN_MS, PVP_INPUT_GRACE_MS, PVP_MAX_FRAMES, PVP_PROTOCOL, PVP_TICK_MS, NEUTRAL, isAction,
   type Action, type ClientMessage, type Go, type InputRow, type MatchEnd, type MatchTerminal,
   type Seat, type ServerMessage,
 } from '../src/net/pvpProtocol.ts';
@@ -341,6 +341,10 @@ function makeMatch(challenger: Reservation, target: Reservation, time: number, r
 }
 
 function onHello(conn: Connection, msg: Extract<ClientMessage, {type: 'hello'}>, time: number) {
+  if (msg.protocol !== PVP_PROTOCOL) {
+    conn.ws.close(4003, 'Protocol mismatch');
+    return;
+  }
   if (conn.reservation || typeof msg.buildId !== 'string' || !/^[a-zA-Z0-9._-]{1,80}$/.test(msg.buildId)) return;
   let p = typeof msg.token === 'string' && msg.token.length === 48 ? tokens.get(msg.token) : undefined;
   if (p && p.expiresAt <= time && !p.match) p = undefined;

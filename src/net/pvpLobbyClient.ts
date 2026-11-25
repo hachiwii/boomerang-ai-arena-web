@@ -3,6 +3,7 @@ import type {
   PvpRematchState,
 } from './pvpTypes';
 import type { ClientMessage, MatchMessage, ServerMessage } from './pvpProtocol';
+import { PVP_PROTOCOL } from './pvpProtocol';
 import { mockPvpMatchLink, type PvpMatchLink } from './pvpMatchLink';
 import { PvpLobbyMock } from './pvpLobbyMock';
 
@@ -220,7 +221,7 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
     socket.onopen = () => {
       if (this.socket !== socket) return;
       this.send({
-        type: 'hello', buildId: __BUILD_ID__, token: this.token, matchId: this.match?.info.matchId,
+        type: 'hello', protocol: PVP_PROTOCOL, buildId: __BUILD_ID__, token: this.token, matchId: this.match?.info.matchId,
       }, true);
     };
     socket.onmessage = (event) => {
@@ -229,10 +230,10 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
       try { message = JSON.parse(event.data); } catch { return; }
       if (message && typeof message === 'object') this.receive(message);
     };
-    socket.onclose = (event) => this.disconnect(socket, event.code === 4001);
+    socket.onclose = (event) => this.disconnect(socket, event.code === 4001, event.code === 4003);
   }
 
-  private disconnect(socket: WebSocket, replaced = false) {
+  private disconnect(socket: WebSocket, replaced = false, outdated = false) {
     if (this.socket !== socket) return;
     this.socket = null;
     socket.close();
@@ -247,7 +248,13 @@ class RelayPvpLobbyClient implements PvpLobbyClient {
       this.postgame = null;
       this.emit('rematch', rematch);
     }
-    if (replaced) {
+    if (outdated) {
+      // The relay speaks another protocol version: reconnecting cannot help, the page must be reloaded
+      this.replaced = true;
+      this.setState('offline');
+      this.emit('notice', '游戏已更新，请刷新页面后再进行 PvP');
+      this.endUnavailableMatch();
+    } else if (replaced) {
       this.replaced = true;
       this.setState('offline');
       this.emit('notice', 'PvP 会话已在另一个页面打开');

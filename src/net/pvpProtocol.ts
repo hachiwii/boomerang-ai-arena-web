@@ -1,5 +1,7 @@
 import type { PvpChallengeResult, PvpMatchInfo, PvpRematchState } from './pvpTypes.ts';
 
+// Bump whenever client and relay messages change incompatibly: the relay closes older/newer clients with 4003.
+export const PVP_PROTOCOL = 2;
 export const PVP_TICK_MS = 50;
 export const PVP_INPUT_GRACE_MS = 125;
 export const PVP_MAX_FRAMES = 800;
@@ -39,7 +41,7 @@ export type MatchTerminal =
   | { reason: 'cancelled' | 'timeout' | 'complete'; through: number };
 
 export type ClientMessage =
-  | { type: 'hello'; buildId: string; token: string | null; matchId?: string }
+  | { type: 'hello'; protocol?: number; buildId: string; token: string | null; matchId?: string }
   | { type: 'presence'; present: boolean }
   | { type: 'ping'; t: number; rttMs?: number }
   | { type: 'resetCode'; request: number }
