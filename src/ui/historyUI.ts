@@ -7,7 +7,14 @@ import {
 import { Mp4ExportResult } from '../game/mp4Exporter';
 import { formatExportPresetLabel, SettingsStore } from '../game/settings';
 
-export type HistoryFilter = 'all' | 'ranked' | 'cricket' | 'custom';
+export type HistoryFilter = 'all' | 'ranked' | 'cricket' | 'custom' | 'pvp';
+
+const FILTER_MODE_NAME: Record<Exclude<HistoryFilter, 'all'>, string> = {
+  ranked: '排位赛',
+  cricket: '斗蛐蛐',
+  custom: '自定义',
+  pvp: 'PvP',
+};
 
 export interface HistoryOpenOptions {
   filter?: HistoryFilter;
@@ -42,6 +49,10 @@ function getMatchWinnerInfo(m: MatchHistorySummary): { key: string; label: strin
   if (m.winner < 0) return null;
   const p = m.players.find((pl) => pl.seat === m.winner) ?? m.players[m.winner];
   if (!p) return null;
+  if (m.matchMode === 'pvp') {
+    // Both PvP seats are human: the winner is either you or your (anonymous) opponent
+    return p.seat === m.humanSeat ? { key: 'human', label: '玩家' } : { key: 'pvp-opponent', label: 'PvP 对手' };
+  }
   if (p.kind === 'human') {
     return { key: 'human', label: '玩家' };
   }
@@ -157,6 +168,7 @@ export class HistoryModal {
             <button type="button" class="history-filter-btn" data-hfilter="ranked">🏆 排位赛 <span data-fcount="ranked">0</span></button>
             <button type="button" class="history-filter-btn" data-hfilter="cricket">🦗 斗蛐蛐 <span data-fcount="cricket">0</span></button>
             <button type="button" class="history-filter-btn" data-hfilter="custom">🎛️ 自定义 <span data-fcount="custom">0</span></button>
+            <button type="button" class="history-filter-btn" data-hfilter="pvp">🌐 PvP <span data-fcount="pvp">0</span></button>
           </div>
           <button
             type="button"
@@ -394,7 +406,7 @@ export class HistoryModal {
           ? `已保存 ${totalCount} 场（含 ${favTotal} 收藏）· 各模式上限 ${MAX_HISTORY_PER_MODE}`
           : `已保存 ${totalCount} 场 · 各模式上限 ${MAX_HISTORY_PER_MODE}`;
     } else {
-      const modeName = this.filter === 'ranked' ? '排位赛' : this.filter === 'cricket' ? '斗蛐蛐' : '自定义';
+      const modeName = FILTER_MODE_NAME[this.filter];
       const modeAll = this.summaries.filter((m) => getHistoryModeBucket(m.matchMode) === this.filter);
       const modeFav = modeAll.filter((m) => m.favorite).length;
       const modeRegular = modeAll.length - modeFav;
@@ -433,6 +445,7 @@ export class HistoryModal {
       ranked: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'ranked').length,
       cricket: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'cricket').length,
       custom: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'custom').length,
+      pvp: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'pvp').length,
     };
     for (const btn of this.filterBtns) {
       const f = btn.dataset.hfilter as HistoryFilter;
@@ -578,8 +591,27 @@ export class HistoryModal {
       });
   }
 
+  /** PvP row: P1 vs P2 in seat order; your side outlined (its name carries （YOU）), the winner marked with 🏆. */
+  private renderPvpPlayersHtml(m: MatchHistorySummary): string {
+    const bySeat = [...m.players].sort((a, b) => a.seat - b.seat);
+    const chip = (p: (typeof bySeat)[number]) => {
+      const isMe = p.seat === m.humanSeat;
+      const isWinner = m.winner >= 0 && m.winner === p.seat;
+      const killTag = p.kills > 0 ? `<span class="hm-p-kills">${p.kills}杀</span>` : '';
+      return `
+        <span class="hm-pchip ${isMe ? 'is-human' : ''} ${isWinner ? 'is-winner' : ''}" title="${isMe ? '你' : '对手'} · ${escapeHtml(p.displayName)}">
+          ${isWinner ? '<span class="hm-p-crown" aria-label="胜者">🏆</span>' : ''}
+          <img class="hm-p-av" src="${p.avatar || ''}" alt="" style="border-color:${p.ringAccent || p.color}" />
+          <span class="hm-p-name">${escapeHtml(p.displayName)}</span>
+          ${killTag}
+        </span>`;
+    };
+    return bySeat.map(chip).join('<span class="hm-vs">vs</span>');
+  }
+
   private renderRow(m: MatchHistorySummary): string {
     const isRanked = m.matchMode === 'ranked-solo' || m.matchMode === 'ranked-ffa';
+    const isPvp = m.matchMode === 'pvp';
     const modeLabel =
       m.matchMode === 'ranked-solo'
         ? '⚔️ SOLO 排位'
@@ -587,13 +619,34 @@ export class HistoryModal {
           ? '👑 混战排位'
           : m.matchMode === 'cricket'
             ? `🦗 斗蛐蛐 ${m.slots.length === 2 ? '1v1' : '4P'}`
-            : `🎛️ 自定义${Math.abs((m.speed || 1) - 1) > 0.01 ? ` ${m.speed.toFixed(1)}x` : ''}`;
-    const modeCls = isRanked ? 'hm-mode-ranked' : m.matchMode === 'cricket' ? 'hm-mode-cricket' : 'hm-mode-custom';
+            : isPvp
+              ? '🌐 PvP 1v1'
+              : `🎛️ 自定义${Math.abs((m.speed || 1) - 1) > 0.01 ? ` ${m.speed.toFixed(1)}x` : ''}`;
+    const modeCls = isRanked
+      ? 'hm-mode-ranked'
+      : m.matchMode === 'cricket'
+        ? 'hm-mode-cricket'
+        : isPvp
+          ? 'hm-mode-pvp'
+          : 'hm-mode-custom';
 
-    const humanP = m.humanSeat >= 0 ? m.players[m.humanSeat] : null;
+    const humanP = m.humanSeat >= 0 ? (m.players.find((p) => p.seat === m.humanSeat) ?? m.players[m.humanSeat]) : null;
     let outcomeText = '';
     let outcomeCls = 'is-spec';
-    if (humanP) {
+    if (isPvp && humanP) {
+      // Outcome from your side of the 1v1
+      const tail = m.earlyExit ? ' · 提前结束' : '';
+      if (m.winner >= 0 && m.winner === m.humanSeat) {
+        outcomeText = `🏆 胜利${tail}`;
+        outcomeCls = 'is-win';
+      } else if (m.winner >= 0) {
+        outcomeText = `💥 失败${tail}`;
+        outcomeCls = 'is-loss';
+      } else {
+        outcomeText = `🤝 平局${tail}`;
+        outcomeCls = 'is-draw';
+      }
+    } else if (humanP) {
       if (m.winner >= 0 && m.winner === m.humanSeat) {
         outcomeText = '🏆 胜利';
         outcomeCls = 'is-win';
@@ -642,8 +695,8 @@ export class HistoryModal {
         </div>
 
         <div class="hm-bottom">
-          <div class="hm-players">
-            ${orderedPlayers
+          <div class="hm-players ${isPvp ? 'is-pvp' : ''}">
+            ${isPvp ? this.renderPvpPlayersHtml(m) : orderedPlayers
               .map((p) => {
                 const isWinner = m.winner >= 0 && m.winner === p.seat;
                 const isHuman = p.kind === 'human';
@@ -726,7 +779,7 @@ export class HistoryModal {
           : '暂无对局记录';
       const emptyHint =
         totalCount === 0
-          ? `完成任意排位赛、斗蛐蛐或自定义对局后，每个模式各自动保存最近 ${MAX_HISTORY_PER_MODE} 场的完整观战回放。`
+          ? `完成任意排位赛、斗蛐蛐、自定义或 PvP 对局后，每个模式各自动保存最近 ${MAX_HISTORY_PER_MODE} 场的完整观战回放。`
           : this.winnerFilter
             ? '当前筛选条件下暂无该角色获胜的记录，试试将赢家切换回「全部赢家」或调整模式筛选。'
             : this.favoritesOnly

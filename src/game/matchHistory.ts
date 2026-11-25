@@ -2,13 +2,14 @@ import { EloUpdateResult } from './leaderboard';
 import { EngineMapData, MatchConfig, MatchMode, SlotConfig, TickSnapshot } from './types';
 
 export const MAX_HISTORY_PER_MODE = 50;
-export const HISTORY_MODE_BUCKETS = ['ranked', 'cricket', 'custom'] as const;
+export const HISTORY_MODE_BUCKETS = ['ranked', 'cricket', 'custom', 'pvp'] as const;
 export type HistoryModeBucket = (typeof HISTORY_MODE_BUCKETS)[number];
 export const MAX_HISTORY_RECORDS = MAX_HISTORY_PER_MODE * HISTORY_MODE_BUCKETS.length;
 
 export function getHistoryModeBucket(matchMode: MatchMode): HistoryModeBucket {
   if (matchMode === 'ranked-solo' || matchMode === 'ranked-ffa') return 'ranked';
   if (matchMode === 'cricket') return 'cricket';
+  if (matchMode === 'pvp') return 'pvp';
   return 'custom';
 }
 
@@ -45,6 +46,7 @@ export interface MatchHistorySummary {
   speed: number;
   durationTicks: number;
   tickCount: number;
+  /** Local player's seat (PvP: config.pvp.mySeat — both PvP slots are kind 'human'); -1 = AI-only match. */
   humanSeat: number;
   winner: number;
   earlyExit: boolean;
@@ -55,6 +57,8 @@ export interface MatchHistorySummary {
   eloOldRank: number | null;
   eloNewRank: number | null;
   favorite?: boolean;
+  /** Online 1v1 only: server match id and the local seat (seat 0 = P1 challenger, seat 1 = P2). */
+  pvp?: { matchId: string; mySeat: 0 | 1 };
 }
 
 export interface MatchReplayPayload {
@@ -81,7 +85,8 @@ export function buildMatchHistoryBundle(
   idSeq = (idSeq + 1) % 100000;
   const id = `${playedAt}-${String(idSeq).padStart(5, '0')}`;
   const finalState = ticks[ticks.length - 1];
-  const humanSeat = config.slots.findIndex((s) => s.kind === 'human');
+  const humanSeat =
+    config.matchMode === 'pvp' && config.pvp ? config.pvp.mySeat : config.slots.findIndex((s) => s.kind === 'human');
 
   const players: HistoryPlayerSummary[] = config.slots.map((slot, seat) => {
     const p = finalState?.players[seat];
@@ -124,6 +129,7 @@ export function buildMatchHistoryBundle(
     eloOldRank: eloResult ? eloResult.oldRank : null,
     eloNewRank: eloResult ? eloResult.newRank : null,
     favorite: false,
+    ...(config.matchMode === 'pvp' && config.pvp ? { pvp: { matchId: config.pvp.matchId, mySeat: config.pvp.mySeat } } : {}),
   };
 
   const replay: MatchReplayPayload = {
@@ -137,7 +143,7 @@ export function buildMatchHistoryBundle(
 
 /**
  * Local IndexedDB-backed match history store retaining up to 50 matches per mode
- * (Ranked, Cricket, and Custom) with full tick snapshots for instant
+ * (Ranked, Cricket, Custom and PvP) with full tick snapshots for instant
  * spectator-perspective replay & timeline scrubbing.
  */
 export class MatchHistoryStore {
@@ -287,6 +293,7 @@ export class MatchHistoryStore {
       ranked: [],
       cricket: [],
       custom: [],
+      pvp: [],
     };
     for (const r of rows) {
       if (r.favorite) continue;

@@ -9657,3 +9657,48 @@ body.is-mobile .start-btn.pvp-fight-btn {
   font-weight: 700;
   text-align: left;
 }
+
+/* ---------- PvP in match history ---------- */
+.hm-mode-pvp {
+  background: rgba(61, 126, 255, 0.2);
+  color: #bcd9ff;
+}
+
+.hm-players.is-pvp {
+  flex-wrap: nowrap;
+}
+
+.hm-players.is-pvp .hm-pchip {
+  min-width: 0;
+  flex-shrink: 1;
+}
+
+.hm-vs {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 900;
+  font-style: italic;
+  letter-spacing: 0.5px;
+  color: rgba(205, 218, 242, 0.6);
+}
+
+.hm-p-crown {
+  flex-shrink: 0;
+  font-size: 11px;
+  line-height: 1;
+}
+
+/* 5 mode tabs: mode tabs · 只看收藏 · 赢家 · 导出设置 wrap as one flow, so a long winner name moves to the second
+   row next to 导出设置 instead of opening a third row */
+.history-toolbar {
+  justify-content: flex-start;
+  column-gap: 8px;
+}
+
+.history-toolbar-left {
+  display: contents;
+}
+
+.history-toolbar .history-export-cfg-btn {
+  margin-left: auto;
+}
