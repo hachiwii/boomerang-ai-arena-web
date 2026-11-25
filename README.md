@@ -49,16 +49,24 @@ npm run build
 ```env
 # 可选：填写后在主界面底部展示备案号并链接至工信部备案查询页；留空则不显示
 VITE_ICP_NUMBER=
+
+# 可选：在线 1v1（PvP）。生产构建默认关闭；开启需同时填写中转服务器的公网 WebSocket 地址
+# （放在 CDN 后面，不要填源站 IP）。本地 vite dev 默认开启并连接 ws://localhost:8787/ws
+VITE_PVP_ENABLED=
+VITE_PVP_URL=
 ```
+
+PvP 中转服务器代码在 [`server/`](server/README.md)，协议与联机设计见 [`docs/pvp-design.md`](docs/pvp-design.md)。
 
 ### 4. 重新编译 WASM 或重新导出资源（可选）
 
-仓库已包含编译好的 `public/wasm/*.{js,wasm}` 与导出好的 `public/assets/*`，常规前端开发无需重新编译。
+仓库包含编译好的规则引擎 `public/wasm/engine.{js,wasm}` 与导出好的 `public/assets/*`；Bot 只提交 C++ 源码（`wasm/bots/*.cpp`），编译产物 `public/wasm/bots/` 不进仓库。
 
-- 若修改了 `wasm/include/dart.hpp` 或 `wasm/bots/*.cpp`（需本机安装 [Emscripten](https://emscripten.org/) `em++`）：
+- 克隆后首次运行、或修改了 `wasm/include/dart.hpp` / `wasm/bots/*.cpp` 时，编译 WASM（需本机安装 [Emscripten](https://emscripten.org/) `em++`）：
   ```bash
   npm run build:wasm
   ```
+  只改了引擎时可用 `python3 scripts/build_wasm.py --engine-only`。
 - 若需从上游仓库重新导出地图/角色资源：
   ```bash
   MEOW_AI_ARENA_DIR=/path/to/meow-ai-arena npm run export:assets
