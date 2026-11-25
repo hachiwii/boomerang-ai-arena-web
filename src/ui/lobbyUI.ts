@@ -482,6 +482,8 @@ export class LobbyUI {
 
   public setLoading(msg: string | null) {
     this.loadingMessage = msg;
+    // Something is launching (training, a match): not challengeable meanwhile; back on the tab if it failed
+    this.syncPvpPresence();
     if (this.activeTab === 'pvp') {
       this.syncPvpInPlace();
       return;
@@ -1876,13 +1878,14 @@ export class LobbyUI {
     return client;
   }
 
-  /** enter() while the PvP tab is on screen (lobby shown, page visible, no match starting), leave() otherwise. */
+  /** enter() while the PvP tab is on screen (lobby shown, page visible, nothing launching), leave() otherwise. */
   private syncPvpPresence() {
     const want =
       this.activeTab === 'pvp' &&
       !this.container.classList.contains('hidden') &&
       document.visibilityState === 'visible' &&
-      !this.pvpStarting;
+      !this.pvpStarting &&
+      !this.loadingMessage;
     if (want === this.pvpPresent) return;
     this.pvpPresent = want;
     if (want) this.getPvpClient().enter();
