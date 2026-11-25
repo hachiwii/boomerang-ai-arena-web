@@ -115,6 +115,11 @@ export class HudUI {
   /** Seat highlighted as "you" (PvP: config.pvp.mySeat — both PvP slots are kind 'human'). */
   private localSeat = -1;
   private netStats: PvpNetStats | null = null;
+  /** PvP: the running / finished match (rematch states for other matches are ignored). */
+  private pvpMatchId: string | null = null;
+  /** PvP result card with 再来一局 / 退出 is up. */
+  private pvpRematchOpen = false;
+  private pvpRematchState: PvpRematchState | null = null;
   private isReplayMode = false;
   private replayBundle: MatchReplayBundle | null = null;
   private lastTickState: TickSnapshot | null = null;
@@ -268,6 +273,10 @@ export class HudUI {
     this.matchMode = config.matchMode;
     this.humanSeat = humanSeat;
     this.localSeat = humanSeat;
+    // A new match (also a rematch started from the result screen) drops the previous result card's state
+    this.pvpMatchId = isPvp && config.pvp ? config.pvp.matchId : null;
+    this.pvpRematchOpen = false;
+    this.pvpRematchState = null;
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
@@ -345,7 +354,7 @@ export class HudUI {
 
     this.topBar.querySelector('#hud-exit')?.addEventListener('click', () => {
       this.clearTimers();
-      this.callbacks.onReturnToLobby();
+      this.exitFromMatch();
     });
     this.topBar.querySelector('#hud-settings')?.addEventListener('click', () => {
       this.callbacks.onOpenSettings();
@@ -413,8 +422,17 @@ export class HudUI {
     });
     this.topBar.querySelector('#hud-exit')?.addEventListener('click', () => {
       this.clearTimers();
-      this.callbacks.onReturnToLobby();
+      this.exitFromMatch();
     });
+  }
+
+  /** Top-bar exit (主界面 / ESC icon): on the PvP rematch card it means 退出, like the card's own button. */
+  private exitFromMatch() {
+    if (this.pvpRematchOpen && !this.isReplayMode) {
+      this.choosePvpExit();
+      return;
+    }
+    this.callbacks.onReturnToLobby();
   }
 
   /** Restart icon follows the PC "R" availability (eliminated / finished ranked / AI spectating). Never in PvP. */
@@ -871,6 +889,9 @@ export class HudUI {
     this.matchMode = summary.matchMode;
     this.humanSeat = -1; // Spectator perspective
     this.localSeat = summary.matchMode === 'pvp' ? summary.humanSeat : -1;
+    this.pvpRematchOpen = false;
+    this.pvpRematchState = null;
+    this.pvpMatchId = null;
     this.netStats = null;
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
@@ -1564,10 +1585,74 @@ export class HudUI {
     this.renderNetStats();
   }
 
-  /** PvP: latency to the relay server, shown at the end of the perf line (desktop & mobile); null removes it. */
-  /** PvP result screen: both players' 再来一局 / 退出 choices; null clears. TODO(UI): implement. */
-  public setPvpRematchState(_state: PvpRematchState | null): void {}
+  /**
+   * PvP result screen: both players' 再来一局 / 退出 choices (relay `rematch` event); null resets the card to
+   * undecided. States for another match than the one shown are ignored.
+   */
+  public setPvpRematchState(state: PvpRematchState | null): void {
+    if (state && this.pvpMatchId && state.matchId !== this.pvpMatchId) return;
+    this.pvpRematchState = state ? { ...state } : null;
+    this.syncPvpRematchCard();
+  }
 
+  /** True while the PvP result card with 再来一局 / 退出 is shown (main.ts: ESC there = 退出 → onPvpExit). */
+  public isPvpRematchOpen(): boolean {
+    return this.pvpRematchOpen;
+  }
+
+  private choosePvpRematch() {
+    const st = this.currentRematchState();
+    if (!this.pvpRematchOpen || st.me !== 'undecided' || st.opponent === 'left') return;
+    // Optimistic: show the waiting state right away; the relay's echo (setPvpRematchState) confirms it
+    this.pvpRematchState = { ...st, me: 'rematch' };
+    this.syncPvpRematchCard();
+    this.callbacks.onPvpRematch?.();
+  }
+
+  private choosePvpExit() {
+    const st = this.currentRematchState();
+    if (st.me === 'left') return;
+    this.pvpRematchState = { ...st, me: 'left' };
+    this.syncPvpRematchCard();
+    if (this.callbacks.onPvpExit) this.callbacks.onPvpExit();
+    else this.callbacks.onReturnToLobby();
+  }
+
+  private currentRematchState(): PvpRematchState {
+    return this.pvpRematchState ?? { matchId: this.pvpMatchId ?? '', me: 'undecided', opponent: 'undecided' };
+  }
+
+  /** 再来一局 shows my choice (等待对方… / 即将开始… / disabled when the opponent left); the cue shows theirs. */
+  private syncPvpRematchCard() {
+    if (!this.pvpRematchOpen) return;
+    const again = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-pvp-rematch');
+    const exit = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-pvp-exit');
+    const cue = this.resultOverlay.querySelector<HTMLElement>('#pvp-rematch-cue');
+    if (!again || !exit || !cue) return;
+    const st = this.currentRematchState();
+    let label = '🔁 再来一局';
+    let mode: 'ready' | 'pending' | 'blocked' = 'ready';
+    if (st.me === 'left') {
+      mode = 'blocked';
+    } else if (st.opponent === 'left') {
+      label = '对方已退出';
+      mode = 'blocked';
+    } else if (st.me === 'rematch') {
+      label = st.opponent === 'rematch' ? '即将开始…' : '等待对方…';
+      mode = 'pending';
+    }
+    if (again.textContent !== label) again.textContent = label;
+    again.disabled = mode !== 'ready';
+    again.classList.toggle('is-pending', mode === 'pending');
+    again.classList.toggle('is-blocked', mode === 'blocked');
+    exit.disabled = st.me === 'left';
+    // Cue floats on the button (no layout shift): the opponent already wants another round
+    const showCue = st.opponent === 'rematch' && st.me === 'undecided';
+    cue.classList.toggle('is-visible', showCue);
+    again.classList.toggle('has-cue', showCue);
+  }
+
+  /** PvP: latency to the relay server, shown at the end of the perf line (desktop & mobile); null removes it. */
   public setNetStats(stats: PvpNetStats | null): void {
     this.netStats = stats ? { ...stats } : null;
     this.renderNetStats();
@@ -1646,6 +1731,8 @@ export class HudUI {
 
   /**
    * @param opts.note PvP: one short line under the outcome (e.g. 对方已断开，判你获胜).
+   * @param opts.pvpRematch PvP: 再来一局 / 退出 instead of 返回主界面, no auto-return countdown and no 回放 (leaving
+   *   the screen would abandon the rematch; the match stays in history). Choices update via setPvpRematchState.
    */
   public showMatchResult(
     finalState: TickSnapshot,
@@ -1660,6 +1747,8 @@ export class HudUI {
       return;
     }
     const isPvp = this.matchMode === 'pvp';
+    const rematchCard = isPvp && Boolean(opts?.pvpRematch);
+    this.pvpRematchOpen = rematchCard;
 
     const winner = finalState.winner >= 0 ? this.slots[finalState.winner] : null;
     const rows = finalState.players
@@ -1672,8 +1761,9 @@ export class HudUI {
 
     // PvP: no restart — a rematch is a new challenge from the PvP tab
     const canRestart = !isPvp && (this.humanSeat < 0 || !(finalState.players[this.humanSeat]?.alive));
-    const canWatchReplay = this.humanSeat >= 0 && Boolean(this.callbacks.onWatchCurrentReplay);
-    const canToggleFav = canWatchReplay && Boolean(this.callbacks.onToggleCurrentFavorite);
+    const hasBundle = this.humanSeat >= 0 && Boolean(this.callbacks.onWatchCurrentReplay);
+    const canWatchReplay = hasBundle && !rematchCard;
+    const canToggleFav = hasBundle && Boolean(this.callbacks.onToggleCurrentFavorite);
     const isFav = Boolean(initialFavorite);
     const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
 
@@ -1727,14 +1817,32 @@ export class HudUI {
             })
             .join('')}
         </div>
-        <div class="result-btn-row">
-          ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">↻ 重开 (${rstKey})</button>` : ''}
-          <button class="start-btn result-back-btn" id="btn-result-back">返回主界面 (${remainSec}s)</button>
-        </div>
+        ${
+          rematchCard
+            ? `<div class="result-pvp-btns">
+                <button type="button" class="rr-back-btn result-pvp-exit-btn" id="btn-pvp-exit">退出</button>
+                <div class="result-pvp-again-wrap">
+                  <button type="button" class="start-btn result-pvp-again-btn" id="btn-pvp-rematch">🔁 再来一局</button>
+                  <span class="result-pvp-cue" id="pvp-rematch-cue" aria-live="polite">对方想再来一局</span>
+                </div>
+              </div>`
+            : `<div class="result-btn-row">
+                ${canRestart ? `<button class="result-restart-btn" id="btn-result-restart">↻ 重开 (${rstKey})</button>` : ''}
+                <button class="start-btn result-back-btn" id="btn-result-back">返回主界面 (${remainSec}s)</button>
+              </div>`
+        }
       </div>
     `;
     this.nameplateLayer.classList.add('hidden');
     this.resultOverlay.classList.remove('hidden');
+
+    if (rematchCard) {
+      this.resultOverlay.querySelector('#btn-pvp-rematch')?.addEventListener('click', () => this.choosePvpRematch());
+      this.resultOverlay.querySelector('#btn-pvp-exit')?.addEventListener('click', () => this.choosePvpExit());
+      this.bindResultFavoriteBtn(this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-fav'), isFav);
+      this.syncPvpRematchCard();
+      return;
+    }
 
     const backBtn = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-back');
     backBtn?.addEventListener('click', () => {
@@ -2154,6 +2262,7 @@ export class HudUI {
 
   public cancelResultOverlay(restarting = false, isRanked = false) {
     this.clearTimers();
+    this.pvpRematchOpen = false;
     this.setCountdown(null);
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
@@ -2164,6 +2273,8 @@ export class HudUI {
 
   public hide() {
     this.clearTimers();
+    this.pvpRematchOpen = false;
+    this.pvpRematchState = null;
     this.isReplayMode = false;
     this.replayBundle = null;
     this.clearReplayRefs();

@@ -9815,3 +9815,32 @@ body.is-mobile .start-btn.pvp-fight-btn {
     box-shadow: 0 0 0 6px rgba(63, 217, 138, 0);
   }
 }
+
+/* Landscape phone: the PvP card (note + rematch buttons) fits 360px-tall screens without scaling */
+body.is-mobile .result-card.is-pvp-result {
+  padding-top: 16px;
+  padding-bottom: 16px;
+}
+
+body.is-mobile .result-card.is-pvp-result .result-pvp-head {
+  margin-bottom: 10px;
+}
+
+body.is-mobile .result-card.is-pvp-result .result-winner {
+  margin-bottom: 10px;
+}
+
+body.is-mobile .result-card.is-pvp-result .result-avatar {
+  width: 44px;
+  height: 44px;
+}
+
+body.is-mobile .result-card.is-pvp-result .result-table {
+  margin-bottom: 10px;
+}
+
+body.is-mobile .result-card.is-pvp-result .start-btn.result-pvp-again-btn,
+body.is-mobile .result-card.is-pvp-result .result-pvp-exit-btn {
+  padding-top: 11px;
+  padding-bottom: 11px;
+}
