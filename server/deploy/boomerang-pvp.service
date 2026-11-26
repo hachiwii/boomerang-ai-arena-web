@@ -16,8 +16,11 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-MemoryHigh=200M
-MemoryMax=300M
+# Per-match latency stats → /var/lib/boomerang-pvp/stats (STATE_DIRECTORY); the IP-region database adds ~110 MB
+StateDirectory=boomerang-pvp
+StateDirectoryMode=0750
+MemoryHigh=320M
+MemoryMax=450M
 
 [Install]
 WantedBy=multi-user.target

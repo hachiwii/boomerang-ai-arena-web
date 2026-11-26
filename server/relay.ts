@@ -1,6 +1,7 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { join } from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { WebSocket, WebSocketServer } from 'ws';
 import maps from '../public/assets/maps/manifest.json' with { type: 'json' };
@@ -12,6 +13,10 @@ import {
   type Action, type ClientMessage, type Go, type InputRow, type MatchEnd, type MatchTerminal,
   type Seat, type ServerMessage,
 } from '../src/net/pvpProtocol.ts';
+import {
+  RegionResolver, StatsStore, UNKNOWN_REGION, addRttSample, classifyClient, newSeatStats, provinceKey, seatRecord,
+  summarize, type ClientClass, type MatchRecord, type SeatStats,
+} from './stats.ts';
 
 const READY_MS = 20_000;
 const RECONNECT_MS = 10_000;
@@ -53,6 +58,7 @@ interface Connection {
   pingAt: number | null;
   wsRtt: number;
   appRtt: number;
+  client: ClientClass; // derived from the User-Agent at upgrade (stats); the raw UA is not kept
 }
 
 interface Reservation {
@@ -88,6 +94,7 @@ interface Match {
   terminal?: MatchTerminal;
   postgame?: Postgame;
   removeAt?: number;
+  stats: { createdAt: number; seats: [SeatStats, SeatStats] };
 }
 
 function ipOf(req: IncomingMessage): string {
@@ -118,6 +125,14 @@ const active = new Map<string, Match>();
 const retained = new Map<string, Match>();
 // A result that can still launch a rematch holds one slot in the match cap.
 const rematchSlots = new Set<Match>();
+
+// Latency stats (server/stats.ts): one JSON line per finished match in PVP_STATS_DIR, or in <StateDirectory>/stats
+// under systemd. Without either, nothing is recorded and the IP-region database is not loaded.
+const statsDir = process.env.PVP_STATS_DIR ||
+  (process.env.STATE_DIRECTORY ? join(process.env.STATE_DIRECTORY.split(':')[0], 'stats') : '');
+const statsStore = statsDir ? new StatsStore(statsDir) : null;
+const regions = new RegionResolver();
+if (statsStore) void regions.open().then(() => log('stats-ready', { dir: statsDir, regions: regions.ready }));
 
 function log(event: string, details: object = {}) {
   console.log(JSON.stringify({ time: new Date().toISOString(), event, ...details }));
@@ -264,10 +279,40 @@ function finish(match: Match, terminal: MatchTerminal, time: number) {
     publishRematch(match);
   }
   log('match-ended', { matchId, ...terminal });
+  recordStats(match, terminal, time);
+}
+
+function recordStats(match: Match, terminal: MatchTerminal, time: number) {
+  try {
+    const seats = match.stats.seats.map(seatRecord) as MatchRecord['seats'];
+    const record: MatchRecord = {
+      v: 1,
+      matchId: match.info.matchId,
+      mapId: match.info.mapId,
+      startedAt: new Date(match.stats.createdAt).toISOString(),
+      endedAt: new Date(time).toISOString(),
+      reason: terminal.reason,
+      ...('cause' in terminal && terminal.cause ? { cause: terminal.cause } : {}),
+      frames: Math.max(0, terminal.through + 1),
+      delay: match.go ? match.go.delay : null,
+      rematch: Boolean(match.info.rematchOf),
+      seats,
+    };
+    log('match-stats', {
+      matchId: record.matchId, delay: record.delay, frames: record.frames,
+      seats: seats.map((x) => ({
+        where: provinceKey(x.region), client: x.client, rtt: x.rttMedian, p95: x.rttP95, fills: x.fills,
+        late: x.lateDropped, reconnects: x.reconnects,
+      })),
+    });
+    void statsStore?.append(record);
+  } catch (err) {
+    log('stats-failed', { error: String(err) });
+  }
 }
 
 // Finalize each frame once. A missed input stops movement and starts no action.
-function finalizeThrough(match: Match, through: number) {
+function finalizeThrough(match: Match, through: number, countFills = false) {
   const rows: InputRow[] = [];
   through = Math.min(through, PVP_MAX_FRAMES - 1);
   while (match.nextDeadline <= through) {
@@ -277,6 +322,10 @@ function finalizeThrough(match: Match, through: number) {
       if (!pair[seat]) {
         pair[seat] = NEUTRAL;
         rows.push([frame, seat, NEUTRAL]);
+        // Stats: a missed deadline while connected = the player's input was late (network / stalled tab)
+        if (countFills && frame >= (match.go?.delay ?? 0) && match.disconnectedAt[seat] === null) {
+          match.stats.seats[seat].fills++;
+        }
       }
     }
     if (rows.length >= 64) broadcast(match, { type: 'inputs', matchId: match.info.matchId, rows: rows.splice(0) });
@@ -289,7 +338,7 @@ function due(match: Match, time: number) {
 }
 
 function maintainMatch(match: Match, time: number): boolean {
-  if (match.go) finalizeThrough(match, due(match, time - PVP_INPUT_GRACE_MS));
+  if (match.go) finalizeThrough(match, due(match, time - PVP_INPUT_GRACE_MS), true);
   for (const seat of [0, 1] as const) {
     const disconnected = match.disconnectedAt[seat];
     if (disconnected !== null && time - disconnected >= RECONNECT_MS) {
@@ -327,6 +376,14 @@ function makeMatch(challenger: Reservation, target: Reservation, time: number, r
     inputs: [],
     nextDeadline: 0,
     readyBy: time + READY_MS,
+    stats: {
+      createdAt: time,
+      // Region is resolved here (the IP database loads asynchronously at start); only the region is kept
+      seats: [challenger, target].map((p) => newSeatStats(
+        p.conn?.client ?? 'other',
+        statsStore && p.conn ? regions.lookup(p.conn.ip) : UNKNOWN_REGION,
+      )) as [SeatStats, SeatStats],
+    },
   };
   for (const p of match.players) {
     p.match = match;
@@ -377,6 +434,7 @@ function onHello(conn: Connection, msg: Extract<ClientMessage, {type: 'hello'}>,
   conn.reservation = p;
   previous?.ws.close(4001, 'Session replaced');
   const match = p.match ?? (p.lastMatch?.info.matchId === msg.matchId ? p.lastMatch : undefined);
+  if (p.match) p.match.stats.seats[p === p.match.players[0] ? 0 : 1].reconnects++;
   send(conn, { type: 'welcome', token: p.token, code: p.code, expiresAt: p.expiresAt, matchId: match?.info.matchId });
   if (match) rejoin(conn, match, p === match.players[0] ? 0 : 1);
 }
@@ -432,6 +490,9 @@ function onMessage(conn: Connection, raw: string) {
     case 'ping':
       if (!int(msg.t, 0, Number.MAX_SAFE_INTEGER)) return;
       if (int(msg.rttMs, 0, 5000)) conn.appRtt = msg.rttMs;
+      if (p.match?.go && time >= p.match.go.startAt) {
+        addRttSample(p.match.stats.seats[p === p.match.players[0] ? 0 : 1], Math.max(conn.wsRtt, conn.appRtt));
+      }
       if (!p.match && p.presentUntil !== 0) {
         p.presentUntil = time + PRESENCE_MS;
         renew(p, time);
@@ -489,10 +550,17 @@ function onMessage(conn: Connection, raw: string) {
   if (msg.type === 'input') {
     const { frame, action } = msg;
     const maxFuture = Math.floor((time - match.go.startAt) / PVP_TICK_MS) + match.go.delay + 2;
+    const seatStats = match.stats.seats[seat];
+    if (int(frame, match.go.delay, PVP_MAX_FRAMES - 1) && frame < match.nextDeadline && isAction(action) &&
+        match.inputs[frame]?.[seat] === NEUTRAL) {
+      seatStats.lateDropped++; // arrived after the relay had already filled this frame
+    }
     if (!int(frame, Math.max(match.nextDeadline, match.go.delay), Math.min(PVP_MAX_FRAMES - 1, maxFuture)) || !isAction(action)) return;
     const pair = match.inputs[frame] ?? (match.inputs[frame] = []);
     if (pair[seat]) return;
     pair[seat] = action;
+    const lateMs = time - (match.go.startAt + frame * PVP_TICK_MS);
+    if (lateMs > seatStats.maxLateMs) seatStats.maxLateMs = lateMs;
     broadcast(match, { type: 'inputs', matchId, rows: [[frame, seat, action]] });
     return;
   }
@@ -531,6 +599,22 @@ const server = createServer((req, res) => {
   const remote = req.socket.remoteAddress;
   const local = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
   const health = req.method === 'GET' && req.url === '/healthz';
+  const url = new URL(req.url ?? '/', 'http://relay');
+  if (req.method === 'GET' && url.pathname === '/stats') {
+    // Loopback only, never through the CDN (which adds the origin key to every request)
+    if (!local || !statsStore) {
+      res.writeHead(404).end();
+      return;
+    }
+    const days = Math.min(90, Math.max(1, Number(url.searchParams.get('days')) || 7));
+    statsStore.read(days)
+      .then((records) => {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
+          .end(JSON.stringify(summarize(records, days)));
+      })
+      .catch(() => res.writeHead(500).end());
+    return;
+  }
   if (!(local && health) && !authorized(req)) {
     res.writeHead(403).end();
     return;
@@ -558,9 +642,11 @@ server.on('upgrade', (req, socket, head) => {
   }
   sockets.handleUpgrade(req, socket, head, (ws) => {
     req.socket.setNoDelay(true);
+    const ua = req.headers['user-agent'];
     const conn: Connection = {
       ip, ws, openedAt: now(), pingAt: null, wsRtt: 0, appRtt: 0,
       messages: newWindow(), challenges: newWindow(),
+      client: classifyClient(typeof ua === 'string' ? ua : undefined),
     };
     connections.add(conn);
     connectionsByIp.set(ip, (connectionsByIp.get(ip) ?? 0) + 1);
@@ -619,6 +705,11 @@ setInterval(() => {
     }
   }
 }, 4000).unref();
+
+if (statsStore) {
+  void statsStore.prune();
+  setInterval(() => void statsStore.prune(), 6 * 3_600_000).unref();
+}
 
 const port = Number(process.env.PORT ?? 8787);
 const host = process.env.HOST ?? '0.0.0.0';

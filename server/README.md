@@ -28,7 +28,7 @@ and `em++` on `PATH`.
 
 ## Origin artifacts
 
-Copy `server/dist/relay.mjs`, `server/package.json`, and `server/package-lock.json` into
+Copy `server/dist/relay.mjs`, `server/dist/stats-report.mjs`, `server/package.json`, and `server/package-lock.json` into
 `/opt/boomerang-pvp`, preserving the `dist/` directory. Run `npm ci --omit=dev` in
 that directory. The bundle includes the standard map list and protocol constants.
 The runtime dependency is `ws`.
@@ -44,6 +44,26 @@ the CDN or a trusted reverse proxy that controls those headers.
 
 Lobby reservations and running matches live in one relay process. A process
 restart clears them. Put both players on the same origin instance.
+
+## Latency stats
+
+Every finished match appends one JSON line to a daily file, `<stats dir>/YYYY-MM-DD.jsonl` (kept 90 days). The stats
+dir is `PVP_STATS_DIR`, or `$STATE_DIRECTORY/stats` under systemd (`StateDirectory=boomerang-pvp` →
+`/var/lib/boomerang-pvp/stats`). With neither set, nothing is recorded and the IP database is not loaded.
+
+A line holds the match (map, start/end, end reason, frames played, chosen input delay, rematch) and, per seat:
+RTT median / p95 / max / jitter over the match (the value the delay choice uses), relay neutral fills while
+connected, inputs dropped as late, the latest accepted input vs its deadline, reconnects, a coarse client class
+(desktop / android / ios / wechat / qq / harmony / other) and the region (country; province and ISP in mainland
+China). **IP addresses and User-Agents are never written or logged** — only these derived values.
+
+Read it on the box with `node /opt/boomerang-pvp/dist/stats-report.mjs [--days N] [--json]`, from a dev machine with
+`scripts/pvp_stats.sh [days]`, or as JSON from loopback `GET /stats?days=N` (404 for any non-loopback client, also
+through the CDN).
+
+IP → region uses the bundled data of the [ip2region](https://www.npmjs.com/package/ip2region) npm package (IPv4 + IPv6,
+data from lionsoul2014/ip2region, Apache-2.0 OR MIT). It loads asynchronously at start (~110 MB resident); update it
+by bumping the package version.
 
 ## Protocol
 
