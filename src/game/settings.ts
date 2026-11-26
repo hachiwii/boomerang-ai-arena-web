@@ -14,7 +14,18 @@ export type ActionBindKey =
   | 'dash'
   | 'dashToMouse'
   | 'quickRestart'
-  | 'toggleHideUi';
+  | 'toggleHideUi'
+  // MOBA scheme (PC): right-click move, Q/W/E abilities; its own copy of the shortcuts
+  | 'mobaMove'
+  | 'mobaStop'
+  | 'mobaThrowRecall'
+  | 'mobaMelee'
+  | 'mobaDash'
+  | 'mobaQuickRestart'
+  | 'mobaToggleHideUi';
+
+/** PC control scheme. 'standard' = WASD + mouse aim; 'moba' = right-click to move, Q/W/E toward the cursor. */
+export type ControlScheme = 'standard' | 'moba';
 
 export type KeySlotPair = [string | null, string | null];
 export type KeyBindings = Record<ActionBindKey, KeySlotPair>;
@@ -149,6 +160,8 @@ export interface GameSettings {
   exportSoundEnabled: boolean;
   exportBgmEnabled: boolean;
   keybindings: KeyBindings;
+  /** null = the player has not picked a PC control scheme yet (the chooser is shown once on desktop). */
+  controlScheme: ControlScheme | null;
 }
 
 export function isEdgeBeautifyAvailable(s: Pick<GameSettings, 'graphicsQuality'>): boolean {
@@ -180,21 +193,72 @@ export interface ActionMeta {
   key: ActionBindKey;
   label: string;
   group: '移动' | '战斗' | '快捷';
+  scheme: ControlScheme;
   allowCombo?: boolean;
 }
 
 export const ACTION_META: ActionMeta[] = [
-  { key: 'moveUp', label: '向上移动', group: '移动' },
-  { key: 'moveDown', label: '向下移动', group: '移动' },
-  { key: 'moveLeft', label: '向左移动', group: '移动' },
-  { key: 'moveRight', label: '向右移动', group: '移动' },
-  { key: 'throwRecall', label: '扔镖 / 长按召回', group: '战斗' },
-  { key: 'melee', label: '挥砍 / 空手踢人', group: '战斗' },
-  { key: 'dash', label: '冲刺', group: '战斗' },
-  { key: 'dashToMouse', label: '向鼠标方向冲刺', group: '战斗' },
-  { key: 'quickRestart', label: '重开 / 重新匹配', group: '快捷' },
-  { key: 'toggleHideUi', label: '隐藏 / 显示界面', group: '快捷', allowCombo: true },
+  { key: 'moveUp', label: '向上移动', group: '移动', scheme: 'standard' },
+  { key: 'moveDown', label: '向下移动', group: '移动', scheme: 'standard' },
+  { key: 'moveLeft', label: '向左移动', group: '移动', scheme: 'standard' },
+  { key: 'moveRight', label: '向右移动', group: '移动', scheme: 'standard' },
+  { key: 'throwRecall', label: '扔镖 / 长按召回', group: '战斗', scheme: 'standard' },
+  { key: 'melee', label: '挥砍 / 空手踢人', group: '战斗', scheme: 'standard' },
+  { key: 'dash', label: '冲刺', group: '战斗', scheme: 'standard' },
+  { key: 'dashToMouse', label: '向鼠标方向冲刺', group: '战斗', scheme: 'standard' },
+  { key: 'quickRestart', label: '重开 / 重新匹配', group: '快捷', scheme: 'standard' },
+  { key: 'toggleHideUi', label: '隐藏 / 显示界面', group: '快捷', scheme: 'standard', allowCombo: true },
+  { key: 'mobaMove', label: '移动到鼠标位置（按住跟随）', group: '移动', scheme: 'moba' },
+  { key: 'mobaStop', label: '停止移动', group: '移动', scheme: 'moba' },
+  { key: 'mobaThrowRecall', label: '向鼠标扔镖 / 长按召回', group: '战斗', scheme: 'moba' },
+  { key: 'mobaMelee', label: '挥砍 / 空手踢人', group: '战斗', scheme: 'moba' },
+  { key: 'mobaDash', label: '向鼠标方向冲刺', group: '战斗', scheme: 'moba' },
+  { key: 'mobaQuickRestart', label: '重开 / 重新匹配', group: '快捷', scheme: 'moba' },
+  { key: 'mobaToggleHideUi', label: '隐藏 / 显示界面', group: '快捷', scheme: 'moba', allowCombo: true },
 ];
+
+export const CONTROL_SCHEME_LABELS: Record<ControlScheme, string> = { standard: '标准模式', moba: 'MOBA 模式' };
+
+/** The scheme PC input follows (unset counts as standard). */
+export function activeControlScheme(s: Pick<GameSettings, 'controlScheme'>): ControlScheme {
+  return s.controlScheme === 'moba' ? 'moba' : 'standard';
+}
+
+export type ShortcutKind = 'quickRestart' | 'toggleHideUi';
+
+/** The binding action that holds a shortcut in the active scheme (each scheme keeps its own copy). */
+export function shortcutAction(s: Pick<GameSettings, 'controlScheme'>, kind: ShortcutKind): ActionBindKey {
+  if (activeControlScheme(s) === 'moba') return kind === 'quickRestart' ? 'mobaQuickRestart' : 'mobaToggleHideUi';
+  return kind;
+}
+
+export function shortcutBind(s: Pick<GameSettings, 'controlScheme' | 'keybindings'>, kind: ShortcutKind): KeySlotPair {
+  return s.keybindings[shortcutAction(s, kind)];
+}
+
+/** Compact key labels for the HUD / lobby legends, following the active scheme. */
+export function controlHintLabels(s: Pick<GameSettings, 'controlScheme' | 'keybindings'>): {
+  move: string;
+  throwRecall: string;
+  melee: string;
+  dash: string;
+} {
+  const kb = s.keybindings;
+  if (activeControlScheme(s) === 'moba') {
+    return {
+      move: formatPrimaryBind(kb.mobaMove),
+      throwRecall: formatPrimaryBind(kb.mobaThrowRecall),
+      melee: formatPrimaryBind(kb.mobaMelee),
+      dash: formatPrimaryBind(kb.mobaDash),
+    };
+  }
+  return {
+    move: formatMoveSummary(kb),
+    throwRecall: formatPrimaryBind(kb.throwRecall),
+    melee: formatPrimaryBind(kb.melee),
+    dash: formatDashSummary(kb),
+  };
+}
 
 export const GRAPHICS_QUALITY_OPTIONS: { value: GraphicsQualityOption; label: string }[] = [
   { value: 'low', label: '低' },
@@ -283,6 +347,13 @@ export function cloneDefaultKeybindings(): KeyBindings {
     dashToMouse: [null, null],
     quickRestart: ['KeyR', null],
     toggleHideUi: ['Shift+KeyF', null],
+    mobaMove: ['Mouse2', null],
+    mobaStop: ['KeyS', null],
+    mobaThrowRecall: ['KeyQ', null],
+    mobaMelee: ['KeyW', null],
+    mobaDash: ['KeyE', null],
+    mobaQuickRestart: ['KeyR', null],
+    mobaToggleHideUi: ['Shift+KeyF', null],
   };
 }
 
@@ -315,6 +386,7 @@ export function defaultSettings(): GameSettings {
     exportSoundEnabled: true,
     exportBgmEnabled: true,
     keybindings: cloneDefaultKeybindings(),
+    controlScheme: null,
   };
 }
 
@@ -611,6 +683,8 @@ export class SettingsStore {
           ? parsed.platformMode
           : def.platformMode;
       const mobileLayout = sanitizeMobileLayout(parsed.mobileLayout);
+      const controlScheme: ControlScheme | null =
+        parsed.controlScheme === 'standard' || parsed.controlScheme === 'moba' ? parsed.controlScheme : null;
       return {
         platformMode,
         mobileLayout,
@@ -639,6 +713,7 @@ export class SettingsStore {
         exportSoundEnabled,
         exportBgmEnabled,
         keybindings: kb,
+        controlScheme,
       };
     } catch {
       return def;
@@ -841,8 +916,10 @@ export class SettingsStore {
     let clearedFrom: ActionBindKey | undefined;
 
     if (code !== null) {
-      // Clear any conflicting binding across all actions (including the sibling slot)
+      // Clear any conflicting binding across the actions of the same scheme (including the sibling slot)
+      const scheme = ACTION_META.find((m) => m.key === action)?.scheme;
       for (const meta of ACTION_META) {
+        if (meta.scheme !== scheme) continue;
         const pair = this.settings.keybindings[meta.key];
         for (const idx of [0, 1] as const) {
           if (meta.key === action && idx === slotIndex) continue;
@@ -859,13 +936,24 @@ export class SettingsStore {
     return { clearedFrom };
   }
 
-  public resetKeybindings() {
-    this.settings.keybindings = cloneDefaultKeybindings();
+  /** Restore the default keys of one scheme (the other scheme's keys stay). */
+  public resetKeybindings(scheme: ControlScheme = activeControlScheme(this.settings)) {
+    const def = cloneDefaultKeybindings();
+    for (const meta of ACTION_META) {
+      if (meta.scheme === scheme) this.settings.keybindings[meta.key] = def[meta.key];
+    }
+    this.emit();
+  }
+
+  public setControlScheme(scheme: ControlScheme) {
+    if (this.settings.controlScheme === scheme) return;
+    this.settings.controlScheme = scheme;
     this.emit();
   }
 
   public resetAll() {
-    this.settings = defaultSettings();
+    // The control scheme was an explicit one-time choice: keep it (otherwise the chooser would pop up again)
+    this.settings = { ...defaultSettings(), controlScheme: this.settings.controlScheme };
     this.emit();
   }
 }

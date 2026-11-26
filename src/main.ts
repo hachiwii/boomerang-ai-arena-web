@@ -27,6 +27,8 @@ import {
   isKillFxEffective,
   matchesActionKeyEvent,
   SettingsStore,
+  shortcutAction,
+  shortcutBind,
 } from './game/settings';
 import {
   CellType,
@@ -48,6 +50,7 @@ import { HistoryModal } from './ui/historyUI';
 import { HudUI, ReplayPlaylistState } from './ui/hudUI';
 import { AutoFitter } from './ui/autoFit';
 import { showLaunchScreen } from './ui/launchScreen';
+import { showControlSchemeChooser } from './ui/controlSchemeChooser';
 import { LobbyUI, makeHoodieAvatarDataUrl, resolveSlots } from './ui/lobbyUI';
 import { MobileControls, MobileLayoutEditor } from './ui/mobileControls';
 import { MobileExportModal } from './ui/mobileExportModal';
@@ -154,6 +157,7 @@ async function bootstrap() {
   );
   renderer.setKillFxEnabled(isKillFxEffective(settings.get()));
   input.setAimProjector((cx, cy) => renderer.projectClientToWorldMm(cx, cy));
+  input.setMoveMarkerListener((x, y) => renderer.showMoveMarker(x, y));
   input.setTouchMode(platform.isMobile());
   renderer.setMobileView(platform.isMobile());
   const leaderboard = new LeaderboardStore(roster, makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
@@ -573,7 +577,7 @@ async function bootstrap() {
       uiHiddenToastTimer = null;
     }
     if (hidden && showHint) {
-      const keyLabel = formatPrimaryBind(settings.get().keybindings.toggleHideUi, 'Shift+F');
+      const keyLabel = formatPrimaryBind(shortcutBind(settings.get(), 'toggleHideUi'), 'Shift+F');
       uiHiddenToast.textContent = `已隐藏界面 · 按 ${keyLabel} 恢复显示`;
       uiHiddenToast.classList.add('is-visible');
       uiHiddenToastTimer = window.setTimeout(() => {
@@ -1673,6 +1677,14 @@ async function bootstrap() {
     }
   });
   document.addEventListener('fullscreenchange', () => lobbyUI.refreshPlatformButtons());
+
+  // PC players who never picked a control scheme choose one once (标准 / MOBA); touch devices never ask
+  const askControlScheme = () => {
+    if (platform.isMobile() || settings.get().controlScheme !== null || mode !== 'lobby') return;
+    showControlSchemeChooser(settings);
+  };
+  platform.onChange(() => askControlScheme());
+  askControlScheme();
   document.addEventListener('webkitfullscreenchange', () => lobbyUI.refreshPlatformButtons());
 
   // Mobile browsers: block pinch-zoom / double-tap zoom gestures over the game
@@ -1693,7 +1705,7 @@ async function bootstrap() {
   // Match & Replay keyboard/mouse shortcuts
   window.addEventListener('keydown', (e) => {
     if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen() || mobileExportModal.isOpen()) return;
-    if (!e.repeat && !isTextEditableTarget(e.target) && matchesActionKeyEvent(settings.get().keybindings, 'toggleHideUi', e)) {
+    if (!e.repeat && !isTextEditableTarget(e.target) && matchesActionKeyEvent(settings.get().keybindings, shortcutAction(settings.get(), 'toggleHideUi'), e)) {
       e.preventDefault();
       setUiHidden(!uiHidden, true);
       return;
@@ -1732,7 +1744,7 @@ async function bootstrap() {
         !e.metaKey &&
         !e.altKey &&
         !isTextEditableTarget(e.target) &&
-        isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
+        isBoundToAction(settings.get().keybindings, shortcutAction(settings.get(), 'quickRestart'), e.code) &&
         canQuickRestart()
       ) {
         e.preventDefault();
@@ -1746,7 +1758,7 @@ async function bootstrap() {
       !e.metaKey &&
       !e.altKey &&
       !isTextEditableTarget(e.target) &&
-      isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
+      isBoundToAction(settings.get().keybindings, shortcutAction(settings.get(), 'quickRestart'), e.code) &&
       hudUI.isPvpRematchOpen()
     ) {
       // PvP result card: the quick-restart key (R by default) = 再来一局
@@ -1760,7 +1772,7 @@ async function bootstrap() {
       !e.metaKey &&
       !e.altKey &&
       !isTextEditableTarget(e.target) &&
-      isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
+      isBoundToAction(settings.get().keybindings, shortcutAction(settings.get(), 'quickRestart'), e.code) &&
       canQuickRestart()
     ) {
       e.preventDefault();
@@ -1771,18 +1783,18 @@ async function bootstrap() {
   window.addEventListener('mousedown', (e) => {
     if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen() || mobileExportModal.isOpen()) return;
     const code = `Mouse${e.button}`;
-    if (isBoundToAction(settings.get().keybindings, 'toggleHideUi', code)) {
+    if (isBoundToAction(settings.get().keybindings, shortcutAction(settings.get(), 'toggleHideUi'), code)) {
       e.preventDefault();
       setUiHidden(!uiHidden, true);
       return;
     }
     if (mode !== 'playing') return;
-    if (isBoundToAction(settings.get().keybindings, 'quickRestart', code) && hudUI.isPvpRematchOpen()) {
+    if (isBoundToAction(settings.get().keybindings, shortcutAction(settings.get(), 'quickRestart'), code) && hudUI.isPvpRematchOpen()) {
       e.preventDefault();
       hudUI.triggerPvpRematch();
       return;
     }
-    if (isBoundToAction(settings.get().keybindings, 'quickRestart', code) && canQuickRestart()) {
+    if (isBoundToAction(settings.get().keybindings, shortcutAction(settings.get(), 'quickRestart'), code) && canQuickRestart()) {
       e.preventDefault();
       restartCurrentMatch();
     }

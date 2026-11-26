@@ -2,7 +2,7 @@ import Sortable from 'sortablejs';
 import { generateBgmSeed } from '../audio/bgm';
 import { CricketFormat, CricketStore, CricketTier } from '../game/cricketStore';
 import { LeaderboardStore } from '../game/leaderboard';
-import { formatDashSummary, formatMoveSummary, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore } from '../game/settings';
+import { controlHintLabels, formatPrimaryBind, getSlashJudgmentTicks, SettingsStore, shortcutBind } from '../game/settings';
 import { generateSpawnSeed, MapMeta, MatchConfig, RankedMode, RosterEntry, SlotConfig } from '../game/types';
 import { clientToLogical, getLogicalViewport, isForcedLandscape, rectToLogical } from '../game/viewport';
 import { getPvpLobbyClient } from '../net/pvpLobbyClient';
@@ -788,11 +788,7 @@ export class LobbyUI {
         <div><kbd>冲刺键</kbd> 冲刺越坑</div>
       `;
     }
-    const kb = this.settings.get().keybindings;
-    const mv = formatMoveSummary(kb);
-    const thr = formatPrimaryBind(kb.throwRecall);
-    const mel = formatPrimaryBind(kb.melee);
-    const dsh = formatDashSummary(kb);
+    const { move: mv, throwRecall: thr, melee: mel, dash: dsh } = controlHintLabels(this.settings.get());
     return `
         <div><kbd>${mv}</kbd> 移动</div>
         <div><kbd>${thr}</kbd> 扔镖 / <kbd>长按</kbd> 召回</div>
@@ -802,14 +798,13 @@ export class LobbyUI {
   }
 
   private syncKeyHintsInPlace() {
-    const kb = this.settings.get().keybindings;
     const legendEl = this.container.querySelector<HTMLElement>('.controls-legend');
     if (legendEl) {
       legendEl.innerHTML = this.controlsLegendInnerHtml();
     }
     const rstEl = this.container.querySelector<HTMLElement>('#cricket-rst-kbd');
     if (rstEl) {
-      rstEl.textContent = formatPrimaryBind(kb.quickRestart, 'R');
+      rstEl.textContent = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'), 'R');
     }
   }
 
@@ -1323,7 +1318,7 @@ export class LobbyUI {
     const rosterById = new Map(this.roster.map((r) => [r.id, r]));
     const ready = this.cricket.canStartMatch();
     const remainDraw = Math.max(0, maxP - invitedIds.length);
-    const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
+    const rstKey = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'), 'R');
 
     const renderList = (ids: string[], tier: CricketTier) =>
       ids

@@ -1,6 +1,9 @@
 import {
   ACTION_META,
   ActionBindKey,
+  activeControlScheme,
+  CONTROL_SCHEME_LABELS,
+  ControlScheme,
   encodeKeyEventCombo,
   EXPORT_BITRATE_MAX,
   EXPORT_BITRATE_MIN,
@@ -556,6 +559,7 @@ export class SettingsModal {
     };
 
     const mobile = Boolean(this.isMobile?.());
+    const scheme = activeControlScheme(s);
     const mobileKbHtml = mobile
       ? `
           <!-- Mobile touch-control layout Section -->
@@ -1026,6 +1030,26 @@ export class SettingsModal {
                 <button type="button" class="settings-reset-kb-btn" id="settings-reset-kb">恢复默认键位</button>
               </div>
             </div>
+            <div class="settings-toggle-stack kb-scheme-stack">
+              <div class="settings-toggle-row">
+                <div class="settings-toggle-meta">
+                  <div class="settings-toggle-title">操作模式</div>
+                  <div class="settings-toggle-desc">${
+                    scheme === 'moba'
+                      ? '右键点地移动 · 技能朝鼠标方向释放，类似 LoL'
+                      : '键盘移动 · 鼠标瞄准，按键朝鼠标方向出招'
+                  }</div>
+                </div>
+                <div class="settings-seg" role="group" aria-label="操作模式">
+                  ${(['standard', 'moba'] as ControlScheme[])
+                    .map((v) => {
+                      const active = scheme === v;
+                      return `<button type="button" class="settings-seg-btn ${active ? 'active' : ''}" data-control-scheme="${v}" aria-pressed="${active}">${CONTROL_SCHEME_LABELS[v]}</button>`;
+                    })
+                    .join('')}
+                </div>
+              </div>
+            </div>
             ${this.noticeText ? `<div class="settings-notice">${this.noticeText}</div>` : ''}
             <div class="kb-table">
               <div class="kb-header-row">
@@ -1033,7 +1057,7 @@ export class SettingsModal {
                 <span>按键 1</span>
                 <span>按键 2</span>
               </div>
-              ${ACTION_META.map(
+              ${ACTION_META.filter((meta) => meta.scheme === scheme).map(
                 (meta) => `
                 <div class="kb-row">
                   <div class="kb-action-cell">
@@ -1267,11 +1291,22 @@ export class SettingsModal {
       this.render();
     });
 
-    // Reset default keybindings
+    // Control scheme (PC): swaps the whole key table below
+    this.body.querySelectorAll<HTMLButtonElement>('[data-control-scheme]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.capturing = null;
+        this.noticeText = null;
+        this.store.setControlScheme(btn.dataset.controlScheme as ControlScheme);
+        this.render();
+      });
+    });
+
+    // Reset default keybindings (of the scheme shown)
     this.body.querySelector('#settings-reset-kb')?.addEventListener('click', () => {
       this.capturing = null;
-      this.store.resetKeybindings();
-      this.showNotice('已恢复默认键位');
+      const scheme = activeControlScheme(this.store.get());
+      this.store.resetKeybindings(scheme);
+      this.showNotice(`已恢复「${CONTROL_SCHEME_LABELS[scheme]}」默认键位`);
       this.render();
     });
 

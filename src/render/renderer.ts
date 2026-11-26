@@ -18,6 +18,7 @@ import {
   SlotConfig,
   TickSnapshot,
 } from '../game/types';
+import { MoveMarker } from './moveMarker';
 import { CharacterRig, PitFallKind, RigDeathEffectCallbacks, WINNER_CELEBRATE_DELAY_TICKS } from './charRig';
 import { buildCustomCharModel, CUSTOM_CHAR_TEMPLATE } from './customChar';
 import { PvpCorrectionSmoothing } from './pvpCorrectionSmoothing';
@@ -109,6 +110,7 @@ export class GameRenderer {
   private rigs: CharacterRig[] = [];
   private fx: FXSystem | null = null;
   private countdownArrow: THREE.Group | null = null;
+  private moveMarker: MoveMarker | null = null; // PC MOBA scheme: right-click destination marker
   private countdownStage: CountdownStage = null;
   private countdownPulseMs = 0;
   private countdownGoMs = 0;
@@ -564,6 +566,7 @@ export class GameRenderer {
   public async loadPreviewMap(mapData: EngineMapData, themeName: string) {
     this.clearMatchObjects();
     this.previewMode = true;
+    this.moveMarker?.hide();
     this.activeMapData = mapData;
     this.activeThemeName = themeName;
     this.resetCameraToOverview({ nx: mapData.nx, ny: mapData.ny, cell: mapData.cell });
@@ -583,6 +586,7 @@ export class GameRenderer {
   ) {
     this.clearMatchObjects();
     this.previewMode = false;
+    this.moveMarker?.hide();
     this.activeMapData = mapData;
     this.activeThemeName = themeName;
     this.slots = slots;
@@ -647,6 +651,13 @@ export class GameRenderer {
     this.nextCrumbleAtMs = 0;
 
     this.resetCameraToOverview({ nx: mapData.nx, ny: mapData.ny, cell: mapData.cell });
+  }
+
+  /** PC MOBA scheme: play the LoL-style move marker at a ground point (mm). */
+  public showMoveMarker(xMm: number, yMm: number) {
+    if (this.previewMode || !this.arena) return;
+    this.moveMarker ??= new MoveMarker(this.scene);
+    this.moveMarker.show(xMm, yMm);
   }
 
   public setCountdownStage(stage: CountdownStage) {
@@ -2157,6 +2168,7 @@ export class GameRenderer {
       }
     }
 
+    this.moveMarker?.update(frameDt);
     this.flushShadowMapIfDirty();
     this.renderer.render(this.scene, this.camera);
 

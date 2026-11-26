@@ -6,11 +6,11 @@ import { MatchReplayBundle } from '../game/matchHistory';
 import { Mp4ExportResult } from '../game/mp4Exporter';
 import { ReplayPlaybackState } from '../game/replayController';
 import {
-  formatDashSummary,
+  controlHintLabels,
   formatExportPresetLabel,
-  formatMoveSummary,
   formatPrimaryBind,
   SettingsStore,
+  shortcutBind,
 } from '../game/settings';
 import { CauseType, DState, MatchConfig, MatchMode, PState, RankedMode, SlotConfig, TickSnapshot } from '../game/types';
 import {
@@ -834,7 +834,7 @@ export class HudUI {
     const { summary } = bundle;
     const winnerSlot = summary.winner >= 0 ? summary.slots[summary.winner] : null;
     if (this.replayIsLiveAi) {
-      const rst = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
+      const rst = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'), 'R');
       return winnerSlot
         ? `🏆 对局结束 · 胜者：${winnerSlot.displayName} · 按 ${rst} 重开或拖动进度条回看`
         : `🤝 对局结束 · 平局 · 按 ${rst} 重开或拖动进度条回看`;
@@ -922,7 +922,7 @@ export class HudUI {
         ? '🦗 斗蛐蛐'
         : '🤖 AI 观战'
       : '🎬 观战回放';
-    const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
+    const rstKey = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'), 'R');
     const isFav = Boolean(summary.favorite);
     this.resetMobileReplayChrome();
     this.root.classList.toggle('is-mobile-hud', this.mobile);
@@ -1436,12 +1436,8 @@ export class HudUI {
   }
 
   private renderBottomHints(humanSeat: number) {
-    const kb = this.settings.get().keybindings;
-    const mv = formatMoveSummary(kb);
-    const thr = formatPrimaryBind(kb.throwRecall);
-    const mel = formatPrimaryBind(kb.melee);
-    const dsh = formatDashSummary(kb);
-    const rst = formatPrimaryBind(kb.quickRestart);
+    const { move: mv, throwRecall: thr, melee: mel, dash: dsh } = controlHintLabels(this.settings.get());
+    const rst = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'));
 
     if (humanSeat >= 0) {
       this.bottomBar.innerHTML = `
@@ -1477,7 +1473,7 @@ export class HudUI {
       this.updateHumanActionHints(this.lastTickState);
     }
     // Also refresh shortcut keycap on open result overlay if present
-    const rst = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
+    const rst = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'));
     const kbdEl = this.resultOverlay.querySelector<HTMLElement>('.rr-btn-kbd');
     if (kbdEl) kbdEl.textContent = rst;
     const customRstBtn = this.resultOverlay.querySelector<HTMLElement>('#btn-result-restart');
@@ -1533,11 +1529,8 @@ export class HudUI {
 
   private updateHumanActionHints(state: TickSnapshot) {
     if (this.humanSeat < 0 || !state.players[this.humanSeat]) return;
-    const kb = this.settings.get().keybindings;
-    const thr = formatPrimaryBind(kb.throwRecall);
-    const mel = formatPrimaryBind(kb.melee);
-    const dsh = formatDashSummary(kb);
-    const rst = formatPrimaryBind(kb.quickRestart);
+    const { throwRecall: thr, melee: mel, dash: dsh } = controlHintLabels(this.settings.get());
+    const rst = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'));
 
     const me = state.players[this.humanSeat];
     const md = state.darts[this.humanSeat];
@@ -1654,7 +1647,7 @@ export class HudUI {
     if (!again || !exit || !cue) return;
     const st = this.currentRematchState();
     // Desktop: the quick-restart key (R by default) also triggers 再来一局 (main.ts)
-    const key = this.mobile ? '' : formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
+    const key = this.mobile ? '' : formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'), 'R');
     let label = '🔁 再来一局';
     let mode: 'ready' | 'pending' | 'blocked' = 'ready';
     if (st.me === 'left') {
@@ -1801,7 +1794,7 @@ export class HudUI {
     const canWatchReplay = hasBundle && !rematchCard;
     const canToggleFav = hasBundle && Boolean(this.callbacks.onToggleCurrentFavorite);
     const isFav = Boolean(initialFavorite);
-    const rstKey = formatPrimaryBind(this.settings.get().keybindings.quickRestart);
+    const rstKey = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'));
 
     let remainSec = 4;
     // PvP: title bar (map · game time · 收藏), a big 胜利 / 失败 / 平局, an optional note and the series tally —
@@ -2224,7 +2217,7 @@ export class HudUI {
 
         <div class="rr-btn-row">
           <button type="button" class="rr-back-btn" id="btn-result-back">返回主界面</button>
-          <button type="button" class="start-btn rr-primary-btn" id="btn-result-new-match">⚔️ 重新匹配 <kbd class="rr-btn-kbd">${formatPrimaryBind(this.settings.get().keybindings.quickRestart)}</kbd></button>
+          <button type="button" class="start-btn rr-primary-btn" id="btn-result-new-match">⚔️ 重新匹配 <kbd class="rr-btn-kbd">${formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'))}</kbd></button>
         </div>
       </div>
     `;

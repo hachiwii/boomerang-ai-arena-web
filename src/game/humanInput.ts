@@ -1,5 +1,6 @@
 import { applyMeleeAssist, applyMobileMeleeAssist, hasMobileMeleeHitOpportunity } from './meleeAssist';
-import { ActionBindKey, getSlashJudgmentTicks, isBoundToAction, SettingsStore } from './settings';
+import { MobaMover } from './mobaMove';
+import { ActionBindKey, activeControlScheme, ControlScheme, getSlashJudgmentTicks, isBoundToAction, SettingsStore } from './settings';
 import {
   ActType,
   DartSnapshot,
@@ -20,6 +21,10 @@ import {
  * Supports unified pre-input across all action-locked states (preserving the mouse target
  * captured at press time, keeping only the last command per locked interval, and discarding
  * it if invalid on the unlock tick) as well as dash-cancel melee ("冲刺斩/踢") on both desktop & mobile.
+ *
+ * PC MOBA scheme (settings.controlScheme === 'moba'): the move key (default right click) sets a ground target that
+ * MobaMover walks to (path-finding, exact stop; held = follow the cursor), Q / W / E throw / melee / dash toward the
+ * cursor through the same pre-input pipeline, S stops. Only the input changes; the engine sees ordinary actions.
  */
 export type InputMode = 'off' | 'countdown' | 'active';
 
@@ -94,6 +99,11 @@ export class HumanInputController {
   private touchLockedPreInput: TouchPress | null = null;
   private touchLastSampledLocked = false;
 
+  // ---------- PC MOBA scheme ----------
+  private readonly mover = new MobaMover();
+  private moveMarkerListener: ((xMm: number, yMm: number) => void) | null = null;
+  private lastScheme: ControlScheme | null = null;
+
   constructor(canvas: HTMLCanvasElement, settings: SettingsStore) {
     this.canvas = canvas;
     this.settings = settings;
@@ -127,6 +137,7 @@ export class HumanInputController {
   public setPaused(v: boolean) {
     this.paused = v;
     if (v) {
+      this.mover.clear();
       this.pressedCodes.clear();
       this.throwConsumed = false;
       this.pendingPresses.length = 0;
@@ -225,6 +236,67 @@ export class HumanInputController {
     this.aimProjector = fn;
   }
 
+  /** MOBA scheme: called with the clicked ground point (mm) whenever a move command is issued (LoL-style marker). */
+  public setMoveMarkerListener(fn: ((xMm: number, yMm: number) => void) | null) {
+    this.moveMarkerListener = fn;
+  }
+
+  /** True while PC input follows the MOBA scheme (never in touch mode). */
+  public isMobaScheme(): boolean {
+    return !this.touchMode && activeControlScheme(this.settings.get()) === 'moba';
+  }
+
+  /** MOBA scheme: the current move destination (mm), if walking somewhere. */
+  public getMoveTarget(): [number, number] | null {
+    return this.mover.getTarget();
+  }
+
+  private issueMoveCommand(marker: boolean) {
+    if (!this.hasMouse) return;
+    this.refreshAimFromPointer();
+    if (!this.aimProjector) return;
+    const x = this.aimWorldMmX;
+    const y = this.aimWorldMmY;
+    this.mover.setTarget(x, y);
+    if (marker) this.moveMarkerListener?.(x, y);
+  }
+
+  /** MOBA scheme key / mouse press. Movement (and stop) also works during the countdown, like held WASD does. */
+  private handleMobaPress(code: string, repeat: boolean, e: Event) {
+    const kb = this.settings.get().keybindings;
+    let used = false;
+    if (isBoundToAction(kb, 'mobaMove', code)) {
+      this.pressedCodes.add(code);
+      if (!repeat) this.issueMoveCommand(true);
+      used = true;
+    }
+    if (isBoundToAction(kb, 'mobaStop', code)) {
+      this.mover.clear();
+      used = true;
+    }
+    if (this.inputMode === 'active') {
+      if (isBoundToAction(kb, 'mobaThrowRecall', code)) {
+        this.pressedCodes.add(code);
+        if (!repeat) {
+          this.throwConsumed = false;
+          this.recordDesktopPress('throw');
+        }
+        used = true;
+      }
+      if (isBoundToAction(kb, 'mobaMelee', code)) {
+        this.pressedCodes.add(code);
+        if (!repeat) this.recordDesktopPress('melee');
+        used = true;
+      }
+      if (isBoundToAction(kb, 'mobaDash', code)) {
+        this.pressedCodes.add(code);
+        if (!repeat) this.recordDesktopPress('dashToMouse');
+        used = true;
+      }
+    }
+    if (used && (code === 'Space' || code === 'Tab' || code.startsWith('Arrow') || code.startsWith('Mouse'))) e.preventDefault();
+  }
+
   private refreshAimFromPointer() {
     if (!this.hasMouse || !this.aimProjector) return;
     const hit = this.aimProjector(this.mouseX, this.mouseY);
@@ -236,7 +308,7 @@ export class HumanInputController {
 
   private recordDesktopPress(kind: DesktopPressKind) {
     this.refreshAimFromPointer();
-    const [moveX, moveY] = this.getMoveVector();
+    const [moveX, moveY] = this.isMobaScheme() ? [0, 0] : this.getMoveVector();
     this.pendingPresses.push({
       kind,
       at: performance.now(),
@@ -269,6 +341,7 @@ export class HumanInputController {
   }
 
   public reset() {
+    this.mover.clear();
     this.pressedCodes.clear();
     this.throwConsumed = false;
     this.groundSinceMs = -1;
@@ -287,7 +360,8 @@ export class HumanInputController {
   }
 
   public isThrowRecallHeld(): boolean {
-    return this.isActionHeld('throwRecall') || (this.touchMode && this.vAimHeld);
+    if (this.touchMode) return this.vAimHeld;
+    return this.isActionHeld(this.isMobaScheme() ? 'mobaThrowRecall' : 'throwRecall');
   }
 
   private bindEvents() {
@@ -295,6 +369,10 @@ export class HumanInputController {
       if (this.paused || this.inputMode === 'off') return;
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
       const code = e.code;
+      if (this.isMobaScheme()) {
+        this.handleMobaPress(code, e.repeat, e);
+        return;
+      }
       const kb = this.settings.get().keybindings;
 
       const isMove =
@@ -376,6 +454,10 @@ export class HumanInputController {
       if (this.paused || this.inputMode === 'off') return;
 
       const code = `Mouse${e.button}`;
+      if (this.isMobaScheme()) {
+        this.handleMobaPress(code, false, e);
+        return;
+      }
       const kb = this.settings.get().keybindings;
       const isMove =
         isBoundToAction(kb, 'moveUp', code) ||
@@ -522,6 +604,7 @@ export class HumanInputController {
     const me = state.players[seat];
     const dart = state.darts[seat];
     if (!me || !me.alive) {
+      this.mover.clear();
       this.pendingPresses.length = 0;
       this.lockedPreInput = null;
       this.lastSampledLocked = false;
@@ -534,8 +617,43 @@ export class HumanInputController {
     }
 
     const now = performance.now();
-    const [mx, my] = this.getMoveVector();
+    const moba = this.isMobaScheme();
+    const scheme: ControlScheme = moba ? 'moba' : 'standard';
+    if (this.lastScheme !== scheme) {
+      // Switched schemes (Settings mid-match): drop held keys / targets of the other scheme
+      if (this.lastScheme !== null) {
+        this.mover.clear();
+        this.pressedCodes.clear();
+      }
+      this.lastScheme = scheme;
+    }
+    const [mx, my] = moba ? this.sampleMobaMove(state, me) : this.getMoveVector();
+    const act = this.sampleDesktopAction(state, seat, me, dart, mx, my, now);
+    // MOBA: a dash ends the walk order (like Flash in LoL); throws and melee keep walking to the target
+    if (moba && act.act === ActType.DASH) this.mover.clear();
+    return act;
+  }
 
+  /** MOBA scheme: the walking vector toward the move target (held move key = keep following the cursor). */
+  private sampleMobaMove(state: TickSnapshot, me: PlayerSnapshot): [number, number] {
+    if (this.isActionHeld('mobaMove') && this.hasMouse) {
+      this.refreshAimFromPointer();
+      const cur = this.mover.getTarget();
+      if (!cur || Math.hypot(cur[0] - this.aimWorldMmX, cur[1] - this.aimWorldMmY) > 60) this.issueMoveCommand(false);
+    }
+    const walking = me.st === PState.FREE && !this.isThrowRecallHeld();
+    return this.mover.step(this.mapData, state.t, me, walking);
+  }
+
+  private sampleDesktopAction(
+    state: TickSnapshot,
+    seat: number,
+    me: PlayerSnapshot,
+    dart: DartSnapshot,
+    mx: number,
+    my: number,
+    now: number,
+  ): HumanAction {
     if (dart.st === DState.GROUND) {
       if (this.groundSinceMs < 0) this.groundSinceMs = now;
     } else if (dart.st !== DState.RISE) {

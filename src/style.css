@@ -9983,3 +9983,251 @@ body.is-mobile .result-card.is-pvp-result .pvp-series {
     align-items: flex-end;
   }
 }
+
+/* ---------- First-run PC control scheme chooser (标准模式 / MOBA 模式) ---------- */
+.csc-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 10090;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  overflow-y: auto;
+  background:
+    radial-gradient(circle at 30% 25%, rgba(61, 126, 255, 0.22), transparent 60%),
+    radial-gradient(circle at 75% 85%, rgba(70, 245, 154, 0.12), transparent 55%),
+    rgba(9, 13, 24, 0.84);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  opacity: 0;
+  transition: opacity 0.22s ease;
+}
+
+.csc-screen.is-in {
+  opacity: 1;
+}
+
+.csc-screen.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.csc-panel {
+  width: min(860px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin: auto;
+}
+
+.csc-head {
+  text-align: center;
+}
+
+.csc-head h2 {
+  font-size: 26px;
+  font-weight: 900;
+  letter-spacing: 1px;
+  color: var(--text-main);
+}
+
+.csc-head p {
+  margin-top: 6px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.csc-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.csc-card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+  padding: 18px 20px 20px;
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.035));
+  color: var(--text-main);
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+  transition: transform 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease, background 0.16s ease;
+}
+
+.csc-card:hover,
+.csc-card:focus-visible {
+  transform: translateY(-3px);
+  border-color: rgba(61, 126, 255, 0.85);
+  background: linear-gradient(180deg, rgba(61, 126, 255, 0.16), rgba(61, 126, 255, 0.06));
+  box-shadow: 0 14px 34px rgba(30, 70, 200, 0.35), inset 0 0 0 1px rgba(120, 160, 255, 0.25);
+  outline: none;
+}
+
+.csc-card[data-scheme='moba']:hover,
+.csc-card[data-scheme='moba']:focus-visible {
+  border-color: rgba(70, 245, 154, 0.8);
+  background: linear-gradient(180deg, rgba(70, 245, 154, 0.13), rgba(70, 245, 154, 0.04));
+  box-shadow: 0 14px 34px rgba(20, 140, 90, 0.32), inset 0 0 0 1px rgba(120, 255, 190, 0.22);
+}
+
+.csc-card.is-picked {
+  transform: scale(0.98);
+}
+
+.csc-art {
+  border-radius: 12px;
+  background: rgba(6, 10, 20, 0.55);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 10px 12px 6px;
+}
+
+.csc-art svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  font-family: inherit;
+}
+
+.csc-key rect {
+  fill: rgba(255, 255, 255, 0.1);
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-width: 1.5;
+}
+
+.csc-key text {
+  fill: #f4f7ff;
+  font-size: 14px;
+  font-weight: 900;
+  text-anchor: middle;
+}
+
+.csc-key-wide text {
+  font-size: 12px;
+}
+
+.csc-cap {
+  fill: #a8b5d1;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.csc-cap-l {
+  fill: #ffb067;
+}
+
+.csc-cap-r {
+  fill: #8fb3ff;
+}
+
+.csc-mouse {
+  fill: rgba(255, 255, 255, 0.08);
+  stroke: rgba(255, 255, 255, 0.5);
+  stroke-width: 1.5;
+}
+
+.csc-btn-l {
+  fill: rgba(255, 138, 31, 0.75);
+}
+
+.csc-btn-r {
+  fill: rgba(61, 126, 255, 0.8);
+}
+
+.csc-wheel {
+  fill: rgba(255, 255, 255, 0.55);
+}
+
+.csc-ground {
+  fill: rgba(120, 170, 110, 0.13);
+  stroke: rgba(160, 210, 150, 0.22);
+}
+
+.csc-wall {
+  fill: rgba(150, 160, 180, 0.45);
+  stroke: rgba(220, 230, 255, 0.35);
+}
+
+.csc-hero {
+  fill: #3d7eff;
+  stroke: #ffffff;
+  stroke-width: 2;
+}
+
+.csc-path {
+  fill: none;
+  stroke: rgba(70, 245, 154, 0.85);
+  stroke-width: 2.5;
+  stroke-dasharray: 6 6;
+  stroke-linecap: round;
+}
+
+.csc-ring {
+  fill: none;
+  stroke: #46f59a;
+  stroke-width: 3;
+}
+
+.csc-chev path,
+.csc-dot {
+  fill: #46f59a;
+}
+
+.csc-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.csc-title strong {
+  font-size: 21px;
+  font-weight: 900;
+}
+
+.csc-title span {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
+.csc-list {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.5;
+  color: #d6e0f5;
+}
+
+.csc-list kbd {
+  display: inline-block;
+  min-width: 22px;
+  padding: 0 6px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.1);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+  text-align: center;
+  color: #ffffff;
+}
+
+@media (max-width: 640px) {
+  .csc-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.kb-scheme-stack {
+  margin-bottom: 10px;
+}
