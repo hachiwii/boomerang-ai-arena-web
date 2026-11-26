@@ -53,11 +53,14 @@ const cfg = (mode, kinds = ['bot', 'bot']) => ({
   assert.equal(deathCause(ticks, 0, map), 'fall');
   // A fall on its own is nobody's kill
   assert.deepEqual(rankedBotResults(cfg('ranked-solo'), ticks, map), [
-    { b: 'bot-0', r: 'l', death: 'fall' },
-    { b: 'bot-1', r: 'w' },
+    { b: 'bot-0', r: 'l', rank: 2, death: 'fall' },
+    { b: 'bot-1', r: 'w', rank: 1 },
   ]);
-  // A human seat is not reported; custom matches report nothing
-  assert.deepEqual(rankedBotResults(cfg('ranked-solo', ['human', 'bot']), ticks, map), [{ b: 'bot-1', r: 'w' }]);
+  // The human seat is reported as `human`; custom matches report nothing
+  assert.deepEqual(rankedBotResults(cfg('ranked-solo', ['human', 'bot']), ticks, map), [
+    { b: 'human', r: 'l', rank: 2, death: 'fall' },
+    { b: 'bot-1', r: 'w', rank: 1 },
+  ]);
   assert.deepEqual(rankedBotResults(cfg('custom'), ticks, map), []);
   assert.deepEqual(rankedBotResults(cfg('ranked-solo'), ticks.slice(0, -1), map), [], 'unfinished: nothing');
   console.log(`  [PASS] walk off the edge → fall (tick ${ticks.length})`);
@@ -88,8 +91,8 @@ const cfg = (mode, kinds = ['bot', 'bot']) => ({
   assert.equal(final.winner, 1);
   assert.equal(deathCause(ticks, 0, map), 'collapse');
   assert.deepEqual(rankedBotResults(cfg('ranked-solo'), ticks, map), [
-    { b: 'bot-0', r: 'l', death: 'collapse' },
-    { b: 'bot-1', r: 'w' },
+    { b: 'bot-0', r: 'l', rank: 2, death: 'collapse' },
+    { b: 'bot-1', r: 'w', rank: 1 },
   ]);
   console.log(`  [PASS] still on a collapsing tile → collapse (tick ${ticks.length})`);
 }
@@ -145,9 +148,10 @@ const cfg = (mode, kinds = ['bot', 'bot']) => ({
   assert.equal(deathCause(ticks, 2, map), 'kick');
   assert.equal(deathCause(ticks, 3, map), null);
   assert.deepEqual(rankedBotResults(cfg('ranked-ffa', ['human', 'bot', 'bot', 'bot']), ticks, map), [
-    { b: 'bot-1', r: 'l', kills: { dart: 1 }, death: 'melee' },
-    { b: 'bot-2', r: 'l', death: 'kick' },
-    { b: 'bot-3', r: 'w', kills: { melee: 1, kick: 1 } },
+    { b: 'human', r: 'l', rank: 4, death: 'dart' },
+    { b: 'bot-1', r: 'l', rank: 3, kills: { dart: 1 }, death: 'melee' },
+    { b: 'bot-2', r: 'l', rank: 2, death: 'kick' },
+    { b: 'bot-3', r: 'w', rank: 1, kills: { melee: 1, kick: 1 } },
   ]);
   // Timeout with two left: both draw, the rest lose
   const tie = [...ticks.slice(0, 3), snap(4, [ticks[2].players[0], ticks[2].players[1], P({ rank: 1 }), P({ rank: 1 })], true, -1)];
@@ -155,8 +159,8 @@ const cfg = (mode, kinds = ['bot', 'bot']) => ({
   // SOLO both out on the same step: a draw, and both deaths count
   const both = [snap(1, [P(), P()]), snap(2, [P({ alive: 0, cause: 1, killer: 1, deadT: 1 }), P({ alive: 0, cause: 2, killer: 0, deadT: 1 })], true, -1)];
   assert.deepEqual(rankedBotResults(cfg('ranked-solo'), both, map), [
-    { b: 'bot-0', r: 'd', kills: { melee: 1 }, death: 'dart' },
-    { b: 'bot-1', r: 'd', kills: { dart: 1 }, death: 'melee' },
+    { b: 'bot-0', r: 'd', rank: 1, kills: { melee: 1 }, death: 'dart' },
+    { b: 'bot-1', r: 'd', rank: 1, kills: { dart: 1 }, death: 'melee' },
   ]);
   // Stunned on (1, 1) from step 50, the tile collapses at step 100, the fall is judged when the stun ends (step 110)
   const stunTicks = [];

@@ -27,11 +27,15 @@ const REFRESH_MS = 30_000;
 
 type RankedMode = 'ranked-solo' | 'ranked-ffa';
 type SortKey =
-  | 'elo' | 'games' | 'winRate' | 'kd' | 'w' | 'd' | 'l'
+  | 'elo' | 'games' | 'winRate' | 'avgRank' | 'kd' | 'w' | 'd' | 'l'
   | `k:${(typeof KILL_CAUSES)[number]}` | `d:${(typeof DEATH_CAUSES)[number]}`;
+
+/** Result id the relay sums every human player under (src/game/botResults.ts HUMAN_RESULT_ID) */
+const HUMAN_ID = 'human';
 
 interface Row {
   id: string;
+  human: boolean;
   name: string;
   fullName: string;
   avatar: string | null;
@@ -55,6 +59,11 @@ function winRate(r: Row): number {
   return r.games ? r.t.w / r.games : -1;
 }
 
+/** Average final place (1 = first), or null without data */
+function avgRank(r: Row): number | null {
+  return r.t.ranked ? (r.t.rankSum ?? 0) / r.t.ranked : null;
+}
+
 function kd(r: Row): number {
   if (r.deaths) return r.kills / r.deaths;
   return r.kills ? Number.POSITIVE_INFINITY : -1;
@@ -62,7 +71,11 @@ function kd(r: Row): number {
 
 function sortValue(r: Row, key: SortKey): number {
   switch (key) {
-    case 'elo': return r.elo ?? -1;
+    case 'elo': return r.human ? 0 : (r.elo ?? -1); // Human has no ELO: sorts as 0
+    case 'avgRank': {
+      const a = avgRank(r); // better (smaller) places sort first when descending
+      return a === null ? Number.NEGATIVE_INFINITY : -a;
+    }
     case 'games': return r.games;
     case 'winRate': return winRate(r);
     case 'kd': return kd(r);
@@ -73,6 +86,11 @@ function sortValue(r: Row, key: SortKey): number {
     }
   }
 }
+
+/** Human row avatar: a person silhouette */
+const HUMAN_ICON =
+  '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="currentColor"/>' +
+  '<path d="M4 21c.6-4.2 3.9-6.6 8-6.6s7.4 2.4 8 6.6" fill="currentColor"/></svg>';
 
 /** "2026-11-27" → "2026/11/27" */
 const slashDate = (day: string) => day.replace(/-/g, '/');
@@ -92,7 +110,7 @@ export class GlobalStatsPanel {
   private stats: PublicStats | null = null;
   private error = false;
   private mode: RankedMode = 'ranked-solo';
-  private sort: { key: SortKey; desc: boolean } = { key: 'winRate', desc: true };
+  private sort: { key: SortKey; desc: boolean } = { key: 'winRate', desc: true }; // 四人: avgRank (see renderTable)
   private refreshTimer: number | null = null;
   private abort: AbortController | null = null;
   private openTile: string | null = null;
@@ -141,6 +159,9 @@ export class GlobalStatsPanel {
         const mode = seg.dataset.gsMode as RankedMode;
         if (mode !== this.mode) {
           this.mode = mode;
+          // 四人 has 平均名次 where SOLO has 胜率: carry the default sort across
+          if (mode === 'ranked-ffa' && this.sort.key === 'winRate') this.sort = { key: 'avgRank', desc: true };
+          if (mode === 'ranked-solo' && this.sort.key === 'avgRank') this.sort = { key: 'winRate', desc: true };
           this.renderTable();
           const wrap = this.bodyEl.querySelector<HTMLElement>('.gs-table-wrap');
           if (wrap) wrap.scrollTop = wrap.scrollLeft = 0;
@@ -227,18 +248,25 @@ export class GlobalStatsPanel {
     const roster = this.getRoster();
     const byId = new Map(roster.map((r) => [r.id, r]));
     // Every ranked bot is listed (no games yet: zeros), plus any other bot that has results
-    const ids = new Set([...roster.filter((r) => r.category === 'official').map((r) => r.id), ...Object.keys(data)]);
+    // Every ranked bot is listed (no games yet: zeros), plus Human (all human players) and any other bot with results
+    const ids = new Set([
+      ...roster.filter((r) => r.category === 'official').map((r) => r.id),
+      HUMAN_ID,
+      ...Object.keys(data),
+    ]);
     const empty: BotTally = { w: 0, d: 0, l: 0, kills: {}, deaths: {} };
     return [...ids].map((id) => {
-      const e = byId.get(id);
+      const human = id === HUMAN_ID;
+      const e = human ? undefined : byId.get(id);
       const t = data[id] ?? empty;
       const elo = e ? ((this.mode === 'ranked-solo' ? e.duelRating : e.ffaRating) ?? e.rating) : null;
       return {
         id,
-        name: e?.shortName || e?.name || id,
-        fullName: e?.name || id,
+        human,
+        name: human ? 'Human' : e?.shortName || e?.name || id,
+        fullName: human ? '所有人类玩家' : e?.name || id,
         avatar: e?.avatar ?? null,
-        color: e?.color || '#7f8db3',
+        color: human ? '#7ff0c2' : e?.color || '#7f8db3',
         elo: typeof elo === 'number' ? elo : null,
         t,
         games: t.w + t.d + t.l,
@@ -351,6 +379,7 @@ export class GlobalStatsPanel {
       b.setAttribute('aria-selected', String(on));
     });
     const rows = this.rows();
+    const ffa = this.mode === 'ranked-ffa';
     const { key, desc } = this.sort;
     rows.sort((a, b) => {
       const va = sortValue(a, key);
@@ -366,14 +395,20 @@ export class GlobalStatsPanel {
         const wr = winRate(r);
         const k = kd(r);
         const kdText = k < 0 ? '—' : Number.isFinite(k) ? k.toFixed(2) : '∞';
-        const av = r.avatar
-          ? `<img class="gs-av" src="${escapeHtml(r.avatar)}" alt="" />`
-          : `<span class="gs-av gs-av-fallback" style="background:${escapeHtml(r.color)}">${escapeHtml(r.name.slice(0, 1))}</span>`;
+        const av = r.human
+          ? `<span class="gs-av gs-av-human" aria-hidden="true">${HUMAN_ICON}</span>`
+          : r.avatar
+            ? `<img class="gs-av" src="${escapeHtml(r.avatar)}" alt="" />`
+            : `<span class="gs-av gs-av-fallback" style="background:${escapeHtml(r.color)}">${escapeHtml(r.name.slice(0, 1))}</span>`;
+        const ar = avgRank(r);
+        const rateCell = ffa
+          ? `<td class="gs-num gs-strong">${ar === null ? '—' : ar.toFixed(2)}</td>`
+          : `<td class="gs-num gs-strong">${wr < 0 ? '—' : `${(wr * 100).toFixed(1)}%`}</td>`;
         return `
-          <tr class="${r.games ? '' : 'is-empty'}">
+          <tr class="${r.games ? '' : 'is-empty'} ${r.human ? 'is-human' : ''}">
             <th scope="row" class="gs-bot" title="${escapeHtml(r.fullName)}"><div class="gs-bot-in">${av}<span class="gs-bot-name">${escapeHtml(r.name)}</span>${r.elo === null ? '' : `<span class="gs-elo" title="排位 ELO">${r.elo}</span>`}</div></th>
             ${num(r.games, 'gs-col-games')}
-            <td class="gs-num gs-strong">${wr < 0 ? '—' : `${(wr * 100).toFixed(1)}%`}</td>
+            ${rateCell}
             <td class="gs-num gs-strong">${kdText}</td>
             <td class="gs-num gs-wdl" title="胜 ${fmt(r.t.w)} · 平 ${fmt(r.t.d)} · 负 ${fmt(r.t.l)}"><span class="w">${fmt(r.t.w)}</span>/<span class="d">${fmt(r.t.d)}</span>/<span class="l">${fmt(r.t.l)}</span></td>
             ${KILL_CAUSES.map((c, i) => num(r.t.kills[c] ?? 0, `gs-kill ${i ? '' : 'gs-group-start'}`)).join('')}
@@ -389,7 +424,9 @@ export class GlobalStatsPanel {
           <tr>
             <th rowspan="2" class="gs-bot gs-corner gs-sortable ${key === 'elo' ? `is-sorted ${desc ? 'is-desc' : 'is-asc'}` : ''}" data-gs-sort="elo" title="按排位 ELO 排序">Bot</th>
             ${th('games', '局数', 'gs-col-games', '打完的排位局数', 2)}
-            ${th('winRate', '胜率', '', '胜场 ÷ 局数（平局算在局数里）', 2)}
+            ${ffa
+              ? th('avgRank', '平均名次', '', '每局最终名次的平均（1 = 第一，越小越好）', 2)
+              : th('winRate', '胜率', '', '胜场 ÷ 局数（平局算在局数里）', 2)}
             ${th('kd', 'KD', '', '击杀 ÷ 死亡', 2)}
             ${th('w', '胜/平/负', '', '按胜场排序', 2)}
             <th colspan="${KILL_CAUSES.length}" class="gs-group gs-group-start gs-kill">击杀</th>

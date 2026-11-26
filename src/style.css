@@ -10589,6 +10589,18 @@ button.gs-tile.is-open .gs-pop {
   background: rgba(255, 255, 255, 0.08);
 }
 
+.gs-av-human {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(62, 229, 159, 0.18);
+  color: #7ff0c2;
+}
+
+.gs-table tbody tr.is-human th.gs-bot .gs-bot-name {
+  color: #7ff0c2;
+}
+
 .gs-av-fallback {
   display: inline-flex;
   align-items: center;

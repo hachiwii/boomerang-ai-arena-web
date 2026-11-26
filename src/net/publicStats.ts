@@ -12,6 +12,8 @@ export interface BotTally {
   w: number;
   d: number;
   l: number;
+  rankSum?: number; // sum of final places over `ranked` results (relays before this field: absent)
+  ranked?: number;
   kills: Partial<Record<KillCause, number>>;
   deaths: Partial<Record<DeathCause, number>>;
 }

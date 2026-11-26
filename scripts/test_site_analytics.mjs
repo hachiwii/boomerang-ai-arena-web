@@ -93,6 +93,16 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   assert.equal(parseBotResults('ranked-solo', [{ b: 'x'.repeat(41), r: 'l' }]), null);
   assert.equal(parseBotResults('custom', [{ b: 'a', r: 'l' }]), null, 'ranked modes only');
   assert.equal(parseBotResults('ranked-solo', 'nope'), null);
+  // The human player rides along under `human` (one per match); places are 1..players and a winner is 1st
+  assert.deepEqual(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', rank: 1 }, { b: 'human', r: 'l', rank: 2, death: 'dart' }]),
+    [{ b: 'glm-5.3', r: 'w', rank: 1 }, { b: 'human', r: 'l', rank: 2, death: 'dart' }]);
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'human', r: 'l' }, { b: 'human', r: 'l' }]), null, 'one human');
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'l' }, { b: 'b', r: 'l' }, { b: 'human', r: 'w' }]), null, 'SOLO has one bot');
+  assert.ok(parseBotResults('ranked-ffa', [{ b: 'a', r: 'l' }, { b: 'b', r: 'l' }, { b: 'c', r: 'l' }, { b: 'human', r: 'w', rank: 1 }]));
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'a', r: 'l', rank: 5 }]), null, 'four places in 四人');
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'l', rank: 0 }]), null);
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'w', rank: 2 }]), null, 'a winner is first');
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'a', r: 'l', rank: 2.5 }]), null);
   assert.equal(parseBotResults('ranked-solo', []), null);
 
   const dir = mkdtempSync(join(tmpdir(), 'site-analytics-bots-'));
@@ -107,13 +117,17 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
     { b: 'glm-5.3', r: 'l', death: 'collapse' },
   ]);
   for (let i = 0; i < 70; i++) a.matchFinished(id(4), 'ranked-ffa', T0, [{ b: `spam-${i}`, r: 'l' }]);
+  // Places: an average over the results that carried one
+  a.matchFinished(id(5), 'ranked-ffa', T0, [{ b: 'human', r: 'l', rank: 3, death: 'fall' }]);
+  a.matchFinished(id(5), 'ranked-ffa', T0, [{ b: 'human', r: 'w', rank: 1, kills: { dart: 3 } }]);
   const snap = a.snapshot(T0);
   assert.deepEqual(snap.modes['ranked-solo'].finished, 5);
-  assert.deepEqual(snap.bots['ranked-solo']['glm-5.3'], { w: 1, d: 1, l: 1, kills: { kick: 1 }, deaths: { dart: 1, collapse: 1 } });
-  assert.deepEqual(snap.bots['ranked-solo']['kimi-k3.1-pro'], { w: 0, d: 0, l: 1, kills: {}, deaths: { fall: 1 } });
-  assert.deepEqual(snap.bots['ranked-ffa']['glm-5.3'], { w: 0, d: 0, l: 2, kills: { dart: 1 }, deaths: { melee: 1, collapse: 1 } });
-  assert.deepEqual(snap.bots['ranked-ffa']['gpt-6.2-astra'], { w: 1, d: 0, l: 0, kills: { dart: 1, melee: 1 }, deaths: {} });
-  assert.equal(Object.keys(snap.bots['ranked-ffa']).length, 64, 'distinct bot ids per mode and day are capped');
+  assert.deepEqual(snap.bots['ranked-solo']['glm-5.3'], { w: 1, d: 1, l: 1, rankSum: 0, ranked: 0, kills: { kick: 1 }, deaths: { dart: 1, collapse: 1 } });
+  assert.deepEqual(snap.bots['ranked-solo']['kimi-k3.1-pro'], { w: 0, d: 0, l: 1, rankSum: 0, ranked: 0, kills: {}, deaths: { fall: 1 } });
+  assert.deepEqual(snap.bots['ranked-ffa']['glm-5.3'], { w: 0, d: 0, l: 2, rankSum: 0, ranked: 0, kills: { dart: 1 }, deaths: { melee: 1, collapse: 1 } });
+  assert.deepEqual(snap.bots['ranked-ffa']['gpt-6.2-astra'], { w: 1, d: 0, l: 0, rankSum: 0, ranked: 0, kills: { dart: 1, melee: 1 }, deaths: {} });
+  assert.equal(Object.keys(snap.bots['ranked-ffa']).filter((b) => b !== 'human').length, 64, 'distinct bot ids per mode and day are capped');
+  assert.deepEqual(snap.bots['ranked-ffa'].human, { w: 1, d: 0, l: 1, rankSum: 4, ranked: 2, kills: { dart: 3 }, deaths: { fall: 1 } }, 'human is kept past the cap');
 
   // Survives a restart and sums over days in the report (kill and death totals)
   await a.tick(T0);
@@ -127,8 +141,8 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   assert.match(text, /ranked bots, last 2 day\(s\)/);
   assert.match(text, /kills by 近战\/飞镖\/踢下 · deaths by 近战\/飞镖\/踢下\/自坠\/塌陷/);
   //                       games  W   D   L  win%  kills melee/dart/kick  deaths melee/dart/kick/fall/collapse
-  assert.match(text, /排位 SOLO\n.*\n +glm-5\.3 +4 +2 +1 +1 +50% +2 +0\/1\/1 +2 +0\/1\/0\/0\/1/);
-  assert.match(text, /排位 四人\n.*\n +glm-5\.3 +2 +0 +0 +2 +0% +1 +0\/1\/0 +2 +1\/0\/0\/0\/1/);
+  assert.match(text, /排位 SOLO\n.*\n +glm-5\.3 +4 +2 +1 +1 +50% +- +2 +0\/1\/1 +2 +0\/1\/0\/0\/1/);
+  assert.match(text, /排位 四人\n.*\n(?:.*\n)* +human +2 +1 +0 +1 +50% +2\.00 +3 +0\/3\/0 +1 +0\/0\/0\/1\/0/);
   assert.match(formatBots([]), /no ranked results yet/);
   rmSync(dir, { recursive: true, force: true });
 }
@@ -142,7 +156,7 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
     // Players before players.json existed: rebuilt from these (replay-only viewers are not players)
     modeIds: { 'ranked-solo': [id(7), id(8)], pvp: [id(8)], replay: [id(9)] },
     modes: { 'ranked-solo': { visitors: 1, started: 7, finished: 7 }, pvp: { visitors: 1, started: 3, finished: 3 } },
-    bots: { 'ranked-solo': { 'glm-5.3': { w: 2, d: 0, l: 1, kills: { dart: 2 }, deaths: { fall: 1 } } } },
+    bots: { 'ranked-solo': { 'glm-5.3': { w: 2, d: 0, l: 1, rankSum: 0, ranked: 0, kills: { dart: 2 }, deaths: { fall: 1 } } } },
     hours: { 12: { 'ranked-solo': 7 } },
   }));
   writeFileSync(join(dir, '2026-11-27.json'), day('2026-11-27', {
@@ -171,7 +185,7 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   assert.deepEqual(st.last24h.modes, { 'ranked-solo': 0, 'ranked-ffa': 2, cricket: 1, custom: 6, pvp: 1 });
   assert.equal(st.last24h.from, '2026-11-27T04:00:00.000Z');
   assert.equal(st.last24h.to, '2026-11-28T03:30:00.000Z');
-  assert.deepEqual(st.bots['ranked-solo']['glm-5.3'], { w: 3, d: 0, l: 1, kills: { dart: 2, melee: 1 }, deaths: { fall: 1 } });
+  assert.deepEqual(st.bots['ranked-solo']['glm-5.3'], { w: 3, d: 0, l: 1, rankSum: 0, ranked: 0, kills: { dart: 2, melee: 1 }, deaths: { fall: 1 } });
   assert.deepEqual(st.bots['ranked-ffa'], {});
   assert.equal(JSON.stringify(st).includes(id(7)), false, 'no visitor ids');
   // Hourly buckets persist with today's snapshot
@@ -270,8 +284,8 @@ const snap = JSON.parse(onDisk);
 assert.deepEqual(snap.modes.cricket, { visitors: 1, started: 1, finished: 1 });
 assert.deepEqual(snap.modes.pvp, { visitors: 1, started: 0, finished: 0 });
 assert.deepEqual(snap.modes['ranked-solo'].finished, 1, 'a finish with malformed bot results still counts');
-assert.deepEqual(snap.bots['ranked-ffa']['deepseek-v4.1-flash'], { w: 1, d: 0, l: 0, kills: { kick: 1, dart: 1 }, deaths: {} });
-assert.deepEqual(snap.bots['ranked-ffa']['qwen4-max'], { w: 0, d: 0, l: 1, kills: {}, deaths: { kick: 1 } });
+assert.deepEqual(snap.bots['ranked-ffa']['deepseek-v4.1-flash'], { w: 1, d: 0, l: 0, rankSum: 0, ranked: 0, kills: { kick: 1, dart: 1 }, deaths: {} });
+assert.deepEqual(snap.bots['ranked-ffa']['qwen4-max'], { w: 0, d: 0, l: 1, rankSum: 0, ranked: 0, kills: {}, deaths: { kick: 1 } });
 assert.equal(snap.bots['ranked-solo'], undefined);
 assert.equal(snap.peakOnline, 2);
 
@@ -300,7 +314,7 @@ const report = execFileSync(process.execPath, [fileURLToPath(new URL('../server/
 });
 assert.match(report, /visitors \(UTC\+8\) · online now 3/);
 assert.match(report, /斗蛐蛐 +1 visitors +1 started +1 finished/);
-assert.match(report, /ranked bots, last 1 day\(s\)[\s\S]*排位 四人[\s\S]*deepseek-v4\.1-flash +1 +1 +0 +0 +100% +2 +0\/1\/1 +0 +0\/0\/0\/0\/0/);
+assert.match(report, /ranked bots, last 1 day\(s\)[\s\S]*排位 四人[\s\S]*deepseek-v4\.1-flash +1 +1 +0 +0 +100% +- +2 +0\/1\/1 +0 +0\/0\/0\/0\/0/);
 
 // Restart: today's UV survives (SIGTERM flushes)
 child.kill('SIGTERM');

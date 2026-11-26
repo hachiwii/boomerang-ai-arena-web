@@ -79,10 +79,11 @@ the unique visitors plus matches started / finished. A quick restart (R / 再来
 finished. A 排位四人 match left (R or 返回主界面) after the player is out is played out by the bots in the background
 on the page, then reported as finished with every bot's result (an R restart also saves the whole match to 对局历史). PvP matches are counted once by the relay (at GO and at the end), not by the two clients.
 
-Ranked matches played to the end also carry each bot's result (`bots: [{b: botId, r: w|d|l, kills?, death?}]`,
-`src/game/botResults.ts`): per mode and bot the relay keeps wins / draws / losses, kills by cause (melee, dart, kicked
-into a pit) and deaths by cause (those three, plus fell off on its own — walk or dash — and ground collapsed); the
-report sums them into total kills and deaths. Malformed results are dropped (the finish still counts); at most 64 bot
+Ranked matches played to the end also carry each bot's result, and the human player's under the id `human`
+(`bots: [{b, r: w|d|l, rank, kills?, death?}]`, `src/game/botResults.ts`): per mode and id the relay keeps wins /
+draws / losses, the sum and count of final places (average place), kills by cause (melee, dart, kicked into a pit)
+and deaths by cause (those three, plus fell off on its own — walk or dash — and ground collapsed); the report sums
+them into total kills and deaths. Malformed results are dropped (the finish still counts); at most 64 bot
 ids per mode and day.
 
 `GET /public-stats` (through the CDN like the other page requests, CORS, `Cache-Control: max-age=15`, same per-IP

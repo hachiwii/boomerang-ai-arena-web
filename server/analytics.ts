@@ -26,25 +26,44 @@ const DEATH_SET = new Set<string>(DEATH_CAUSES);
 const KILL_SET = new Set<string>(KILL_CAUSES);
 const BOT_ID = /^[a-z0-9][a-z0-9._-]{0,39}$/i;
 const MAX_BOTS_PER_MODE = 64; // distinct bot ids kept per mode and day (the roster has 17)
-/** One bot in one match: result, players it knocked out by cause, how it went out (if it did). */
-export interface BotResult { b: string; r: 'w' | 'd' | 'l'; kills?: Partial<Record<KillCause, number>>; death?: DeathCause }
+/** One bot in one match: result, final place, players it knocked out by cause, how it went out (if it did). */
+export interface BotResult {
+  b: string;
+  r: 'w' | 'd' | 'l';
+  rank?: number; // final place (1 = first; ties share the best place)
+  kills?: Partial<Record<KillCause, number>>;
+  death?: DeathCause;
+}
 export interface BotTally {
   w: number; d: number; l: number;
+  rankSum: number; // sum of final places over the `ranked` results that carried one (average place = rankSum / ranked)
+  ranked: number;
   kills: Partial<Record<KillCause, number>>;
   deaths: Partial<Record<DeathCause, number>>;
 }
 
-/** Validate a client's bot results for a finished ranked match; null if malformed (the finish still counts). */
+/** Result id of the human player in a ranked match (all human players are summed under it). */
+export const HUMAN_ID = 'human';
+
+/**
+ * Validate a client's results for a finished ranked match: its bots plus, under `human`, the human player (pages from
+ * before that only send the bots). null if malformed (the finish still counts).
+ */
 export function parseBotResults(mode: Mode, raw: unknown): BotResult[] | null {
   if (!Array.isArray(raw)) return null;
   const opponents = mode === 'ranked-solo' ? 1 : mode === 'ranked-ffa' ? 3 : 0; // also the most bots in the match
-  if (raw.length < 1 || raw.length > opponents) return null;
+  if (raw.length < 1 || raw.length > opponents + 1) return null;
   const out: BotResult[] = [];
   for (const item of raw) {
     if (!item || typeof item !== 'object') return null;
-    const { b, r, kills, death } = item as Record<string, unknown>;
+    const { b, r, rank, kills, death } = item as Record<string, unknown>;
     if (typeof b !== 'string' || !BOT_ID.test(b) || (r !== 'w' && r !== 'd' && r !== 'l')) return null;
     const result: BotResult = { b, r };
+    if (rank !== undefined) {
+      if (!Number.isInteger(rank) || (rank as number) < 1 || (rank as number) > opponents + 1) return null;
+      if (r === 'w' && rank !== 1) return null;
+      result.rank = rank as number;
+    }
     if (kills !== undefined) {
       if (!kills || typeof kills !== 'object' || Array.isArray(kills)) return null;
       let total = 0;
@@ -63,12 +82,14 @@ export function parseBotResults(mode: Mode, raw: unknown): BotResult[] | null {
     }
     out.push(result);
   }
+  const humans = out.filter((x) => x.b === HUMAN_ID).length;
+  if (humans > 1 || out.length - humans > opponents) return null; // one human, at most 1 (SOLO) / 3 (四人) bots
   const wins = out.filter((x) => x.r === 'w').length;
   if (wins > 1 || (wins === 1 && out.some((x) => x.r === 'd'))) return null; // one winner, and a win is not a draw
   return out;
 }
 
-const newTally = (): BotTally => ({ w: 0, d: 0, l: 0, kills: {}, deaths: {} });
+const newTally = (): BotTally => ({ w: 0, d: 0, l: 0, rankSum: 0, ranked: 0, kills: {}, deaths: {} });
 
 /** UTC+8 calendar day of a timestamp. */
 export const dayOf = (ms: number) => new Date(ms + 8 * 3_600_000).toISOString().slice(0, 10);
@@ -146,6 +167,8 @@ function readTally(raw: unknown): BotTally {
   t.w = count(r.w);
   t.d = count(r.d);
   t.l = count(r.l);
+  t.rankSum = count(r.rankSum);
+  t.ranked = count(r.ranked);
   const kills = r.kills as Record<string, unknown> | undefined;
   const deaths = r.deaths as Record<string, unknown> | undefined;
   for (const c of KILL_CAUSES) if (kills && count(kills[c])) t.kills[c] = count(kills[c]);
@@ -157,6 +180,8 @@ function addTally(sum: BotTally, t: BotTally) {
   sum.w += t.w;
   sum.d += t.d;
   sum.l += t.l;
+  sum.rankSum += t.rankSum;
+  sum.ranked += t.ranked;
   for (const c of KILL_CAUSES) if (t.kills[c]) sum.kills[c] = (sum.kills[c] ?? 0) + t.kills[c]!;
   for (const c of DEATH_CAUSES) if (t.deaths[c]) sum.deaths[c] = (sum.deaths[c] ?? 0) + t.deaths[c]!;
 }
@@ -298,14 +323,18 @@ export class SiteAnalytics {
     if (!bots?.length) return;
     if (!t.bots.has(mode)) t.bots.set(mode, new Map());
     const byBot = t.bots.get(mode)!;
-    for (const { b, r, kills, death } of bots) {
+    for (const { b, r, rank, kills, death } of bots) {
       let tally = byBot.get(b);
       if (!tally) {
-        if (byBot.size >= MAX_BOTS_PER_MODE) continue;
+        if (b !== HUMAN_ID && byBot.size >= MAX_BOTS_PER_MODE) continue; // the human row is always kept
         byBot.set(b, (tally = newTally()));
       }
       const one = newTally();
       one[r] = 1;
+      if (rank) {
+        one.rankSum = rank;
+        one.ranked = 1;
+      }
       one.kills = kills ?? {};
       if (death) one.deaths[death] = 1;
       addTally(tally, one);
@@ -600,14 +629,15 @@ export function formatBots(days: DaySummary[]): string {
     const byBot = totals.get(mode);
     if (!byBot?.size) continue;
     out.push(`  ${MODE_LABEL[mode] ?? mode}`);
-    out.push(`    ${'bot'.padEnd(22)} ${'games'.padStart(5)} ${'W'.padStart(4)} ${'D'.padStart(4)} ${'L'.padStart(4)} ${'win%'.padStart(5)} ${'kills'.padStart(6)}  ${'by cause'.padEnd(10)} ${'deaths'.padStart(6)}  by cause`);
+    out.push(`    ${'bot'.padEnd(22)} ${'games'.padStart(5)} ${'W'.padStart(4)} ${'D'.padStart(4)} ${'L'.padStart(4)} ${'win%'.padStart(5)} ${'place'.padStart(5)} ${'kills'.padStart(6)}  ${'by cause'.padEnd(10)} ${'deaths'.padStart(6)}  by cause`);
     const rows = [...byBot].map(([b, t]) => ({ b, t, games: t.w + t.d + t.l }));
     rows.sort((x, y) => y.games - x.games || x.b.localeCompare(y.b));
     for (const { b, t, games } of rows) {
       const pct = games ? `${Math.round((t.w / games) * 100)}%` : '-';
       const kills = KILL_CAUSES.map((c) => t.kills[c] ?? 0).join('/');
       const deaths = DEATH_CAUSES.map((c) => t.deaths[c] ?? 0).join('/');
-      out.push(`    ${b.padEnd(22)} ${String(games).padStart(5)} ${String(t.w).padStart(4)} ${String(t.d).padStart(4)} ${String(t.l).padStart(4)} ${pct.padStart(5)} ${String(sum(t.kills)).padStart(6)}  ${kills.padEnd(10)} ${String(sum(t.deaths)).padStart(6)}  ${deaths}`);
+      const place = t.ranked ? (t.rankSum / t.ranked).toFixed(2) : '-';
+      out.push(`    ${b.padEnd(22)} ${String(games).padStart(5)} ${String(t.w).padStart(4)} ${String(t.d).padStart(4)} ${String(t.l).padStart(4)} ${pct.padStart(5)} ${place.padStart(5)} ${String(sum(t.kills)).padStart(6)}  ${kills.padEnd(10)} ${String(sum(t.deaths)).padStart(6)}  ${deaths}`);
     }
   }
   return out.join('\n');

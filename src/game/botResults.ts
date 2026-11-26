@@ -1,11 +1,15 @@
 // Ranked bot results for the site analytics (src/net/analytics.ts → relay → scripts/pvp_stats.sh): for every bot in a
-// ranked match played to the end, win / draw / loss, its kills by cause and how it died. Pure functions over the ticks.
+// ranked match played to the end — and for the human player, under the id `human` — win / draw / loss, its kills by
+// cause and how it died. Pure functions over the ticks.
 import { CauseType, CellType, isRankedMatchMode } from './types';
 import type { EngineMapData, MatchConfig, TickSnapshot } from './types';
 
 /** How a player was knocked out: melee, dart, kicked into a pit, fell off on its own (walk or dash), ground collapsed. */
 export const DEATH_CAUSES = ['melee', 'dart', 'kick', 'fall', 'collapse'] as const;
 export type DeathCause = (typeof DEATH_CAUSES)[number];
+
+/** Result id of the human player (all human players are summed under it). */
+export const HUMAN_RESULT_ID = 'human';
 
 /** Kills credited to a player: the causes that have a killer. */
 export const KILL_CAUSES = ['melee', 'dart', 'kick'] as const;
@@ -15,6 +19,7 @@ export type KillCause = (typeof KILL_CAUSES)[number];
 export interface BotResult {
   b: string;
   r: 'w' | 'd' | 'l';
+  rank: number; // final place (1 = first; ties share the best place)
   kills?: Partial<Record<KillCause, number>>;
   death?: DeathCause;
 }
@@ -76,18 +81,19 @@ export function deathCause(ticks: TickSnapshot[], seat: number, map: EngineMapDa
   return pointCell(map, p.x, p.y, arrivalStep - 1) === CellType.PIT ? 'fall' : 'collapse';
 }
 
-/** Results of every bot in a ranked match that ended ([] for other modes or an unfinished match). */
+/** Results of every bot and the human player in a ranked match that ended ([] for other modes or unfinished). */
 export function rankedBotResults(config: MatchConfig, ticks: TickSnapshot[], map: EngineMapData): BotResult[] {
   const final = ticks.at(-1);
   if (!isRankedMatchMode(config.matchMode) || !final?.over) return [];
   const deaths = config.slots.map((_, seat) => deathCause(ticks, seat, map));
   const out: BotResult[] = [];
   config.slots.forEach((slot, seat) => {
-    if (slot.kind !== 'bot' || !slot.botId) return;
+    const id = slot.kind === 'human' ? HUMAN_RESULT_ID : slot.botId;
+    if (!id) return;
     const p = final.players[seat];
     if (!p) return;
     const r = final.winner === seat ? 'w' : final.winner === -1 && p.rank === 1 ? 'd' : 'l';
-    const result: BotResult = { b: slot.botId, r };
+    const result: BotResult = { b: id, r, rank: p.rank };
     const kills: Partial<Record<KillCause, number>> = {};
     let any = false;
     final.players.forEach((q, other) => {
