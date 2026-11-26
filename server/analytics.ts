@@ -87,7 +87,7 @@ export interface PublicStats {
   updatedAt: string;
   online: number;
   total: Record<PublicMode, number>;
-  /** The 24 whole hours before the current hour (UTC+8): changes once an hour */
+  /** The current hour so far plus the 23 whole hours before it (UTC+8): `from` is that first hour's start */
   last24h: { from: string; to: string; modes: Record<PublicMode, number> };
   bots: Record<RankedMode, Record<string, BotTally>>;
 }
@@ -393,10 +393,10 @@ export class SiteAnalytics {
       }
       bots[mode] = Object.fromEntries(sum);
     }
-    // Whole hours: [current hour − 24 h, current hour)
+    // The current hour so far and the 23 whole hours before it: [current hour − 23 h, now]
     const hourStart = Math.floor(now / HOUR_MS) * HOUR_MS; // UTC+8 is a whole-hour offset
     const last = zeroModes();
-    for (let k = 1; k <= 24; k++) {
+    for (let k = 0; k < 24; k++) {
       const at = hourStart - k * HOUR_MS;
       const day = dayOf(at);
       const byMode = day === today.day ? today.hours.get(hourOf(at)) : day === past.yesterday ? past.yesterdayHours.get(hourOf(at)) : undefined;
@@ -407,7 +407,7 @@ export class SiteAnalytics {
       updatedAt: new Date(now).toISOString(),
       online: this.onlineCount(now),
       total,
-      last24h: { from: new Date(hourStart - 24 * HOUR_MS).toISOString(), to: new Date(hourStart).toISOString(), modes: last },
+      last24h: { from: new Date(hourStart - 23 * HOUR_MS).toISOString(), to: new Date(now).toISOString(), modes: last },
       bots,
     };
   }

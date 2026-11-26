@@ -86,8 +86,9 @@ ids per mode and day.
 
 `GET /public-stats` (through the CDN like the other page requests, CORS, `Cache-Control: max-age=15`, same per-IP
 limit) feeds the lobby's 全球统计 panel (`src/ui/globalStatsUI.ts`) with aggregates only: online now, matches started
-per public mode (ranked-solo / ranked-ffa / cricket / custom / pvp) since the first day on disk and in the 24 whole
-hours before the current hour (UTC+8, from per-hour counts), and the ranked bot tallies summed over all days. Today's state is written to `<analytics dir>/YYYY-MM-DD.json` every minute and on
+per public mode (ranked-solo / ranked-ffa / cricket / custom / pvp) since the first day on disk and over the current
+hour so far plus the 23 whole hours before it (UTC+8, from per-hour counts), and the ranked bot tallies summed over
+all days. Today's state is written to `<analytics dir>/YYYY-MM-DD.json` every minute and on
 shutdown and reloaded on start. After 90 days a day file is compacted (visitor ids, per-minute online and per-hour
 counts dropped) but kept, so all-time totals never go down. The analytics dir is `PVP_ANALYTICS_DIR`, else
 `$STATE_DIRECTORY/analytics`, else `$PVP_STATS_DIR/analytics`. `stats-report` prints it above the latency report;

@@ -75,10 +75,11 @@ function sortValue(r: Row, key: SortKey): number {
 /** "2026-11-27" → "2026/11/27" */
 const slashDate = (day: string) => day.replace(/-/g, '/');
 
-/** Hour of an ISO time in UTC+8, "HH:00" */
+/** An hour's start in UTC+8, "MM/DD HH:00" */
 function hourLabel(iso: string): string {
   const d = new Date(Date.parse(iso) + 8 * 3_600_000);
-  return `${String(d.getUTCHours()).padStart(2, '0')}:00`;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())} ${p(d.getUTCHours())}:00`;
 }
 
 export class GlobalStatsPanel {
@@ -89,11 +90,12 @@ export class GlobalStatsPanel {
   private stats: PublicStats | null = null;
   private error = false;
   private mode: RankedMode = 'ranked-solo';
-  private sort: { key: SortKey; desc: boolean } = { key: 'games', desc: true };
+  private sort: { key: SortKey; desc: boolean } = { key: 'winRate', desc: true };
   private refreshTimer: number | null = null;
   private abort: AbortController | null = null;
   private openTile: string | null = null;
-  private tableScrollLeft = 0;
+  private shellBuilt = false; // tiles / switch / table container exist: refreshes update them in place
+  private shownSig = ''; // data last drawn (refreshes with nothing new redraw nothing)
 
   constructor(private readonly getRoster: () => RosterEntry[]) {
     this.backdrop = document.createElement('div');
@@ -137,13 +139,14 @@ export class GlobalStatsPanel {
         const mode = seg.dataset.gsMode as RankedMode;
         if (mode !== this.mode) {
           this.mode = mode;
-          this.tableScrollLeft = 0;
-          this.render();
+          this.renderTable();
+          const wrap = this.bodyEl.querySelector<HTMLElement>('.gs-table-wrap');
+          if (wrap) wrap.scrollTop = wrap.scrollLeft = 0;
         }
       } else if (th) {
         const key = th.dataset.gsSort as SortKey;
         this.sort = this.sort.key === key ? { key, desc: !this.sort.desc } : { key, desc: true };
-        this.render();
+        this.renderTable();
       } else if (target.closest('[data-gs-retry]')) {
         void this.load();
       }
@@ -202,6 +205,13 @@ export class GlobalStatsPanel {
     this.render();
   }
 
+  /** What the panel shows, minus the timestamp: unchanged data means nothing to redraw. */
+  private dataSig(): string {
+    if (!this.stats) return `none:${this.error}`;
+    const { updatedAt: _t, ...data } = this.stats;
+    return JSON.stringify(data);
+  }
+
   private syncOpenTile() {
     this.card.querySelectorAll<HTMLElement>('[data-gs-tile]').forEach((el) => {
       const open = el.dataset.gsTile === this.openTile;
@@ -234,45 +244,105 @@ export class GlobalStatsPanel {
     });
   }
 
-  private tileHtml(key: string, label: string, value: string, sub: string, breakdown?: Record<PublicMode, number>): string {
+  private tileHtml(key: string, label: string, breakdown: boolean): string {
     if (!breakdown) {
       return `
         <div class="gs-tile gs-tile-online">
           <div class="gs-tile-label"><span class="gs-live-dot" aria-hidden="true"></span>${label}</div>
-          <div class="gs-tile-value">${value}</div>
-          <div class="gs-tile-sub">${sub}</div>
+          <div class="gs-tile-value" data-gs-val="${key}"></div>
+          <div class="gs-tile-sub" data-gs-sub="${key}"></div>
         </div>`;
     }
     const rows = PUBLIC_MODES.map(
-      (m) => `<div class="gs-pop-row"><span>${MODE_LABEL[m]}</span><b>${fmt(breakdown[m] ?? 0)}</b></div>`,
+      (m) => `<div class="gs-pop-row"><span>${MODE_LABEL[m]}</span><b data-gs-pop="${key}:${m}"></b></div>`,
     ).join('');
     return `
       <button type="button" class="gs-tile gs-tile-matches ${this.openTile === key ? 'is-open' : ''}" data-gs-tile="${key}"
-        aria-expanded="${this.openTile === key}" aria-label="${label}：${value} 局，查看各模式局数">
+        aria-expanded="${this.openTile === key}">
         <div class="gs-tile-label">${label}<span class="gs-tile-more" aria-hidden="true">ⓘ</span></div>
-        <div class="gs-tile-value">${value}</div>
-        <div class="gs-tile-sub">${sub}</div>
+        <div class="gs-tile-value" data-gs-val="${key}"></div>
+        <div class="gs-tile-sub" data-gs-sub="${key}"></div>
         <div class="gs-pop" role="tooltip">${rows}</div>
       </button>`;
   }
 
+  /**
+   * Draw the panel. The first time data is there it builds the shell (tiles, switch, table container); after that a
+   * refresh only rewrites the numbers in place and the table rows, so the hovered / tapped tile keeps its breakdown
+   * and the table keeps its scroll position. A refresh that brings nothing new changes nothing.
+   */
   private render() {
     if (!this.openState) return;
-    const prevWrap = this.bodyEl.querySelector<HTMLElement>('.gs-table-wrap');
-    if (prevWrap) this.tableScrollLeft = prevWrap.scrollLeft;
     const s = this.stats;
     if (!s) {
+      this.shellBuilt = false;
+      this.shownSig = '';
       this.bodyEl.innerHTML = this.error
         ? `<div class="gs-state">统计数据加载失败 <button type="button" class="gs-retry" data-gs-retry>重试</button></div>`
         : `<div class="gs-state">正在加载统计数据…</div>`;
       return;
     }
-    const tiles = [
-      this.tileHtml('online', '实时在线', fmt(s.online), '当前在线人数'),
-      this.tileHtml('total', '累计对局', fmt(sumModes(s.total)), `自 ${slashDate(s.since)} 起`, s.total),
-      this.tileHtml('day', '最近 24 小时', fmt(sumModes(s.last24h.modes)), `每小时更新 · 截至 ${hourLabel(s.last24h.to)}`, s.last24h.modes),
-    ].join('');
+    if (!this.shellBuilt) {
+      this.bodyEl.innerHTML = `
+        <div class="gs-tiles">
+          ${this.tileHtml('online', '实时在线', false)}
+          ${this.tileHtml('total', '累计对局', true)}
+          ${this.tileHtml('day', '最近 24 小时', true)}
+        </div>
+        <div class="gs-section-head">
+          <div class="gs-section-title">排位 Bot 数据 <span class="gs-section-note" data-gs-note></span></div>
+          <div class="gs-seg" role="tablist" aria-label="排位模式">
+            <button type="button" role="tab" data-gs-mode="ranked-solo">SOLO</button>
+            <button type="button" role="tab" data-gs-mode="ranked-ffa">四人</button>
+          </div>
+        </div>
+        <div class="gs-table-wrap"></div>
+        <div class="gs-notes"></div>
+      `;
+      this.shellBuilt = true;
+      this.shownSig = '';
+    }
+    const notes = this.bodyEl.querySelector<HTMLElement>('.gs-notes')!;
+    const stale = this.error ? '<div class="gs-stale-note">刷新失败，显示的是上次的数据</div>' : '';
+    const sig = this.dataSig();
+    if (sig === this.shownSig) {
+      notes.querySelector('.gs-stale-note')?.remove();
+      if (stale) notes.insertAdjacentHTML('beforeend', stale);
+      return;
+    }
+    this.shownSig = sig;
+    const set = (sel: string, text: string) => {
+      const el = this.bodyEl.querySelector<HTMLElement>(sel);
+      if (el && el.textContent !== text) el.textContent = text;
+    };
+    set('[data-gs-val="online"]', fmt(s.online));
+    set('[data-gs-sub="online"]', '当前在线人数');
+    set('[data-gs-val="total"]', fmt(sumModes(s.total)));
+    set('[data-gs-sub="total"]', `自 ${slashDate(s.since)} 起`);
+    set('[data-gs-val="day"]', fmt(sumModes(s.last24h.modes)));
+    set('[data-gs-sub="day"]', `自 ${hourLabel(s.last24h.from)} 起`);
+    for (const m of PUBLIC_MODES) {
+      set(`[data-gs-pop="total:${m}"]`, fmt(s.total[m] ?? 0));
+      set(`[data-gs-pop="day:${m}"]`, fmt(s.last24h.modes[m] ?? 0));
+    }
+    this.bodyEl.querySelector('[data-gs-tile="total"]')?.setAttribute('aria-label', `累计对局：${fmt(sumModes(s.total))} 局，查看各模式局数`);
+    this.bodyEl.querySelector('[data-gs-tile="day"]')?.setAttribute('aria-label', `最近 24 小时：${fmt(sumModes(s.last24h.modes))} 局，查看各模式局数`);
+    set('[data-gs-note]', `只统计打完的排位局 · 自 ${slashDate(s.since)} 起`);
+    this.renderTable();
+    notes.querySelector('.gs-stale-note')?.remove();
+    if (stale) notes.insertAdjacentHTML('beforeend', stale);
+  }
 
+  /** The bot table for the current mode and sort (its scroll container is kept, so the scroll position stays). */
+  private renderTable() {
+    const s = this.stats;
+    const wrap = this.bodyEl.querySelector<HTMLElement>('.gs-table-wrap');
+    if (!s || !wrap) return;
+    this.bodyEl.querySelectorAll<HTMLElement>('[data-gs-mode]').forEach((b) => {
+      const on = b.dataset.gsMode === this.mode;
+      b.classList.toggle('active', on);
+      b.setAttribute('aria-selected', String(on));
+    });
     const rows = this.rows();
     const { key, desc } = this.sort;
     rows.sort((a, b) => {
@@ -281,8 +351,8 @@ export class GlobalStatsPanel {
       if (va !== vb) return desc ? vb - va : va - vb;
       return b.games - a.games || a.name.localeCompare(b.name);
     });
-    const th = (k: SortKey, label: string, cls = '', title = '', rows = 1) =>
-      `<th class="gs-sortable ${cls} ${key === k ? `is-sorted ${desc ? 'is-desc' : 'is-asc'}` : ''}" data-gs-sort="${k}"${rows > 1 ? ` rowspan="${rows}"` : ''}${title ? ` title="${title}"` : ''}>${label}</th>`;
+    const th = (k: SortKey, label: string, cls = '', title = '', rowspan = 1) =>
+      `<th class="gs-sortable ${cls} ${key === k ? `is-sorted ${desc ? 'is-desc' : 'is-asc'}` : ''}" data-gs-sort="${k}"${rowspan > 1 ? ` rowspan="${rowspan}"` : ''}${title ? ` title="${title}"` : ''}>${label}</th>`;
     const num = (n: number, cls = '') => `<td class="gs-num ${cls} ${n ? '' : 'is-zero'}">${fmt(n)}</td>`;
     const body = rows
       .map((r) => {
@@ -306,44 +376,37 @@ export class GlobalStatsPanel {
           </tr>`;
       })
       .join('');
-    const anyGames = rows.some((r) => r.games > 0);
-
-    this.bodyEl.innerHTML = `
-      <div class="gs-tiles">${tiles}</div>
-      <div class="gs-section-head">
-        <div class="gs-section-title">排位 Bot 数据 <span class="gs-section-note">只统计打完的排位局 · 自 ${slashDate(s.since)} 起</span></div>
-        <div class="gs-seg" role="tablist" aria-label="排位模式">
-          <button type="button" role="tab" class="${this.mode === 'ranked-solo' ? 'active' : ''}" aria-selected="${this.mode === 'ranked-solo'}" data-gs-mode="ranked-solo">SOLO</button>
-          <button type="button" role="tab" class="${this.mode === 'ranked-ffa' ? 'active' : ''}" aria-selected="${this.mode === 'ranked-ffa'}" data-gs-mode="ranked-ffa">四人</button>
-        </div>
-      </div>
-      <div class="gs-table-wrap">
-        <table class="gs-table">
-          <thead>
-            <tr>
-              <th rowspan="2" class="gs-bot gs-corner">Bot</th>
-              ${th('games', '局数', 'gs-col-games', '打完的排位局数', 2)}
-              ${th('winRate', '胜率', '', '胜场 ÷ 局数（平局算在局数里）', 2)}
-              ${th('kd', 'KD', '', '击杀 ÷ 死亡', 2)}
-              ${th('w', '胜/平/负', '', '按胜场排序', 2)}
-              <th colspan="${KILL_CAUSES.length + 1}" class="gs-group gs-group-start gs-kill">击杀</th>
-              <th colspan="${DEATH_CAUSES.length + 1}" class="gs-group gs-group-start gs-death">死亡</th>
-            </tr>
-            <tr>
-              ${th('kills', '总计', 'gs-group-start gs-kill')}
-              ${KILL_CAUSES.map((c) => th(`k:${c}`, CAUSE_LABEL[c], 'gs-kill')).join('')}
-              ${th('deaths', '总计', 'gs-group-start gs-death')}
-              ${DEATH_CAUSES.map((c) => th(`d:${c}`, CAUSE_LABEL[c], 'gs-death')).join('')}
-            </tr>
-          </thead>
-          <tbody>${body}</tbody>
-        </table>
-      </div>
-      ${anyGames ? '' : `<div class="gs-empty-note">${this.mode === 'ranked-solo' ? '排位 SOLO' : '排位四人'}还没有打完的对局数据</div>`}
-      ${this.error ? '<div class="gs-stale-note">刷新失败，显示的是上次的数据</div>' : ''}
-    `;
-    // Rows have a fixed first column: horizontal scroll keeps the bot names in view
-    const wrap = this.bodyEl.querySelector<HTMLElement>('.gs-table-wrap');
-    if (wrap) wrap.scrollLeft = this.tableScrollLeft;
+    const top = wrap.scrollTop;
+    const left = wrap.scrollLeft;
+    wrap.innerHTML = `
+      <table class="gs-table">
+        <thead>
+          <tr>
+            <th rowspan="2" class="gs-bot gs-corner">Bot</th>
+            ${th('games', '局数', 'gs-col-games', '打完的排位局数', 2)}
+            ${th('winRate', '胜率', '', '胜场 ÷ 局数（平局算在局数里）', 2)}
+            ${th('kd', 'KD', '', '击杀 ÷ 死亡', 2)}
+            ${th('w', '胜/平/负', '', '按胜场排序', 2)}
+            <th colspan="${KILL_CAUSES.length + 1}" class="gs-group gs-group-start gs-kill">击杀</th>
+            <th colspan="${DEATH_CAUSES.length + 1}" class="gs-group gs-group-start gs-death">死亡</th>
+          </tr>
+          <tr>
+            ${th('kills', '总计', 'gs-group-start gs-kill')}
+            ${KILL_CAUSES.map((c) => th(`k:${c}`, CAUSE_LABEL[c], 'gs-kill')).join('')}
+            ${th('deaths', '总计', 'gs-group-start gs-death')}
+            ${DEATH_CAUSES.map((c) => th(`d:${c}`, CAUSE_LABEL[c], 'gs-death')).join('')}
+          </tr>
+        </thead>
+        <tbody>${body}</tbody>
+      </table>`;
+    wrap.scrollTop = top;
+    wrap.scrollLeft = left;
+    const notes = this.bodyEl.querySelector<HTMLElement>('.gs-notes');
+    if (notes) {
+      notes.querySelector('.gs-empty-note')?.remove();
+      if (!rows.some((r) => r.games > 0)) {
+        notes.insertAdjacentHTML('afterbegin', `<div class="gs-empty-note">${this.mode === 'ranked-solo' ? '排位 SOLO' : '排位四人'}还没有打完的对局数据</div>`);
+      }
+    }
   }
 }

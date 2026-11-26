@@ -10762,3 +10762,14 @@ body.is-mobile .gs-table thead tr:nth-child(2) th {
     display: none;
   }
 }
+
+.gs-notes {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.gs-notes:empty {
+  display: none;
+}

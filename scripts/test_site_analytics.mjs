@@ -136,7 +136,7 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
 // ---------- unit: public stats (all-time totals, last 24 whole hours, bots) and compaction ----------
 {
   const dir = mkdtempSync(join(tmpdir(), 'site-analytics-public-'));
-  const NOW = Date.parse('2026-11-28T03:30:00Z'); // 11:30 UTC+8: the window is 11-27 11:00 → 11-28 11:00
+  const NOW = Date.parse('2026-11-28T03:30:00Z'); // 11:30 UTC+8: the window is 11-27 12:00 → now
   const day = (d, extra) => JSON.stringify({ v: 1, day: d, updatedAt: '', uv: 1, peakOnline: 1, peakAt: null, online: {}, ids: [id(7)], modeIds: {}, ...extra });
   writeFileSync(join(dir, '2026-11-26.json'), day('2026-11-26', {
     modes: { 'ranked-solo': { visitors: 1, started: 7, finished: 7 }, pvp: { visitors: 1, started: 3, finished: 3 } },
@@ -144,8 +144,11 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
     hours: { 12: { 'ranked-solo': 7 } },
   }));
   writeFileSync(join(dir, '2026-11-27.json'), day('2026-11-27', {
-    modes: { 'ranked-solo': { visitors: 1, started: 102, finished: 90 }, cricket: { visitors: 1, started: 1, finished: 1 }, training: { visitors: 1, started: 5, finished: 0 } },
-    hours: { 10: { 'ranked-solo': 100 }, 11: { 'ranked-solo': 2 }, 23: { cricket: 1, training: 5 } },
+    modes: {
+      'ranked-solo': { visitors: 1, started: 102, finished: 90 }, cricket: { visitors: 1, started: 1, finished: 1 },
+      custom: { visitors: 1, started: 5, finished: 5 }, training: { visitors: 1, started: 5, finished: 0 },
+    },
+    hours: { 10: { 'ranked-solo': 100 }, 11: { 'ranked-solo': 2 }, 12: { custom: 5 }, 23: { cricket: 1, training: 5 } },
   }));
   const a = new SiteAnalytics(dir, 90, NOW);
   await a.load(NOW);
@@ -153,17 +156,18 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   a.matchStarted(id(1), 'ranked-ffa', at('00:30'));
   a.matchStarted(id(2), 'ranked-ffa', at('00:40'));
   a.pvpMatchStarted(at('05:00'));
-  a.matchStarted(id(1), 'custom', at('11:10')); // the current hour: in the total, not yet in the last 24 h
+  a.matchStarted(id(1), 'custom', at('11:10')); // the current hour counts too
   a.matchStarted(id(1), 'replay', at('11:12')); // not a public mode
   a.matchFinished(id(1), 'ranked-solo', at('11:15'), [{ b: 'glm-5.3', r: 'w', kills: { melee: 1 } }]);
   a.heartbeat(id(1), NOW);
   const st = await a.publicStats(NOW);
   assert.equal(st.since, '2026-11-26');
   assert.equal(st.online, 1);
-  assert.deepEqual(st.total, { 'ranked-solo': 109, 'ranked-ffa': 2, cricket: 1, custom: 1, pvp: 4 });
-  assert.deepEqual(st.last24h.modes, { 'ranked-solo': 2, 'ranked-ffa': 2, cricket: 1, custom: 0, pvp: 1 });
-  assert.equal(st.last24h.from, '2026-11-27T03:00:00.000Z');
-  assert.equal(st.last24h.to, '2026-11-28T03:00:00.000Z');
+  assert.deepEqual(st.total, { 'ranked-solo': 109, 'ranked-ffa': 2, cricket: 1, custom: 6, pvp: 4 });
+  // 11-27 10:00 and 11:00 are out (more than 23 whole hours back), 12:00 is in, and so is 11-28 11:10
+  assert.deepEqual(st.last24h.modes, { 'ranked-solo': 0, 'ranked-ffa': 2, cricket: 1, custom: 6, pvp: 1 });
+  assert.equal(st.last24h.from, '2026-11-27T04:00:00.000Z');
+  assert.equal(st.last24h.to, '2026-11-28T03:30:00.000Z');
   assert.deepEqual(st.bots['ranked-solo']['glm-5.3'], { w: 3, d: 0, l: 1, kills: { dart: 2, melee: 1 }, deaths: { fall: 1 } });
   assert.deepEqual(st.bots['ranked-ffa'], {});
   assert.equal(JSON.stringify(st).includes(id(7)), false, 'no visitor ids');
@@ -186,8 +190,9 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   assert.deepEqual(after.bots, st.bots);
   // An hour later the window slides
   const later = await c.publicStats(NOW + 3_600_000);
-  assert.equal(later.last24h.modes['ranked-solo'], 0, '11-27 11:00 left the window');
-  assert.equal(later.last24h.modes.custom, 1, '11:10 today entered it');
+  assert.equal(later.last24h.from, '2026-11-27T05:00:00.000Z');
+  assert.equal(later.last24h.modes.custom, 1, '11-27 12:00 left the window, 11-28 11:10 is still in');
+  assert.equal(later.last24h.modes.cricket, 1);
   rmSync(dir, { recursive: true, force: true });
 }
 

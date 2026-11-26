@@ -21,7 +21,7 @@ export interface PublicStats {
   updatedAt: string;
   online: number;
   total: Record<PublicMode, number>; // matches started
-  last24h: { from: string; to: string; modes: Record<PublicMode, number> };
+  last24h: { from: string; to: string; modes: Record<PublicMode, number> }; // current hour + the 23 before it
   bots: Record<'ranked-solo' | 'ranked-ffa', Record<string, BotTally>>;
 }
 
