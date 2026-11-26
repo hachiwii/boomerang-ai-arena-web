@@ -75,9 +75,21 @@ not stored. Pages built with PvP off (the mirror) send nothing.
 
 The relay keeps: online visitors (heartbeat within 2.5 min), per day (UTC+8) the UV, the per-minute online count
 and its peak, and per mode (ranked-solo / ranked-ffa / cricket / cricket-batch / custom / training / pvp / replay)
-the unique visitors plus matches started / finished. PvP matches are counted once by the relay (at GO and at the
-end), not by the two clients. Today's state is written to `<analytics dir>/YYYY-MM-DD.json` every minute and on
-shutdown, reloaded on start, and kept 90 days. The analytics dir is `PVP_ANALYTICS_DIR`, else
+the unique visitors plus matches started / finished. A quick restart (R / 再来一局) counts the match being left as
+finished. PvP matches are counted once by the relay (at GO and at the end), not by the two clients.
+
+Ranked matches played to the end also carry each bot's result (`bots: [{b: botId, r: w|d|l, kills?, death?}]`,
+`src/game/botResults.ts`): per mode and bot the relay keeps wins / draws / losses, kills by cause (melee, dart, kicked
+into a pit) and deaths by cause (those three, plus fell off on its own — walk or dash — and ground collapsed); the
+report sums them into total kills and deaths. Malformed results are dropped (the finish still counts); at most 64 bot
+ids per mode and day.
+
+`GET /public-stats` (through the CDN like the other page requests, CORS, `Cache-Control: max-age=15`, same per-IP
+limit) feeds the lobby's 全球统计 panel (`src/ui/globalStatsUI.ts`) with aggregates only: online now, matches started
+per public mode (ranked-solo / ranked-ffa / cricket / custom / pvp) since the first day on disk and in the 24 whole
+hours before the current hour (UTC+8, from per-hour counts), and the ranked bot tallies summed over all days. Today's state is written to `<analytics dir>/YYYY-MM-DD.json` every minute and on
+shutdown and reloaded on start. After 90 days a day file is compacted (visitor ids, per-minute online and per-hour
+counts dropped) but kept, so all-time totals never go down. The analytics dir is `PVP_ANALYTICS_DIR`, else
 `$STATE_DIRECTORY/analytics`, else `$PVP_STATS_DIR/analytics`. `stats-report` prints it above the latency report;
 `GET /stats` (loopback) adds `onlineNow` and `visitorsToday`.
 

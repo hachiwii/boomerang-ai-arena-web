@@ -1,7 +1,8 @@
 // Site analytics for the relay (server/analytics.ts): a heartbeat every minute while the page is visible, plus an
 // event when a match / replay / cricket batch starts and when it finishes. The only identity sent is a random id this
 // browser generated (localStorage); nothing is sent when PvP is off (mirror builds) because there is no relay then.
-import { isPvpAvailable, pvpServerUrl } from './pvpConfig';
+import { relayHttpUrl } from './pvpConfig';
+import type { BotResult } from '../game/botResults';
 import type { MatchMode } from '../game/types';
 
 export type AnalyticsMode = MatchMode | 'cricket-batch' | 'replay';
@@ -11,6 +12,9 @@ const BEAT_MS = 60_000;
 
 let visitor: string | null = null;
 let started = false;
+// The match on screen that has started but not been counted as finished yet (local matches only: the relay counts
+// PvP itself, replays have no end, and a cricket batch always reports its own end).
+let unfinished: AnalyticsMode | null = null;
 
 function randomId(): string {
   const bytes = new Uint8Array(16);
@@ -32,18 +36,7 @@ function visitorId(): string {
 }
 
 function endpoint(path: '/beat' | '/event'): string | null {
-  if (!isPvpAvailable()) return null;
-  const ws = pvpServerUrl();
-  if (!ws) return null;
-  try {
-    const url = new URL(ws);
-    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
-    url.pathname = path;
-    url.search = '';
-    return url.toString();
-  } catch {
-    return null;
-  }
+  return relayHttpUrl(path);
 }
 
 function post(path: '/beat' | '/event', body: Record<string, unknown>, beacon = false) {
@@ -82,10 +75,18 @@ export function startAnalytics() {
 }
 
 export function trackMatchStart(mode: AnalyticsMode) {
+  if (mode !== 'pvp' && mode !== 'replay' && mode !== 'cricket-batch') unfinished = mode;
   post('/event', { kind: 'start', mode });
 }
 
-export function trackMatchEnd(mode: AnalyticsMode) {
+/** `bots`: ranked matches played to the end report each bot's result (src/game/botResults.ts). */
+export function trackMatchEnd(mode: AnalyticsMode, bots?: BotResult[]) {
+  if (unfinished === mode) unfinished = null;
   if (mode === 'pvp') return; // the relay counts PvP matches itself
-  post('/event', { kind: 'end', mode });
+  post('/event', bots?.length ? { kind: 'end', mode, bots } : { kind: 'end', mode });
+}
+
+/** Quick restart (R / 再来一局): the match being left counts as finished, unless its end was already counted. */
+export function trackMatchRestart() {
+  if (unfinished) trackMatchEnd(unfinished);
 }

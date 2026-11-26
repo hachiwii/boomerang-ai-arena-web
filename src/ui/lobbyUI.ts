@@ -11,7 +11,9 @@ import type { PvpChallengeFailReason, PvpConnState, PvpLobbyClient, PvpNetStats 
 import { getTheme } from '../render/themes';
 import { makeHoodieAvatarDataUrl } from './hoodieAvatar';
 import { pvpNetDetail, pvpRttLevel, pvpRttMs } from './pvpNet';
-import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_PHONE } from './icons';
+import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_GLOBE, ICON_PHONE } from './icons';
+import { GlobalStatsPanel } from './globalStatsUI';
+import { publicStatsAvailable } from '../net/publicStats';
 import { LeaderboardPanel } from './leaderboardUI';
 
 const DUP_RING_ACCENTS = ['#FF4D6D', '#2EC4B6', '#FFB703', '#8338EC'];
@@ -268,6 +270,8 @@ export class LobbyUI {
   private pvpBtnFlash: { copy: 'ok' | 'err' | null; reset: 'err' | null } = { copy: null, reset: null };
   private pvpBtnFlashTimers: { copy: number | null; reset: number | null } = { copy: null, reset: null };
   private fitHeaderRaf = 0;
+  private globalStats: GlobalStatsPanel | null = null;
+  private renderedMobile: boolean | null = null; // platform the header was last laid out for
 
   constructor(
     root: HTMLElement,
@@ -518,9 +522,26 @@ export class LobbyUI {
     }
   }
 
+  /** 全球统计 (left of the PC / mobile switch), on pages that have a relay to ask */
+  private renderGlobalStatsButtonHtml(): string {
+    if (!publicStatsAvailable()) return '';
+    return `<button type="button" class="lobby-platform-btn lobby-stats-btn" id="btn-open-global-stats"
+      title="全球统计：实时在线、累计与最近 24 小时对局数、排位 Bot 数据" aria-label="全球统计">${ICON_GLOBE}<span>全球统计</span></button>`;
+  }
+
+  public openGlobalStats() {
+    this.closeDropdown();
+    this.globalStats ??= new GlobalStatsPanel(() => this.roster);
+    this.globalStats.open();
+  }
+
+  public isGlobalStatsOpen(): boolean {
+    return this.globalStats?.isOpen() ?? false;
+  }
+
   private renderPlatformButtonsHtml(): string {
     const st = this.callbacks.getPlatformState?.();
-    if (!st) return '';
+    if (!st) return this.renderGlobalStatsButtonHtml();
     const platformBtn = `
       <button
         type="button"
@@ -538,7 +559,7 @@ export class LobbyUI {
           aria-label="${st.fullscreen ? '退出全屏' : '进入全屏'}"
         >${st.fullscreen ? ICON_FULLSCREEN_EXIT : ICON_FULLSCREEN}</button>`
       : '';
-    return platformBtn + fsBtn;
+    return this.renderGlobalStatsButtonHtml() + platformBtn + fsBtn;
   }
 
   /**
@@ -571,14 +592,20 @@ export class LobbyUI {
   /** Re-render header buttons after a desktop/mobile or fullscreen change. */
   public refreshPlatformButtons() {
     if (this.container.classList.contains('hidden')) return;
-    if (this.activeTab === 'cricket' && this.roster.length > CRICKET_BOARD_DESIGN_CAP) {
+    // PC keeps 音乐 / GitHub in the title row, mobile in the action row: switching platforms re-lays the header
+    const mobileNow = Boolean(this.callbacks.getPlatformState?.()?.mobile);
+    if (
+      mobileNow !== this.renderedMobile ||
+      (this.activeTab === 'cricket' && this.roster.length > CRICKET_BOARD_DESIGN_CAP)
+    ) {
       // Overflowing Cricket board: zone heights and touch drag behaviour differ between desktop and mobile
       this.render();
       return;
     }
-    const holder = this.container.querySelector<HTMLElement>('.lobby-header-platform');
+    const holder = this.container.querySelector<HTMLElement>('.lobby-platform-slot');
     if (!holder) return;
     holder.innerHTML = this.renderPlatformButtonsHtml();
+    holder.querySelector('#btn-open-global-stats')?.addEventListener('click', () => this.openGlobalStats());
     holder.querySelector('#btn-toggle-platform')?.addEventListener('click', () => {
       this.closeDropdown();
       this.callbacks.onTogglePlatform?.();
@@ -2476,6 +2503,35 @@ export class LobbyUI {
             : this.renderCustomBody();
 
     const bgmOn = this.settings.get().bgmEnabled;
+    // 音乐 / GitHub: PC puts them in the title row (next to 全球统计 and the platform switch), mobile keeps them with
+    // the other action buttons in its single header row
+    const headerToolsInNav = Boolean(this.callbacks.getPlatformState?.()?.mobile);
+    this.renderedMobile = headerToolsInNav;
+    const headerToolsHtml = `
+        <button
+          type="button"
+          class="lobby-bgm-btn ${bgmOn ? 'is-on' : 'is-off'}"
+          id="btn-toggle-bgm"
+          role="switch"
+          aria-checked="${bgmOn}"
+          title="${bgmOn ? '背景音乐：已开启（点击关闭）' : '背景音乐：已关闭（点击开启）'}"
+          aria-label="${bgmOn ? '关闭背景音乐' : '开启背景音乐'}"
+        >
+          ${renderBgmQuickIconSvg(bgmOn)}
+        </button>
+        <a
+          class="lobby-github-btn"
+          id="btn-github-link"
+          href="https://github.com/hachiwii/boomerang-ai-arena-web"
+          target="_blank"
+          rel="noopener noreferrer"
+          title="GitHub 开源仓库"
+          aria-label="GitHub 开源仓库"
+        >
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
+            <path d="M12 0.3C5.37 0.3 0 5.67 0 12.3c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58 0-.29-.01-1.05-.02-2.06-3.34.73-4.04-1.61-4.04-1.61-.55-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22 0 1.6-.01 2.9-.01 3.29 0 .32.22.7.82.58C20.57 22.1 24 17.6 24 12.3 24 5.67 18.63.3 12 .3Z"/>
+          </svg>
+        </a>`;
 
     this.container.innerHTML = `
       <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''} ${this.activeTab === 'cricket' ? 'lobby-card-cricket' : ''} ${this.activeTab === 'pvp' ? 'lobby-card-pvp' : ''}">
@@ -2495,34 +2551,12 @@ export class LobbyUI {
               <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）" aria-label="对局历史"><span class="nav-ico">📜</span><span class="nav-label"> 对局历史</span></button>
               <button type="button" class="lobby-settings-btn lobby-bots-btn" id="btn-open-bot-manager" title="上传 C++ 源码在浏览器里编译成自定义 Bot，可在自定义对局和斗蛐蛐中使用" aria-label="管理 Bot"><span class="nav-ico">🤖</span><span class="nav-label"> 管理 Bot</span></button>
               <button type="button" class="lobby-settings-btn" id="btn-open-settings" title="音效、背景音乐、帧率上限与键位设置" aria-label="设置"><span class="nav-ico">⚙️</span><span class="nav-label"> 设置</span></button>
-              <button
-                type="button"
-                class="lobby-bgm-btn ${bgmOn ? 'is-on' : 'is-off'}"
-                id="btn-toggle-bgm"
-                role="switch"
-                aria-checked="${bgmOn}"
-                title="${bgmOn ? '背景音乐：已开启（点击关闭）' : '背景音乐：已关闭（点击开启）'}"
-                aria-label="${bgmOn ? '关闭背景音乐' : '开启背景音乐'}"
-              >
-                ${renderBgmQuickIconSvg(bgmOn)}
-              </button>
-              <a
-                class="lobby-github-btn"
-                id="btn-github-link"
-                href="https://github.com/hachiwii/boomerang-ai-arena-web"
-                target="_blank"
-                rel="noopener noreferrer"
-                title="GitHub 开源仓库"
-                aria-label="GitHub 开源仓库"
-              >
-                <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor" aria-hidden="true">
-                  <path d="M12 0.3C5.37 0.3 0 5.67 0 12.3c0 5.3 3.44 9.8 8.21 11.39.6.11.82-.26.82-.58 0-.29-.01-1.05-.02-2.06-3.34.73-4.04-1.61-4.04-1.61-.55-1.38-1.33-1.75-1.33-1.75-1.09-.74.08-.73.08-.73 1.2.09 1.84 1.24 1.84 1.24 1.07 1.83 2.81 1.3 3.49 1 .11-.78.42-1.3.76-1.6-2.67-.3-5.47-1.33-5.47-5.93 0-1.31.47-2.38 1.24-3.22-.12-.3-.54-1.52.12-3.18 0 0 1.01-.32 3.3 1.23a11.5 11.5 0 0 1 6.01 0c2.29-1.55 3.3-1.23 3.3-1.23.66 1.66.24 2.88.12 3.18.77.84 1.24 1.91 1.24 3.22 0 4.61-2.81 5.63-5.48 5.92.43.37.81 1.1.81 2.22 0 1.6-.01 2.9-.01 3.29 0 .32.22.7.82.58C20.57 22.1 24 17.6 24 12.3 24 5.67 18.63.3 12 .3Z"/>
-                </svg>
-              </a>
+              ${headerToolsInNav ? headerToolsHtml : ''}
             </div>
           </div>
           <div class="lobby-header-platform">
-            ${this.renderPlatformButtonsHtml()}
+            ${headerToolsInNav ? '' : headerToolsHtml}
+            <span class="lobby-platform-slot">${this.renderPlatformButtonsHtml()}</span>
           </div>
         </header>
 
@@ -2537,7 +2571,8 @@ export class LobbyUI {
       lobbyCardEl.scrollTop = prevScrollTop;
     }
 
-    // PC / mobile toggle & fullscreen
+    // 全球统计, PC / mobile toggle & fullscreen
+    this.container.querySelector('#btn-open-global-stats')?.addEventListener('click', () => this.openGlobalStats());
     this.container.querySelector('#btn-toggle-platform')?.addEventListener('click', () => {
       this.closeDropdown();
       this.callbacks.onTogglePlatform?.();

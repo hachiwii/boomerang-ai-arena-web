@@ -2,7 +2,7 @@
 // Reads the relay's per-match stats (PVP_STATS_DIR, or $STATE_DIRECTORY/stats, default /var/lib/boomerang-pvp/stats).
 import { join } from 'node:path';
 import { StatsStore, formatReport, summarize } from './stats.ts';
-import { formatVisitors, readDays } from './analytics.ts';
+import { formatBots, formatVisitors, readDays } from './analytics.ts';
 
 const args = process.argv.slice(2);
 const at = args.indexOf('--days');
@@ -19,4 +19,4 @@ const summary = summarize(await new StatsStore(dir).read(days), days);
 const visitors = await readDays(analyticsDir, days);
 console.log(args.includes('--json')
   ? JSON.stringify({ visitors, matches: summary }, null, 2)
-  : `${formatVisitors(visitors)}\n\n${formatReport(summary)}`);
+  : `${formatVisitors(visitors)}\n\n${formatBots(visitors)}\n\n${formatReport(summary)}`);

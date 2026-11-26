@@ -17,7 +17,7 @@ import {
   RegionResolver, StatsStore, UNKNOWN_REGION, addRttSample, classifyClient, newSeatStats, provinceKey, seatRecord,
   summarize, type ClientClass, type MatchRecord, type SeatStats,
 } from './stats.ts';
-import { SiteAnalytics, isMode, isVisitorId } from './analytics.ts';
+import { SiteAnalytics, isMode, isVisitorId, parseBotResults } from './analytics.ts';
 
 const READY_MS = 20_000;
 const RECONNECT_MS = 10_000;
@@ -625,6 +625,41 @@ function onMessage(conn: Connection, raw: string) {
   }
 }
 
+// Requests from game pages (heartbeats, match events, the public stats panel): 120 per IP per minute.
+function withinPageLimit(req: IncomingMessage, time: number): boolean {
+  const ip = ipOf(req);
+  let window = beatsByIp.get(ip);
+  if (!window) {
+    if (beatsByIp.size >= 20_000) return false;
+    beatsByIp.set(ip, (window = newWindow()));
+  }
+  return count(window, time, 60_000, 120);
+}
+
+// GET /public-stats: the lobby's 全球统计 panel (aggregates only). Cacheable for a few seconds by the CDN.
+function publicStatsRequest(req: IncomingMessage, res: import('node:http').ServerResponse) {
+  const headers = { 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin' };
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { ...headers, 'Access-Control-Allow-Methods': 'GET', 'Access-Control-Max-Age': '86400' }).end();
+    return;
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, headers).end();
+    return;
+  }
+  const time = now();
+  if (!withinPageLimit(req, time)) {
+    res.writeHead(429, { ...headers, 'Cache-Control': 'no-store' }).end();
+    return;
+  }
+  analytics.publicStats(time)
+    .then((stats) => {
+      res.writeHead(200, { ...headers, 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'public, max-age=15' })
+        .end(req.method === 'HEAD' ? undefined : JSON.stringify(stats));
+    })
+    .catch(() => res.writeHead(500, { ...headers, 'Cache-Control': 'no-store' }).end());
+}
+
 // Page heartbeats / match events: tiny CORS "simple" POSTs (text/plain JSON, no preflight) from the game page.
 function analyticsRequest(req: IncomingMessage, res: import('node:http').ServerResponse, path: string) {
   // CORS for fetch(); CORP so sendBeacon (no-cors) also works on cross-origin-isolated pages (COEP require-corp)
@@ -640,16 +675,7 @@ function analyticsRequest(req: IncomingMessage, res: import('node:http').ServerR
     return;
   }
   const time = now();
-  const ip = ipOf(req);
-  let window = beatsByIp.get(ip);
-  if (!window) {
-    if (beatsByIp.size >= 20_000) {
-      res.writeHead(429, headers).end();
-      return;
-    }
-    beatsByIp.set(ip, (window = newWindow()));
-  }
-  if (!count(window, time, 60_000, 120)) {
+  if (!withinPageLimit(req, time)) {
     res.writeHead(429, headers).end();
     req.resume();
     return;
@@ -659,14 +685,14 @@ function analyticsRequest(req: IncomingMessage, res: import('node:http').ServerR
   req.setEncoding('utf8');
   req.on('data', (chunk: string) => {
     body += chunk;
-    if (body.length > 512) {
+    if (body.length > 1024) {
       tooBig = true;
       req.destroy();
     }
   });
   req.on('end', () => {
     if (tooBig) return;
-    let msg: { id?: unknown; leave?: unknown; kind?: unknown; mode?: unknown };
+    let msg: { id?: unknown; leave?: unknown; kind?: unknown; mode?: unknown; bots?: unknown };
     try { msg = JSON.parse(body); } catch { msg = {}; }
     if (!msg || !isVisitorId(msg.id)) {
       res.writeHead(400, headers).end();
@@ -677,7 +703,9 @@ function analyticsRequest(req: IncomingMessage, res: import('node:http').ServerR
       else analytics.heartbeat(msg.id, time);
     } else if (isMode(msg.mode)) {
       if (msg.kind === 'start') analytics.matchStarted(msg.id, msg.mode, time);
-      else if (msg.kind === 'end' && msg.mode !== 'pvp') analytics.matchFinished(msg.id, msg.mode, time); // PvP: relay counts
+      else if (msg.kind === 'end' && msg.mode !== 'pvp') { // PvP: the relay counts it
+        analytics.matchFinished(msg.id, msg.mode, time, msg.bots === undefined ? null : parseBotResults(msg.mode, msg.bots));
+      }
       else analytics.heartbeat(msg.id, time);
     }
     res.writeHead(204, headers).end();
@@ -692,6 +720,10 @@ const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', 'http://relay');
   if ((url.pathname === '/beat' || url.pathname === '/event') && authorized(req)) {
     analyticsRequest(req, res, url.pathname);
+    return;
+  }
+  if (url.pathname === '/public-stats' && authorized(req)) {
+    publicStatsRequest(req, res);
     return;
   }
   if (req.method === 'GET' && url.pathname === '/stats') {

@@ -92,6 +92,13 @@ export const ICON_DESKTOP = svg(
     stroke('M9 20h6M12 16v4', 2),
 );
 
+/** 全球统计: a globe */
+export const ICON_GLOBE = svg(
+  `<circle cx="12" cy="12" r="8.6" fill="none" stroke="currentColor" stroke-width="2"/>` +
+    stroke('M3.6 12h16.8', 1.7) +
+    `<ellipse cx="12" cy="12" rx="3.9" ry="8.6" fill="none" stroke="currentColor" stroke-width="1.7"/>`,
+);
+
 export const ICON_FULLSCREEN = svg(stroke('M4.5 9V4.5H9M15 4.5h4.5V9M19.5 15v4.5H15M9 19.5H4.5V15'));
 
 export const ICON_FULLSCREEN_EXIT = svg(stroke('M9 4.5V9H4.5M19.5 9H15V4.5M15 19.5V15h4.5M4.5 15H9v4.5'));

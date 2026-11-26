@@ -56,7 +56,8 @@ import { MobileControls, MobileLayoutEditor } from './ui/mobileControls';
 import { MobileExportModal } from './ui/mobileExportModal';
 import { SettingsModal } from './ui/settingsUI';
 import { TrainingPanel } from './ui/trainingUI';
-import { startAnalytics, trackMatchEnd, trackMatchStart } from './net/analytics';
+import { startAnalytics, trackMatchEnd, trackMatchRestart, trackMatchStart } from './net/analytics';
+import { rankedBotResults, type BotResult } from './game/botResults';
 
 function parseQuickPreviewMap(map: MapMeta): EngineMapData {
   const cells: number[] = [];
@@ -638,6 +639,18 @@ async function bootstrap() {
     });
   };
 
+  // Site analytics: each bot's result in a ranked match that reached its end (never lets analytics break the game)
+  const rankedBotResultsSafe = (cfg: MatchConfig, finalState: TickSnapshot): BotResult[] | undefined => {
+    if (!isRankedMatchMode(cfg.matchMode) || !activeMapData) return undefined;
+    try {
+      const ticks = liveController().getRecordedTicks();
+      const all = ticks.at(-1)?.t === finalState.t ? ticks : [...ticks, finalState];
+      return rankedBotResults(cfg, all, activeMapData);
+    } catch {
+      return undefined;
+    }
+  };
+
   const persistCurrentMatchHistory = (
     eloResult: EloUpdateResult | null,
     earlyExit: boolean,
@@ -976,6 +989,7 @@ async function bootstrap() {
   const restartCurrentMatch = () => {
     if (!activeConfig || restarting || pvpController) return;
     restarting = true;
+    trackMatchRestart(); // site analytics: restarting counts the match being left as finished
     clearMatchOverTimer();
     mobileControls?.hide();
 
@@ -1399,7 +1413,7 @@ async function bootstrap() {
       if (!pvpController && controller.isTraining()) trainingPanel.onTick(next, controller.getHumanSeat());
     },
     onMatchOver: (finalState, director) => {
-      if (activeConfig && !matchRecorded) trackMatchEnd(activeConfig.matchMode);
+      if (activeConfig && !matchRecorded) trackMatchEnd(activeConfig.matchMode, rankedBotResultsSafe(activeConfig, finalState));
       mobileControls?.hide();
       document.body.classList.remove('m-aim-slowmo');
       bgm.updateMatchTick(finalState);
@@ -1704,7 +1718,7 @@ async function bootstrap() {
 
   // Match & Replay keyboard/mouse shortcuts
   window.addEventListener('keydown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen() || mobileExportModal.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen() || mobileExportModal.isOpen() || lobbyUI.isGlobalStatsOpen()) return;
     if (!e.repeat && !isTextEditableTarget(e.target) && matchesActionKeyEvent(settings.get().keybindings, shortcutAction(settings.get(), 'toggleHideUi'), e)) {
       e.preventDefault();
       setUiHidden(!uiHidden, true);
@@ -1781,7 +1795,7 @@ async function bootstrap() {
   });
 
   window.addEventListener('mousedown', (e) => {
-    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen() || mobileExportModal.isOpen()) return;
+    if (settingsModal.isOpen() || historyModal.isOpen() || botManager.isOpen() || cricketBatchModal.isOpen() || mobileExportModal.isOpen() || lobbyUI.isGlobalStatsOpen()) return;
     const code = `Mouse${e.button}`;
     if (isBoundToAction(settings.get().keybindings, shortcutAction(settings.get(), 'toggleHideUi'), code)) {
       e.preventDefault();

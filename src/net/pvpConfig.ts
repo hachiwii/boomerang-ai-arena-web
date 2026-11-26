@@ -28,3 +28,17 @@ export function pvpServerUrl(): string | null {
 export function isPvpAvailable(): boolean {
   return PVP_ENABLED && pvpServerUrl() !== null;
 }
+
+/** http(s) URL of one of the relay's HTTP endpoints (same host as its WebSocket); null when there is no relay. */
+export function relayHttpUrl(path: string): string | null {
+  if (!isPvpAvailable()) return null;
+  try {
+    const url = new URL(pvpServerUrl()!);
+    url.protocol = url.protocol === 'wss:' ? 'https:' : 'http:';
+    url.pathname = path;
+    url.search = '';
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
