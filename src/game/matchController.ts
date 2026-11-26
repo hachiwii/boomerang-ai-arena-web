@@ -75,7 +75,9 @@ export class MatchController {
   private countdownRemainingMs = 0;
   private countdownOnGo: (() => void) | null = null;
   private pendingBots: PendingBotDecision[] = [];
+  private inflightStep: Promise<Record<string, unknown>> | null = null; // live loop: the engine step being computed
   private stepping = false;
+  private static backgroundRuns = 0;
   /** Training ground: drives the dart scarecrows; null in every other mode. */
   private trainingBrain: TrainingDummyBrain | null = null;
 
@@ -643,11 +645,14 @@ export class MatchController {
       }
       this.trainingBrain?.decide(prevState, actionLines);
 
-      const stepRes = await this.rpc(this.engineWorker, {
+      const stepPromise = this.rpc(this.engineWorker, {
         type: 'step',
         actionsText: actionLines.join('\n'),
         botSeats: this.botSeats,
       });
+      this.inflightStep = stepPromise; // a background finish (finishInBackground) picks this step up
+      const stepRes = await stepPromise;
+      if (this.inflightStep === stepPromise) this.inflightStep = null;
       if (!this.running || this.stopped) return;
 
       const tickNow = performance.now();
@@ -875,6 +880,85 @@ export class MatchController {
         }
       }
     })();
+  }
+
+  /**
+   * 排位四人 left mid-match (R / 返回主界面) after the player is already out: instead of being thrown away, the engine and
+   * bot workers are handed to a silent background run that plays the rest out with the bots only (as fast as they
+   * answer, yielding to the page between steps), then `onDone` gets the match: played to the end (`finished`) or, if
+   * the run failed, as far as it got. Returns false when there is nothing to finish. Call before stop() / next start().
+   */
+  public finishInBackground(
+    onDone: (match: { config: MatchConfig; ticks: TickSnapshot[]; map: EngineMapData; finished: boolean }) => void,
+  ): boolean {
+    const config = this.config;
+    const state = this.currentState;
+    const map = this.mapDataCache;
+    const engine = this.engineWorker;
+    if (!config || config.matchMode !== 'ranked-ffa' || !state || state.over || !map || !engine) return false;
+    if (this.humanSeat < 0 || state.players[this.humanSeat]?.alive !== 0) return false; // the player's moves are unknown
+    if (MatchController.backgroundRuns >= 2) return false;
+
+    const bots = new Map(this.botWorkers);
+    const botSeats = [...this.botSeats];
+    const n = config.slots.length;
+    const ticks = this.recordedTicks.slice();
+    const inflight = this.inflightStep;
+    // Decisions already asked for the next step (when no step is in flight; otherwise that step used them)
+    const pending = inflight ? [] : this.pendingBots.map((p) => ({ seat: p.seat, action: p.promise.then((r) => r.action) }));
+    // The workers now belong to the background run: this controller's stop() / next start() must not terminate them
+    this.engineWorker = null;
+    this.botWorkers = new Map();
+    this.pendingBots = [];
+    this.inflightStep = null;
+    this.running = false;
+    MatchController.backgroundRuns++;
+
+    const decide = (obs: Record<number, string>) =>
+      botSeats.flatMap((seat) => {
+        const w = bots.get(seat);
+        const o = obs[seat];
+        if (!w || !o) return [];
+        const action = this.rpc(w, { type: 'decide', obs: o }, 500)
+          .then((res) => String(res.action || '0 0 0 0 0 0'))
+          .catch(() => '0 0 0 0 0 0');
+        return [{ seat, action }];
+      });
+
+    void (async () => {
+      let finished = false;
+      try {
+        let last = ticks[ticks.length - 1];
+        let obs: Record<number, string> = {};
+        let next: { seat: number; action: Promise<string> }[] | null = inflight ? null : pending;
+        if (inflight) {
+          const res = await inflight;
+          const st = res.state as TickSnapshot;
+          if (st.t > last.t) ticks.push((last = st));
+          obs = res.obs as Record<number, string>;
+        }
+        for (let steps = 0; !last.over && steps < 20_000; steps++) {
+          const decisions = next ?? decide(obs);
+          next = null;
+          const lines: string[] = new Array(n).fill('0 0 0 0 0 0'); // the player is out: no input
+          for (const d of decisions) lines[d.seat] = await d.action;
+          const res = await this.rpc(engine, { type: 'step', actionsText: lines.join('\n'), botSeats });
+          last = res.state as TickSnapshot;
+          ticks.push(last);
+          obs = res.obs as Record<number, string>;
+          await new Promise((r) => window.setTimeout(r, 0)); // stay in the background: let the page keep rendering
+        }
+        finished = last.over;
+      } catch {
+        finished = false;
+      } finally {
+        engine.terminate();
+        for (const w of bots.values()) w.terminate();
+        MatchController.backgroundRuns--;
+      }
+      onDone({ config, ticks, map, finished });
+    })();
+    return true;
   }
 
   public stop() {

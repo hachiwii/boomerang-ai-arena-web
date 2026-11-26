@@ -347,6 +347,17 @@ rmSync(statsDir, { recursive: true, force: true });
   a.trackMatchEnd('cricket-batch');
   a.trackMatchRestart();
   assert.deepEqual(events(), ['start:training', 'start:cricket-batch', 'end:cricket-batch', 'end:training']);
+  // 排位四人 left with R while the bots finish it in the background: R does not count it, the background run does
+  // (with the bots), and that late end leaves the next match (same mode) alone
+  a.trackMatchStart('ranked-ffa');
+  a.releaseUnfinished('ranked-ffa');
+  a.trackMatchRestart();
+  a.trackMatchStart('ranked-ffa');
+  a.trackBackgroundEnd('ranked-ffa', [{ b: 'glm-5.3', r: 'w', kills: { dart: 2 } }]);
+  a.trackMatchRestart(); // the new match is still open: R counts it
+  assert.deepEqual(events(), ['start:ranked-ffa', 'start:ranked-ffa', 'end:ranked-ffa', 'end:ranked-ffa']);
+  a.trackBackgroundEnd('ranked-ffa');
+  assert.deepEqual(sent.splice(0).map((e) => e.bots ?? null), [null]);
   assert.equal(new Set(sent.map((e) => e.url)).size <= 1, true);
 }
 

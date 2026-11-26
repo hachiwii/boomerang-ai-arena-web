@@ -76,7 +76,8 @@ not stored. Pages built with PvP off (the mirror) send nothing.
 The relay keeps: online visitors (heartbeat within 2.5 min), per day (UTC+8) the UV, the per-minute online count
 and its peak, and per mode (ranked-solo / ranked-ffa / cricket / cricket-batch / custom / training / pvp / replay)
 the unique visitors plus matches started / finished. A quick restart (R / 再来一局) counts the match being left as
-finished. PvP matches are counted once by the relay (at GO and at the end), not by the two clients.
+finished. A 排位四人 match left (R or 返回主界面) after the player is out is played out by the bots in the background
+on the page, then reported as finished with every bot's result (an R restart also saves the whole match to 对局历史). PvP matches are counted once by the relay (at GO and at the end), not by the two clients.
 
 Ranked matches played to the end also carry each bot's result (`bots: [{b: botId, r: w|d|l, kills?, death?}]`,
 `src/game/botResults.ts`): per mode and bot the relay keeps wins / draws / losses, kills by cause (melee, dart, kicked

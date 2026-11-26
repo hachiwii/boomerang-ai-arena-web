@@ -56,7 +56,7 @@ import { MobileControls, MobileLayoutEditor } from './ui/mobileControls';
 import { MobileExportModal } from './ui/mobileExportModal';
 import { SettingsModal } from './ui/settingsUI';
 import { TrainingPanel } from './ui/trainingUI';
-import { startAnalytics, trackMatchEnd, trackMatchRestart, trackMatchStart } from './net/analytics';
+import { releaseUnfinished, startAnalytics, trackBackgroundEnd, trackMatchEnd, trackMatchRestart, trackMatchStart } from './net/analytics';
 import { rankedBotResults, type BotResult } from './game/botResults';
 
 function parseQuickPreviewMap(map: MapMeta): EngineMapData {
@@ -651,6 +651,39 @@ async function bootstrap() {
     }
   };
 
+  // 排位四人 left early (R / 返回主界面) after the player is out: the bots play the rest out silently in the background,
+  // then the match's end and every bot's result are reported (site analytics). An R restart still counts as finished
+  // if that run fails; leaving to the lobby only counts once the run finished. The returned handle can also put the
+  // whole match into 对局历史 when it is done (R restarts, with the Elo settled when the player left).
+  const finishAbandonedInBackground = (countIfItFails: boolean): { saveHistory: (elo: EloUpdateResult | null) => void } | null => {
+    if (!activeConfig || activeConfig.matchMode !== 'ranked-ffa' || pvpController) return null;
+    const mode = activeConfig.matchMode;
+    let history: { elo: EloUpdateResult | null } | null = null;
+    const started = controller.finishInBackground((match) => {
+      if (match.finished) {
+        let bots: BotResult[] | undefined;
+        try {
+          bots = rankedBotResults(match.config, match.ticks, match.map);
+        } catch {
+          bots = undefined;
+        }
+        trackBackgroundEnd(mode, bots);
+      } else if (countIfItFails) {
+        trackBackgroundEnd(mode);
+      }
+      if (history) {
+        try {
+          enqueueHistorySave(buildMatchHistoryBundle(match.config, match.map, match.ticks, history.elo, !match.finished));
+        } catch (err) {
+          console.error('Failed to save the background-finished match:', err);
+        }
+      }
+    });
+    if (!started) return null;
+    releaseUnfinished(mode);
+    return { saveHistory: (elo) => { history = { elo }; } };
+  };
+
   const persistCurrentMatchHistory = (
     eloResult: EloUpdateResult | null,
     earlyExit: boolean,
@@ -695,6 +728,7 @@ async function bootstrap() {
     }
     const wasPvp = activeConfig?.matchMode === 'pvp';
     if (wasPvp) pvpLobby.leaveRematch();
+    finishAbandonedInBackground(false);
     disposePvpMatch();
     setUiHidden(false);
     setTrainingChrome(false);
@@ -989,6 +1023,7 @@ async function bootstrap() {
   const restartCurrentMatch = () => {
     if (!activeConfig || restarting || pvpController) return;
     restarting = true;
+    const background = finishAbandonedInBackground(true);
     trackMatchRestart(); // site analytics: restarting counts the match being left as finished
     clearMatchOverTimer();
     mobileControls?.hide();
@@ -1043,7 +1078,9 @@ async function bootstrap() {
         const eloResult = leaderboard.recordHumanEarlyExit(activeConfig, st);
         if (eloResult) {
           hudUI.showEloToast(st.players[hSeat].rank, eloResult, 'loss');
-          persistCurrentMatchHistory(eloResult, true);
+          // 排位四人 the bots finish in the background: the whole match goes into 对局历史 once they are done
+          if (background) background.saveHistory(eloResult);
+          else persistCurrentMatchHistory(eloResult, true);
         }
       }
     } else if (!resultOverlayShown && pendingMatchElo) {

@@ -86,6 +86,16 @@ export function trackMatchEnd(mode: AnalyticsMode, bots?: BotResult[]) {
   post('/event', bots?.length ? { kind: 'end', mode, bots } : { kind: 'end', mode });
 }
 
+/** The match on screen will report its own end from a background run (finishInBackground): R must not count it too. */
+export function releaseUnfinished(mode: AnalyticsMode) {
+  if (unfinished === mode) unfinished = null;
+}
+
+/** End of a match the bots finished in the background after the player left it (leaves the match on screen alone). */
+export function trackBackgroundEnd(mode: AnalyticsMode, bots?: BotResult[]) {
+  post('/event', bots?.length ? { kind: 'end', mode, bots } : { kind: 'end', mode });
+}
+
 /** Quick restart (R / 再来一局): the match being left counts as finished, unless its end was already counted. */
 export function trackMatchRestart() {
   if (unfinished) trackMatchEnd(unfinished);
