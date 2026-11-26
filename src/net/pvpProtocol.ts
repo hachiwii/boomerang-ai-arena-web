@@ -10,9 +10,10 @@ export const PVP_COUNTDOWN_MS = 3000;
 const ZERO_DELAY_MAX_RTT_MS = 80;
 const ONE_FRAME_MAX_RTT_MS = 160;
 
-export function pvpInputDelayFrames(maxRttMs: number): 0 | 1 | 2 {
-  if (maxRttMs <= ZERO_DELAY_MAX_RTT_MS) return 0;
-  if (maxRttMs <= ONE_FRAME_MAX_RTT_MS) return 1;
+/** rttMs: the relay's estimate — mean of the two players' p75 RTT (an input travels A → relay → B). */
+export function pvpInputDelayFrames(rttMs: number): 0 | 1 | 2 {
+  if (rttMs <= ZERO_DELAY_MAX_RTT_MS) return 0;
+  if (rttMs <= ONE_FRAME_MAX_RTT_MS) return 1;
   return 2;
 }
 

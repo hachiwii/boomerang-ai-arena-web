@@ -100,12 +100,17 @@ const bCode = (await b.take('welcome')).code;
 b.send({ type: 'presence', present: true });
 a.send({ type: 'presence', present: true });
 await sleep(50);
+for (const v of [20, 20, 300, 20, 20, 20]) {
+  a.send({ type: 'ping', t: Date.now(), rttMs: v });
+  b.send({ type: 'ping', t: Date.now(), rttMs: 130 });
+  await sleep(15);
+}
 a.send({ type: 'challenge', request: 1, code: bCode });
 const [startA] = await Promise.all([a.take('matchStart'), b.take('matchStart')]);
 const matchId = startA.info.matchId;
 for (const c of [a, b]) c.send({ type: 'ready', matchId });
 const go = await a.take('go');
-assert.equal(go.delay, 0, 'loopback RTT picks zero input delay');
+assert.equal(go.delay, 0, 'mean of p75 RTTs (20, 130) = 75 ms → zero input delay; the 300 ms spike is ignored');
 await sleep(Math.max(0, go.startAt - Date.now()) + 5);
 
 // A plays every frame on time and reports 30 ms; B stays silent (connected) for ~0.5 s and reports 70 ms.
@@ -123,7 +128,7 @@ while (Date.now() < end) {
     b.send({ type: 'ping', t: Date.now(), rttMs: 70 });
   }
   if (!lateSent && f >= 14) {
-    b.send({ type: 'input', matchId, frame: 2, action }); // frame 2 was filled long ago → dropped late
+    b.send({ type: 'input', matchId, frame: 2, action: [0, 0, 1, 1000, 0, 0] }); // a throw for frame 2, filled long ago → late
     lateSent = true;
   }
   if (f >= 12) {
@@ -151,6 +156,7 @@ assert.equal(m.reason, 'forfeit');
 assert.equal(m.cause, 'quit');
 assert.equal(m.delay, 0);
 assert.equal(m.rematch, false);
+assert.equal(m.delayRtt, 75);
 assert.ok(m.frames > 20, `frames ${m.frames}`);
 const [sa, sb] = m.seats;
 assert.equal(sa.client, 'wechat');
@@ -163,6 +169,8 @@ assert.ok(sa.samples > 3 && sb.samples > 3);
 assert.ok(sa.fills <= 2, `A fills ${sa.fills}`);
 assert.ok(sb.fills >= 5, `B fills ${sb.fills}`);
 assert.equal(sb.lateDropped, 1);
+assert.equal(sb.lateActions, 1);
+assert.equal(sa.lateActions, 0);
 assert.equal(sa.lateDropped, 0);
 assert.equal(sa.reconnects + sb.reconnects, 0);
 
@@ -189,6 +197,7 @@ await store.prune();
 assert.deepEqual((await store.read(400)).map((r) => r.matchId), [m.matchId]);
 const text = formatReport(summarize([m], 1));
 assert.match(text, /by client/);
+assert.match(text, /late acts\/1k/);
 
 for (const c of [a, b]) c.ws.terminate();
 child.kill();

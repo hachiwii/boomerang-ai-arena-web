@@ -51,6 +51,11 @@ export class PvpTimeline {
     this.local[frame] = action;
   }
 
+  /** The action this client sampled and sent for `frame` (undefined if none). */
+  localAt(frame: number): Action | undefined {
+    return this.local[frame];
+  }
+
   plan(confirmedT: number, predictedT: number, targetT: number, terminalT?: number): PvpUpdate {
     const confirmed: ActionPair[] = [];
     let nextConfirmed = confirmedT;

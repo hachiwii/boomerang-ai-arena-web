@@ -71,9 +71,12 @@ browser ──wss://<relay domain>/ws──► Aliyun CDN (WebSocket on, secret 
 
 ## Netcode: input delay + rollback, server-canonical inputs
 
-- **Input delay** is shared by both seats. At `go`, the relay takes the larger of each player's WebSocket and
-  application RTT, then the larger of the two players' estimates. RTT ≤ 80 ms gives 0 frames, 80 < RTT ≤ 160 ms
-  gives 1 frame, and RTT > 160 ms gives 2 frames. The delay stays fixed until the next match or rematch.
+- **Input delay** is shared by both seats. Each client ping adds a sample, max(WebSocket RTT, application RTT), to
+  the last 20 per player. At `go` the relay takes each player's 75th percentile (so one spike does not cost a whole
+  match a frame) and averages the two players (an input travels A → relay → B, half of each RTT). That estimate
+  ≤ 80 ms gives 0 frames, ≤ 160 ms 1 frame, otherwise 2 frames (cap). Rationale: every throw / dash / melee has a
+  100 ms (2-frame) windup, so while the input reaches the opponent within the windup (+ 50 ms per delay frame) its
+  effect is shown on time; 80 = 100 minus a 20 ms jitter margin. The delay stays fixed until the next match.
 - Frame 0 is due at `startAt` and produces engine tick 1. Countdown accepts held movement. At GO the client
   samples before stepping, assigns the action to due frame `f + delay` and sends it immediately. With zero delay
   that sample applies to the step about to run. With positive delay the relay publishes the first `delay` frames
@@ -83,7 +86,10 @@ browser ──wss://<relay domain>/ws──► Aliyun CDN (WebSocket on, secret 
   lagging player stands still instead of running on — repeating the last move used to walk players off cliffs). The
   fill goes to both clients — including the late one, who must roll back its own input. Inputs that arrive after the
   fill are dropped. Every (seat, frame) therefore has exactly one canonical value, the same on both clients, so the
-  simulation is identical.
+  simulation is identical. If a filled input of ours carried an action (throw / slash / dash / recall), the client
+  re-sends that action with its next sampled frame (within 500 ms) so it fires a frame later instead of being lost.
+- A death shown from a mispredicted frame is undone visually when the correction revives the player (the rig's
+  slice / fall state is reset), so no ghost of the body stays on screen.
 - The walking cliff guard for PvP human seats runs **inside the engine step** (deterministic, applied to every
   canonical input including fills), not on the client at sampling time: with input delay the client only knows a
   stale position. Single-player keeps its client-side guard.

@@ -108,6 +108,12 @@ for (const delay of [0, 1, 2]) {
     if (state.over) break;
   }
   assert.equal(history.at(-1).over, true);
+  // The swing the relay filled is re-sent with the next sampled frame (≈ pressed one frame later, not lost).
+  await wake(go.startAt + (delay + 1) * PVP_TICK_MS);
+  assert.equal(sent.at(-1).frame, delay + 1 + delay);
+  assert.equal(sent.at(-1).action[2], 2, 'filled action re-sent on the next frame');
+  await wake(go.startAt + (delay + 2) * PVP_TICK_MS);
+  assert.equal(sent.at(-1).action[2], 0, 're-sent only once');
   // A rejoin repeats GO and replays canonical inputs. Wake the throttled tab once.
   receive(go);
   receive({ type: 'inputs', rows: canonical });

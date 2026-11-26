@@ -1736,6 +1736,20 @@ async function bootstrap() {
       !e.altKey &&
       !isTextEditableTarget(e.target) &&
       isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
+      hudUI.isPvpRematchOpen()
+    ) {
+      // PvP result card: the quick-restart key (R by default) = 再来一局
+      e.preventDefault();
+      hudUI.triggerPvpRematch();
+      return;
+    }
+    if (
+      !e.repeat &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !isTextEditableTarget(e.target) &&
+      isBoundToAction(settings.get().keybindings, 'quickRestart', e.code) &&
       canQuickRestart()
     ) {
       e.preventDefault();
@@ -1752,6 +1766,11 @@ async function bootstrap() {
       return;
     }
     if (mode !== 'playing') return;
+    if (isBoundToAction(settings.get().keybindings, 'quickRestart', code) && hudUI.isPvpRematchOpen()) {
+      e.preventDefault();
+      hudUI.triggerPvpRematch();
+      return;
+    }
     if (isBoundToAction(settings.get().keybindings, 'quickRestart', code) && canQuickRestart()) {
       e.preventDefault();
       restartCurrentMatch();

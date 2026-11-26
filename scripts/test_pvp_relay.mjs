@@ -373,7 +373,8 @@ try {
 
   const matchId = await startMatch(a, b);
   assert.equal(a.play.info.mapId, 'stonecircle');
-  await verifyConvergence(a, b, 2);
+  // Delay from the mean of both RTT estimates: (96 + 212) / 2 = 154 ms → 1 frame (the old max rule gave 2)
+  await verifyConvergence(a, b, pvpInputDelayFrames((a.rtt + b.rtt) / 2));
 
   const getRematch = (peer, id, me, opponent) => peer.messages.find((m) =>
     m.type === 'rematch' && m.matchId === id && m.me === me && m.opponent === opponent);

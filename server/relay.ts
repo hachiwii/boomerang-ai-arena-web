@@ -32,6 +32,17 @@ const MAX_MATCHES = 128;
 const MAX_RESERVATIONS = 20_000;
 const MAX_RETAINED_MATCHES = 256;
 const MAX_BUFFERED_BYTES = 256 * 1024;
+// Input-delay choice at GO: each player's 75th percentile over the last RTT_WINDOW pings (a lone spike does not
+// cost a whole match a frame), averaged over the two players (an input travels A → relay → B, i.e. half of each
+// player's RTT), then pvpInputDelayFrames.
+const RTT_WINDOW = 20;
+
+function rttEstimate(conn: Connection | undefined): number {
+  if (!conn) return 0;
+  const samples = conn.rttSamples.filter((v) => v > 0).sort((a, b) => a - b);
+  if (samples.length < 3) return Math.max(conn.wsRtt, conn.appRtt);
+  return samples[Math.min(samples.length - 1, Math.ceil(0.75 * samples.length) - 1)];
+}
 const mapIds = maps.map((map) => map.id);
 const validMaps = new Set(mapIds);
 const now = () => Math.round(performance.timeOrigin + performance.now());
@@ -59,6 +70,7 @@ interface Connection {
   wsRtt: number;
   appRtt: number;
   client: ClientClass; // derived from the User-Agent at upgrade (stats); the raw UA is not kept
+  rttSamples: number[]; // last RTT_WINDOW values of max(wsRtt, appRtt), taken at each client ping
 }
 
 interface Reservation {
@@ -94,7 +106,7 @@ interface Match {
   terminal?: MatchTerminal;
   postgame?: Postgame;
   removeAt?: number;
-  stats: { createdAt: number; seats: [SeatStats, SeatStats] };
+  stats: { createdAt: number; delayRtt?: number; seats: [SeatStats, SeatStats] };
 }
 
 function ipOf(req: IncomingMessage): string {
@@ -295,6 +307,7 @@ function recordStats(match: Match, terminal: MatchTerminal, time: number) {
       ...('cause' in terminal && terminal.cause ? { cause: terminal.cause } : {}),
       frames: Math.max(0, terminal.through + 1),
       delay: match.go ? match.go.delay : null,
+      ...(match.stats.delayRtt !== undefined ? { delayRtt: match.stats.delayRtt } : {}),
       rematch: Boolean(match.info.rematchOf),
       seats,
     };
@@ -302,7 +315,7 @@ function recordStats(match: Match, terminal: MatchTerminal, time: number) {
       matchId: record.matchId, delay: record.delay, frames: record.frames,
       seats: seats.map((x) => ({
         where: provinceKey(x.region), client: x.client, rtt: x.rttMedian, p95: x.rttP95, fills: x.fills,
-        late: x.lateDropped, reconnects: x.reconnects,
+        late: x.lateDropped, lateActions: x.lateActions, reconnects: x.reconnects,
       })),
     });
     void statsStore?.append(record);
@@ -490,6 +503,11 @@ function onMessage(conn: Connection, raw: string) {
     case 'ping':
       if (!int(msg.t, 0, Number.MAX_SAFE_INTEGER)) return;
       if (int(msg.rttMs, 0, 5000)) conn.appRtt = msg.rttMs;
+      const sample = Math.max(conn.wsRtt, conn.appRtt);
+      if (sample > 0) {
+        conn.rttSamples.push(sample);
+        if (conn.rttSamples.length > RTT_WINDOW) conn.rttSamples.shift();
+      }
       if (p.match?.go && time >= p.match.go.startAt) {
         addRttSample(p.match.stats.seats[p === p.match.players[0] ? 0 : 1], Math.max(conn.wsRtt, conn.appRtt));
       }
@@ -537,8 +555,10 @@ function onMessage(conn: Connection, raw: string) {
   if (msg.type === 'ready') {
     match.ready[seat] = true;
     if (!match.go && match.ready.every(Boolean)) {
-      const rtt = Math.max(...match.players.map(({ conn }) => Math.max(conn?.wsRtt ?? 0, conn?.appRtt ?? 0)));
+      const estimates = match.players.map(({ conn }) => rttEstimate(conn));
+      const rtt = (estimates[0] + estimates[1]) / 2;
       const delay = pvpInputDelayFrames(rtt);
+      match.stats.delayRtt = Math.round(rtt);
       match.go = { startAt: time + PVP_COUNTDOWN_MS, delay };
       broadcast(match, { type: 'go', matchId, ...match.go });
       // Frames before the first possible sample are canonical during countdown.
@@ -554,6 +574,7 @@ function onMessage(conn: Connection, raw: string) {
     if (int(frame, match.go.delay, PVP_MAX_FRAMES - 1) && frame < match.nextDeadline && isAction(action) &&
         match.inputs[frame]?.[seat] === NEUTRAL) {
       seatStats.lateDropped++; // arrived after the relay had already filled this frame
+      if (action[2] !== 0) seatStats.lateActions++; // …and it carried a throw / slash / dash / recall (re-queued by the client)
     }
     if (!int(frame, Math.max(match.nextDeadline, match.go.delay), Math.min(PVP_MAX_FRAMES - 1, maxFuture)) || !isAction(action)) return;
     const pair = match.inputs[frame] ?? (match.inputs[frame] = []);
@@ -647,6 +668,7 @@ server.on('upgrade', (req, socket, head) => {
       ip, ws, openedAt: now(), pingAt: null, wsRtt: 0, appRtt: 0,
       messages: newWindow(), challenges: newWindow(),
       client: classifyClient(typeof ua === 'string' ? ua : undefined),
+      rttSamples: [],
     };
     connections.add(conn);
     connectionsByIp.set(ip, (connectionsByIp.get(ip) ?? 0) + 1);

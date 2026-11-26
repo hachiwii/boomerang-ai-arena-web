@@ -1609,6 +1609,15 @@ export class HudUI {
     this.syncPvpRematchCard();
   }
 
+  /** Quick-restart key on the PvP result card: same as clicking 再来一局 (ignored while it is disabled). */
+  public triggerPvpRematch(): boolean {
+    if (!this.pvpRematchOpen) return false;
+    const again = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-pvp-rematch');
+    if (!again || again.disabled) return false;
+    again.click();
+    return true;
+  }
+
   /** True while the PvP result card with 再来一局 / 退出 is shown (main.ts: ESC there = 退出 → onPvpExit). */
   public isPvpRematchOpen(): boolean {
     return this.pvpRematchOpen;
@@ -1644,6 +1653,8 @@ export class HudUI {
     const cue = this.resultOverlay.querySelector<HTMLElement>('#pvp-rematch-cue');
     if (!again || !exit || !cue) return;
     const st = this.currentRematchState();
+    // Desktop: the quick-restart key (R by default) also triggers 再来一局 (main.ts)
+    const key = this.mobile ? '' : formatPrimaryBind(this.settings.get().keybindings.quickRestart, 'R');
     let label = '🔁 再来一局';
     let mode: 'ready' | 'pending' | 'blocked' = 'ready';
     if (st.me === 'left') {
@@ -1655,7 +1666,8 @@ export class HudUI {
       label = st.opponent === 'rematch' ? '即将开始…' : '等待对方…';
       mode = 'pending';
     }
-    if (again.textContent !== label) again.textContent = label;
+    const html = mode === 'ready' && key ? `${label} <kbd class="rr-btn-kbd">${key}</kbd>` : label;
+    if (again.innerHTML !== html) again.innerHTML = html;
     again.disabled = mode !== 'ready';
     again.classList.toggle('is-pending', mode === 'pending');
     again.classList.toggle('is-blocked', mode === 'blocked');

@@ -935,6 +935,14 @@ export class GameRenderer {
       // A second message for this tick should not restart local interpolation.
       if (samePvpTick && this.prevState) prev = this.prevState;
       if (pvpRollback) {
+        // A death shown from a mispredicted frame that the correction undoes: drop its sliced halves / fall /
+        // poof so no white "ghost" of the body stays behind, and show the living character again.
+        for (let k = 0; k < next.players.length; k++) {
+          if (this.currState.players[k]?.alive === 0 && next.players[k]?.alive === 1 && this.rigs[k]) {
+            this.rigs[k].resetDynamicState();
+            if (k === this.humanSeat) this.resetHumanPrediction();
+          }
+        }
         const local = next.players[this.humanSeat];
         const old = this.currState.players[this.humanSeat];
         const from = prev.players[this.humanSeat];

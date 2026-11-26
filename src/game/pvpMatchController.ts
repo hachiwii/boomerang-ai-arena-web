@@ -9,6 +9,9 @@ import {
 import { PvpEventDedup, PvpTimeline, pvpSampleFrame, pvpTargetTick } from '../net/pvpTimeline';
 import { PVP_FIXED_RULES } from '../net/pvpTypes';
 
+/** A filled action of ours is re-sent only within this many frames (500 ms); older ones are dropped. */
+const REQUEUE_MAX_FRAMES = 10;
+
 interface PvpCallbacks extends MatchCallbacks {
   onNotice: (message: string) => void;
   onCancelled: () => void;
@@ -37,6 +40,9 @@ export class PvpMatchController {
   private confirmedT = 0;
   private history: TickSnapshot[] = [];
   private resultNote?: string;
+  // An action of ours that the relay replaced with a neutral fill (it arrived after its frame's deadline). It is
+  // re-sent with the next sampled frame instead of being lost, if that sample has no action of its own.
+  private requeued: { frame: number; act: number; ax: number; ay: number } | null = null;
 
   constructor(
     private readonly input: HumanInputController,
@@ -153,6 +159,12 @@ export class PvpMatchController {
     } else if (message.type === 'inputs') {
       this.timeline.accept(message.rows);
       this.inputsChanged = true;
+      for (const [frame, seat, action] of message.rows) {
+        if (seat !== this.seat || action[2] !== 0) continue;
+        const sent = this.timeline.localAt(frame);
+        // The relay echoes our accepted inputs unchanged, so an action of ours that comes back as "no action" was filled
+        if (sent && sent[2] !== 0) this.requeued = { frame, act: sent[2], ax: sent[3], ay: sent[4] };
+      }
     } else if (message.type === 'terminal') {
       this.terminal = message;
       if (message.reason === 'cancelled') {
@@ -208,7 +220,15 @@ export class PvpMatchController {
       const localFrame = go && !terminal && !this.quitRequested ? pvpSampleFrame(this.targetT, targetT, go.delay) : null;
       if (localFrame !== null) {
         if (this.targetT === 0) this.input.setInputMode('active');
-        const { mx, my, act, ax, ay, msg } = this.input.sampleAction(current, this.seat);
+        const sampled = this.input.sampleAction(current, this.seat);
+        const { mx, my, msg } = sampled;
+        let { act, ax, ay } = sampled;
+        const lost = this.requeued;
+        if (lost) {
+          this.requeued = null;
+          // Fire the dropped action now (≈ pressed a moment later) unless something newer was pressed or it is stale
+          if (act === 0 && localFrame - lost.frame <= REQUEUE_MAX_FRAMES) ({ act, ax, ay } = lost);
+        }
         const action = [mx, my, act, ax, ay, msg] as const;
         this.timeline.sample(localFrame, action);
         this.link.input(localFrame, action);

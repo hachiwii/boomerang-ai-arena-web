@@ -18,6 +18,7 @@ export interface SeatStats {
   rtt: number[]; // RTT samples (ms) taken during the match
   fills: number; // frames the relay filled with a neutral input because this seat's input missed the deadline
   lateDropped: number; // inputs that arrived after their frame had already been filled
+  lateActions: number; // …of which carried an action (throw / slash / dash / recall); the client re-sends it next frame
   maxLateMs: number; // latest accepted input, relative to its frame's due time (ms, ≥ 0)
   reconnects: number;
 }
@@ -40,6 +41,7 @@ export interface MatchRecord {
   cause?: string;
   frames: number; // game length (frames played)
   delay: number | null; // input delay frames chosen at GO (null if the match never started)
+  delayRtt?: number; // the RTT estimate the delay was chosen from (mean of both players' p75)
   rematch: boolean;
   seats: [SeatRecord, SeatRecord];
 }
@@ -50,7 +52,7 @@ const quantile = (sorted: number[], q: number) =>
   sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(q * (sorted.length - 1) + 0.5))] : null;
 
 export function newSeatStats(client: ClientClass, region: Region): SeatStats {
-  return { client, region, rtt: [], fills: 0, lateDropped: 0, maxLateMs: 0, reconnects: 0 };
+  return { client, region, rtt: [], fills: 0, lateDropped: 0, lateActions: 0, maxLateMs: 0, reconnects: 0 };
 }
 
 export function addRttSample(seat: SeatStats, rttMs: number) {
@@ -217,6 +219,7 @@ export interface GroupSummary {
   rttP95: number | null; // 95th percentile of the seats' p95 RTT
   delayShare: Record<'0' | '1' | '2' | 'other', number>; // share of the group's matches per input delay
   fillsPer1000: number | null; // neutral fills per 1000 player-frames
+  lateActionsPer1000: number | null; // late (filled) actions per 1000 player-frames
 }
 
 export interface Summary {
@@ -257,6 +260,7 @@ function group(records: MatchRecord[], keyOf: (seat: SeatRecord) => string): Gro
     const medians = g.seats.map((s) => s.rttMedian).filter((v): v is number => v !== null).sort((a, b) => a - b);
     const p95s = g.seats.map((s) => s.rttP95).filter((v): v is number => v !== null).sort((a, b) => a - b);
     const fills = g.seats.reduce((sum, s) => sum + s.fills, 0);
+    const lateActions = g.seats.reduce((sum, s) => sum + (s.lateActions ?? 0), 0);
     const share = (d: '0' | '1' | '2' | 'other') => (g.delays.get(d)?.size ?? 0) / g.matches.size;
     out.push({
       key,
@@ -266,6 +270,7 @@ function group(records: MatchRecord[], keyOf: (seat: SeatRecord) => string): Gro
       rttP95: quantile(p95s, 0.95),
       delayShare: { '0': share('0'), '1': share('1'), '2': share('2'), other: share('other') },
       fillsPer1000: g.frames > 0 ? Math.round((fills / g.frames) * 10_000) / 10 : null,
+      lateActionsPer1000: g.frames > 0 ? Math.round((lateActions / g.frames) * 10_000) / 10 : null,
     });
   }
   return out.sort((a, b) => b.players - a.players || a.key.localeCompare(b.key));
@@ -307,10 +312,10 @@ const pct = (v: number) => `${Math.round(v * 100)}%`;
 const ms = (v: number | null) => (v === null ? '-' : `${v}`);
 
 function table(title: string, rows: GroupSummary[], limit = 30): string {
-  const lines = [`${title}`, `  ${'key'.padEnd(18)} ${'matches'.padStart(7)} ${'players'.padStart(7)} ${'rtt p50'.padStart(7)} ${'rtt p95'.padStart(7)}  delay 0/1/2       fills/1k frames`];
+  const lines = [`${title}`, `  ${'key'.padEnd(18)} ${'matches'.padStart(7)} ${'players'.padStart(7)} ${'rtt p50'.padStart(7)} ${'rtt p95'.padStart(7)}  delay 0/1/2       fills/1k  late acts/1k`];
   for (const r of rows.slice(0, limit)) {
     const share = `${pct(r.delayShare['0'])}/${pct(r.delayShare['1'])}/${pct(r.delayShare['2'])}`;
-    lines.push(`  ${r.key.padEnd(18)} ${String(r.matches).padStart(7)} ${String(r.players).padStart(7)} ${ms(r.rttMedian).padStart(7)} ${ms(r.rttP95).padStart(7)}  ${share.padEnd(17)} ${r.fillsPer1000 ?? '-'}`);
+    lines.push(`  ${r.key.padEnd(18)} ${String(r.matches).padStart(7)} ${String(r.players).padStart(7)} ${ms(r.rttMedian).padStart(7)} ${ms(r.rttP95).padStart(7)}  ${share.padEnd(17)} ${String(r.fillsPer1000 ?? '-').padEnd(9)} ${r.lateActionsPer1000 ?? '-'}`);
   }
   if (rows.length > limit) lines.push(`  … ${rows.length - limit} more`);
   return lines.join('\n');
