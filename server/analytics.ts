@@ -4,7 +4,8 @@
 // Visitors are identified only by a random id their browser generated (localStorage) — never by IP.
 // State for the current day (UTC+8) is snapshotted to <dir>/YYYY-MM-DD.json every minute and reloaded on start.
 // Days older than keepDays are compacted (visitor ids and per-minute / per-hour samples dropped), never deleted, so
-// the all-time totals on the public stats panel (publicStats → GET /public-stats) never go down.
+// the all-time totals on the public stats panel (publicStats → GET /public-stats) never go down. The all-time player
+// count (browsers that started at least one match, replays aside) keeps its own id list in <dir>/players.json.
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
@@ -86,6 +87,7 @@ export interface PublicStats {
   since: string; // first day with data (UTC+8, YYYY-MM-DD)
   updatedAt: string;
   online: number;
+  players: number; // browsers that started at least one match in any mode (replays aside) since `since`
   total: Record<PublicMode, number>;
   /** The current hour so far plus the 23 whole hours before it (UTC+8): `from` is that first hour's start */
   last24h: { from: string; to: string; modes: Record<PublicMode, number> };
@@ -165,6 +167,8 @@ export class SiteAnalytics {
   private dirty = false;
   private writing: Promise<void> = Promise.resolve();
   private past: { day: string; at: number; data: Promise<PastDays> } | null = null;
+  private readonly players = new Set<string>(); // all-time: started at least one match (replays aside)
+  private playersDirty = false;
   readonly dir: string | null;
   readonly keepDays: number;
 
@@ -200,6 +204,38 @@ export class SiteAnalytics {
     } catch {
       // No file for today yet, or unreadable: start empty.
     }
+    await this.loadPlayers();
+  }
+
+  /** The all-time player list; the first time (no players.json yet) it is rebuilt from the day files' visitor ids. */
+  private async loadPlayers(): Promise<void> {
+    if (!this.dir) return;
+    try {
+      const saved = JSON.parse(await readFile(join(this.dir, 'players.json'), 'utf8')) as { v?: number; ids?: unknown[] };
+      for (const id of saved.ids ?? []) if (isVisitorId(id)) this.players.add(id);
+      return;
+    } catch {
+      // Not written yet: rebuild below.
+    }
+    let names: string[] = [];
+    try {
+      names = (await readdir(this.dir)).filter((n) => /^\d{4}-\d{2}-\d{2}\.json$/.test(n));
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      try {
+        const snap = JSON.parse(await readFile(join(this.dir, name), 'utf8')) as DaySnapshot;
+        for (const [mode, ids] of Object.entries(snap.modeIds ?? {})) {
+          if (mode === 'replay') continue;
+          for (const id of ids ?? []) if (isVisitorId(id)) this.players.add(id);
+        }
+      } catch {
+        // Skip a torn file.
+      }
+    }
+    for (const [mode, ids] of this.today.modeIds) if (mode !== 'replay') for (const id of ids) this.players.add(id);
+    this.playersDirty = true;
   }
 
   private roll(now: number) {
@@ -232,6 +268,10 @@ export class SiteAnalytics {
     if (!t.modeIds.has(mode)) t.modeIds.set(mode, new Set());
     t.modeIds.get(mode)!.add(id);
     if (mode !== 'pvp') this.countStart(mode, now);
+    if (mode !== 'replay' && !this.players.has(id)) {
+      this.players.add(id);
+      this.playersDirty = true;
+    }
   }
 
   /** Called by the relay when a PvP match reaches GO. */
@@ -323,16 +363,22 @@ export class SiteAnalytics {
   }
 
   async flush(now = Date.now()): Promise<void> {
-    if (!this.dir || !this.dirty) return;
+    if (!this.dir || (!this.dirty && !this.playersDirty)) return;
+    const snap = this.dirty ? this.snapshot(now) : null;
+    const players = this.playersDirty ? JSON.stringify({ v: 1, ids: [...this.players] }) : null;
     this.dirty = false;
-    const snap = this.snapshot(now);
+    this.playersDirty = false;
     const dir = this.dir;
     this.writing = this.writing.then(async () => {
       try {
         await mkdir(dir, { recursive: true });
-        const file = join(dir, `${snap.day}.json`);
-        await writeFile(`${file}.tmp`, JSON.stringify(snap));
-        await rename(`${file}.tmp`, file);
+        const writes: [string, string][] = [];
+        if (snap) writes.push([join(dir, `${snap.day}.json`), JSON.stringify(snap)]);
+        if (players) writes.push([join(dir, 'players.json'), players]);
+        for (const [file, data] of writes) {
+          await writeFile(`${file}.tmp`, data);
+          await rename(`${file}.tmp`, file);
+        }
       } catch (err) {
         console.log(JSON.stringify({ time: new Date().toISOString(), event: 'analytics-write-failed', error: String(err) }));
       }
@@ -406,6 +452,7 @@ export class SiteAnalytics {
       since: past.since ?? today.day,
       updatedAt: new Date(now).toISOString(),
       online: this.onlineCount(now),
+      players: this.players.size,
       total,
       last24h: { from: new Date(hourStart - 23 * HOUR_MS).toISOString(), to: new Date(now).toISOString(), modes: last },
       bots,

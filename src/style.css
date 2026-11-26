@@ -10321,7 +10321,7 @@ body.is-mobile .lobby-title-group {
   position: relative;
   z-index: 3; /* breakdown popovers overlay the table below */
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
   flex-shrink: 0;
 }
@@ -10545,6 +10545,7 @@ button.gs-tile.is-open .gs-pop {
 .gs-table thead .gs-corner {
   z-index: 3;
   background: #161f35;
+  text-align: left;
 }
 
 .gs-table thead th[rowspan] {
@@ -10560,7 +10561,23 @@ button.gs-tile.is-open .gs-pop {
   display: flex;
   align-items: center;
   gap: 8px;
-  min-width: 118px;
+  min-width: 150px;
+}
+
+/* Ranked ELO pill after the name, pushed to the cell's right edge so every row's ELO lines up */
+.gs-elo {
+  margin-left: auto;
+  padding: 1px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(114, 170, 255, 0.36);
+  background: rgba(61, 126, 255, 0.14);
+  color: #b9d3ff;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 16px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  min-width: 38px;
 }
 
 .gs-av {
@@ -10740,6 +10757,7 @@ body.is-mobile .gs-table thead tr:nth-child(2) th {
 
   .gs-tiles {
     gap: 6px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .gs-tile {

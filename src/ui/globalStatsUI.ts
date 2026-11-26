@@ -6,6 +6,7 @@ import {
   DEATH_CAUSES,
   fetchPublicStats,
   formatCount,
+  formatTileCount,
   KILL_CAUSES,
   PUBLIC_MODES,
   sumModes,
@@ -26,7 +27,7 @@ const REFRESH_MS = 30_000;
 
 type RankedMode = 'ranked-solo' | 'ranked-ffa';
 type SortKey =
-  | 'games' | 'winRate' | 'kd' | 'w' | 'd' | 'l'
+  | 'elo' | 'games' | 'winRate' | 'kd' | 'w' | 'd' | 'l'
   | `k:${(typeof KILL_CAUSES)[number]}` | `d:${(typeof DEATH_CAUSES)[number]}`;
 
 interface Row {
@@ -35,6 +36,7 @@ interface Row {
   fullName: string;
   avatar: string | null;
   color: string;
+  elo: number | null; // ranked ELO for the table's mode (SOLO: duel rating, 四人: FFA rating)
   t: BotTally;
   games: number;
   kills: number;
@@ -45,7 +47,8 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
-const fmt = formatCount;
+const fmt = formatCount; // bot table: 万 / 亿 above 10000
+const raw = formatTileCount; // top tiles: the full number (亿 only beyond 9 digits)
 const sumOf = (o: Partial<Record<string, number>>) => Object.values(o).reduce<number>((a, n) => a + (n ?? 0), 0);
 
 function winRate(r: Row): number {
@@ -59,6 +62,7 @@ function kd(r: Row): number {
 
 function sortValue(r: Row, key: SortKey): number {
   switch (key) {
+    case 'elo': return r.elo ?? -1;
     case 'games': return r.games;
     case 'winRate': return winRate(r);
     case 'kd': return kd(r);
@@ -228,12 +232,14 @@ export class GlobalStatsPanel {
     return [...ids].map((id) => {
       const e = byId.get(id);
       const t = data[id] ?? empty;
+      const elo = e ? ((this.mode === 'ranked-solo' ? e.duelRating : e.ffaRating) ?? e.rating) : null;
       return {
         id,
         name: e?.shortName || e?.name || id,
         fullName: e?.name || id,
         avatar: e?.avatar ?? null,
         color: e?.color || '#7f8db3',
+        elo: typeof elo === 'number' ? elo : null,
         t,
         games: t.w + t.d + t.l,
         kills: sumOf(t.kills),
@@ -242,11 +248,11 @@ export class GlobalStatsPanel {
     });
   }
 
-  private tileHtml(key: string, label: string, breakdown: boolean): string {
-    if (!breakdown) {
+  private tileHtml(key: string, label: string, kind: 'live' | 'plain' | 'breakdown', title = ''): string {
+    if (kind !== 'breakdown') {
       return `
-        <div class="gs-tile gs-tile-online">
-          <div class="gs-tile-label"><span class="gs-live-dot" aria-hidden="true"></span>${label}</div>
+        <div class="gs-tile ${kind === 'live' ? 'gs-tile-online' : ''}"${title ? ` title="${title}"` : ''}>
+          <div class="gs-tile-label">${kind === 'live' ? '<span class="gs-live-dot" aria-hidden="true"></span>' : ''}${label}</div>
           <div class="gs-tile-value" data-gs-val="${key}"></div>
           <div class="gs-tile-sub" data-gs-sub="${key}"></div>
         </div>`;
@@ -283,9 +289,10 @@ export class GlobalStatsPanel {
     if (!this.shellBuilt) {
       this.bodyEl.innerHTML = `
         <div class="gs-tiles">
-          ${this.tileHtml('online', '实时在线', false)}
-          ${this.tileHtml('total', '累计对局', true)}
-          ${this.tileHtml('day', '最近 24 小时', true)}
+          ${this.tileHtml('online', '实时在线', 'live')}
+          ${this.tileHtml('players', '累计玩家', 'plain', '开过至少一局（任意模式）的玩家数')}
+          ${this.tileHtml('total', '累计对局', 'breakdown')}
+          ${this.tileHtml('day', '最近 24 小时', 'breakdown')}
         </div>
         <div class="gs-section-head">
           <div class="gs-section-title">排位 Bot 数据 <span class="gs-section-note" data-gs-note></span></div>
@@ -313,18 +320,20 @@ export class GlobalStatsPanel {
       const el = this.bodyEl.querySelector<HTMLElement>(sel);
       if (el && el.textContent !== text) el.textContent = text;
     };
-    set('[data-gs-val="online"]', fmt(s.online));
+    set('[data-gs-val="online"]', raw(s.online));
     set('[data-gs-sub="online"]', '当前在线人数');
-    set('[data-gs-val="total"]', fmt(sumModes(s.total)));
+    set('[data-gs-val="players"]', raw(s.players ?? 0));
+    set('[data-gs-sub="players"]', `自 ${slashDate(s.since)} 起`);
+    set('[data-gs-val="total"]', raw(sumModes(s.total)));
     set('[data-gs-sub="total"]', `自 ${slashDate(s.since)} 起`);
-    set('[data-gs-val="day"]', fmt(sumModes(s.last24h.modes)));
+    set('[data-gs-val="day"]', raw(sumModes(s.last24h.modes)));
     set('[data-gs-sub="day"]', `自 ${hourLabel(s.last24h.from)} 起`);
     for (const m of PUBLIC_MODES) {
-      set(`[data-gs-pop="total:${m}"]`, fmt(s.total[m] ?? 0));
-      set(`[data-gs-pop="day:${m}"]`, fmt(s.last24h.modes[m] ?? 0));
+      set(`[data-gs-pop="total:${m}"]`, raw(s.total[m] ?? 0));
+      set(`[data-gs-pop="day:${m}"]`, raw(s.last24h.modes[m] ?? 0));
     }
-    this.bodyEl.querySelector('[data-gs-tile="total"]')?.setAttribute('aria-label', `累计对局：${fmt(sumModes(s.total))} 局，查看各模式局数`);
-    this.bodyEl.querySelector('[data-gs-tile="day"]')?.setAttribute('aria-label', `最近 24 小时：${fmt(sumModes(s.last24h.modes))} 局，查看各模式局数`);
+    this.bodyEl.querySelector('[data-gs-tile="total"]')?.setAttribute('aria-label', `累计对局：${raw(sumModes(s.total))} 局，查看各模式局数`);
+    this.bodyEl.querySelector('[data-gs-tile="day"]')?.setAttribute('aria-label', `最近 24 小时：${raw(sumModes(s.last24h.modes))} 局，查看各模式局数`);
     set('[data-gs-note]', `只统计打完的排位局 · 自 ${slashDate(s.since)} 起`);
     this.renderTable();
     notes.querySelector('.gs-stale-note')?.remove();
@@ -362,7 +371,7 @@ export class GlobalStatsPanel {
           : `<span class="gs-av gs-av-fallback" style="background:${escapeHtml(r.color)}">${escapeHtml(r.name.slice(0, 1))}</span>`;
         return `
           <tr class="${r.games ? '' : 'is-empty'}">
-            <th scope="row" class="gs-bot" title="${escapeHtml(r.fullName)}"><div class="gs-bot-in">${av}<span class="gs-bot-name">${escapeHtml(r.name)}</span></div></th>
+            <th scope="row" class="gs-bot" title="${escapeHtml(r.fullName)}"><div class="gs-bot-in">${av}<span class="gs-bot-name">${escapeHtml(r.name)}</span>${r.elo === null ? '' : `<span class="gs-elo" title="排位 ELO">${r.elo}</span>`}</div></th>
             ${num(r.games, 'gs-col-games')}
             <td class="gs-num gs-strong">${wr < 0 ? '—' : `${(wr * 100).toFixed(1)}%`}</td>
             <td class="gs-num gs-strong">${kdText}</td>
@@ -378,7 +387,7 @@ export class GlobalStatsPanel {
       <table class="gs-table">
         <thead>
           <tr>
-            <th rowspan="2" class="gs-bot gs-corner">Bot</th>
+            <th rowspan="2" class="gs-bot gs-corner gs-sortable ${key === 'elo' ? `is-sorted ${desc ? 'is-desc' : 'is-asc'}` : ''}" data-gs-sort="elo" title="按排位 ELO 排序">Bot</th>
             ${th('games', '局数', 'gs-col-games', '打完的排位局数', 2)}
             ${th('winRate', '胜率', '', '胜场 ÷ 局数（平局算在局数里）', 2)}
             ${th('kd', 'KD', '', '击杀 ÷ 死亡', 2)}

@@ -53,7 +53,7 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   b.heartbeat(id(9), next);
   await b.tick(next);
   assert.equal(b.snapshot(next).uv, 1);
-  assert.deepEqual(readdirSync(dir).sort(), [`${dayOf(T0)}.json`, `${dayOf(next)}.json`]);
+  assert.deepEqual(readdirSync(dir).filter((n) => /^\d{4}-/.test(n)).sort(), [`${dayOf(T0)}.json`, `${dayOf(next)}.json`]);
   const days = await readDays(dir, 2, next);
   assert.deepEqual(days.map((d) => d.uv), [4, 1]);
   assert.equal('ids' in days[0], false, 'reports never include visitor ids');
@@ -139,6 +139,8 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   const NOW = Date.parse('2026-11-28T03:30:00Z'); // 11:30 UTC+8: the window is 11-27 12:00 → now
   const day = (d, extra) => JSON.stringify({ v: 1, day: d, updatedAt: '', uv: 1, peakOnline: 1, peakAt: null, online: {}, ids: [id(7)], modeIds: {}, ...extra });
   writeFileSync(join(dir, '2026-11-26.json'), day('2026-11-26', {
+    // Players before players.json existed: rebuilt from these (replay-only viewers are not players)
+    modeIds: { 'ranked-solo': [id(7), id(8)], pvp: [id(8)], replay: [id(9)] },
     modes: { 'ranked-solo': { visitors: 1, started: 7, finished: 7 }, pvp: { visitors: 1, started: 3, finished: 3 } },
     bots: { 'ranked-solo': { 'glm-5.3': { w: 2, d: 0, l: 1, kills: { dart: 2 }, deaths: { fall: 1 } } } },
     hours: { 12: { 'ranked-solo': 7 } },
@@ -163,6 +165,7 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   const st = await a.publicStats(NOW);
   assert.equal(st.since, '2026-11-26');
   assert.equal(st.online, 1);
+  assert.equal(st.players, 4, 'ids 7 and 8 from the day files, 1 and 2 today; 9 only watched replays');
   assert.deepEqual(st.total, { 'ranked-solo': 109, 'ranked-ffa': 2, cricket: 1, custom: 6, pvp: 4 });
   // 11-27 10:00 and 11:00 are out (more than 23 whole hours back), 12:00 is in, and so is 11-28 11:10
   assert.deepEqual(st.last24h.modes, { 'ranked-solo': 0, 'ranked-ffa': 2, cricket: 1, custom: 6, pvp: 1 });
@@ -176,6 +179,12 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   const re = new SiteAnalytics(dir, 90, NOW);
   await re.load(NOW);
   assert.deepEqual((await re.publicStats(NOW)).last24h.modes, st.last24h.modes);
+  assert.ok(existsSync(join(dir, 'players.json')));
+  assert.equal((await re.publicStats(NOW)).players, 4);
+  re.matchStarted(id(9), 'cricket', NOW); // the replay viewer plays a match: now a player
+  re.matchStarted(id(7), 'custom', NOW); // already counted
+  assert.equal((await re.publicStats(NOW)).players, 5);
+  await re.tick(NOW);
   // Compaction keeps the totals (and the window, which only reaches back to yesterday)
   const c = new SiteAnalytics(dir, 1, NOW);
   await c.prune(NOW);
@@ -186,13 +195,15 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   assert.deepEqual(old.modes['ranked-solo'], { visitors: 1, started: 7, finished: 7 });
   await c.load(NOW);
   const after = await c.publicStats(NOW);
-  assert.deepEqual(after.total, st.total);
+  assert.equal(after.players, 5, 'players survive compaction (players.json)');
+  assert.deepEqual({ ...after.total, cricket: after.total.cricket - 1, custom: after.total.custom - 1 }, st.total);
   assert.deepEqual(after.bots, st.bots);
+  assert.equal(readdirSync(dir).filter((n) => n.startsWith('players')).join(), 'players.json', 'prune leaves players.json alone');
   // An hour later the window slides
   const later = await c.publicStats(NOW + 3_600_000);
   assert.equal(later.last24h.from, '2026-11-27T05:00:00.000Z');
-  assert.equal(later.last24h.modes.custom, 1, '11-27 12:00 left the window, 11-28 11:10 is still in');
-  assert.equal(later.last24h.modes.cricket, 1);
+  assert.equal(later.last24h.modes.custom, 2, '11-27 12:00 left the window, 11-28 11:10 and 11:30 are still in');
+  assert.equal(later.last24h.modes.cricket, 2);
   rmSync(dir, { recursive: true, force: true });
 }
 
@@ -250,8 +261,9 @@ await sleep(400); // a couple of analytics ticks
 const stats = await (await fetch(`${base}/stats?days=1`)).json();
 assert.equal(stats.onlineNow, 2);
 assert.equal(stats.visitorsToday, 2);
-const files = readdirSync(analyticsDir);
+const files = readdirSync(analyticsDir).filter((n) => /^\d{4}-/.test(n));
 assert.equal(files.length, 1);
+assert.deepEqual(JSON.parse(readFileSync(join(analyticsDir, 'players.json'), 'utf8')).ids.sort(), [id(1), id(2)]);
 const onDisk = readFileSync(join(analyticsDir, files[0]), 'utf8');
 for (const secret of ['114.114.114.114', '240e:4c']) assert.equal(onDisk.includes(secret), false, `analytics file leaks ${secret}`);
 const snap = JSON.parse(onDisk);
@@ -270,6 +282,7 @@ assert.equal(res.headers.get('access-control-allow-origin'), '*');
 assert.match(res.headers.get('cache-control'), /max-age=15/);
 const pub = await res.json();
 assert.equal(pub.online, 2);
+assert.equal(pub.players, 2, 'id 1 (cricket) and id 2 (pvp)');
 assert.equal(pub.total.cricket, 1);
 assert.equal(pub.bots['ranked-ffa']['qwen4-max'].l, 1);
 assert.equal(JSON.stringify(pub).includes(id(1)), false);
@@ -368,13 +381,18 @@ rmSync(statsDir, { recursive: true, force: true });
     entryPoints: [fileURLToPath(source)], bundle: true, format: 'esm', write: false,
     define: { 'import.meta.env': '{"VITE_PVP_ENABLED":"1","VITE_PVP_URL":"wss://relay.test/ws"}' },
   });
-  const { formatCount } = await import(`data:text/javascript;base64,${Buffer.from(build.outputFiles[0].contents).toString('base64')}`);
+  const { formatCount, formatTileCount } = await import(`data:text/javascript;base64,${Buffer.from(build.outputFiles[0].contents).toString('base64')}`);
   const cases = [
     [0, '0'], [999, '999'], [9999, '9,999'], [10000, '10,000'], [10001, '1.000万'], [12345, '1.235万'], [99_995, '10.00万'],
     [123_456, '12.35万'], [1_234_567, '123.5万'], [12_345_678, '1235万'], [99_999_999, '1.000亿'], [123_456_789, '1.235亿'],
     [1_234_567_890_123, '1.235万亿'],
   ];
   for (const [n, want] of cases) assert.equal(formatCount(n), want, `formatCount(${n})`);
+  const tiles = [
+    [0, '0'], [12_345, '12,345'], [999_999_999, '999,999,999'], [1_000_000_000, '10亿'], [1_234_567_890, '12.3456789亿'],
+    [1_234_567_895, '12.345679亿'], [123_456_789_012, '1,234.56789亿'],
+  ];
+  for (const [n, want] of tiles) assert.equal(formatTileCount(n), want, `formatTileCount(${n})`);
 }
 
 console.log('Site analytics passed: online / leave / timeout, daily UV, per-mode visitors and matches (PvP counted once), restart + day roll, CORS + origin key + validation + rate limit, no IPs on disk, report, quick restart = finished');

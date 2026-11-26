@@ -86,7 +86,9 @@ report sums them into total kills and deaths. Malformed results are dropped (the
 ids per mode and day.
 
 `GET /public-stats` (through the CDN like the other page requests, CORS, `Cache-Control: max-age=15`, same per-IP
-limit) feeds the lobby's 全球统计 panel (`src/ui/globalStatsUI.ts`) with aggregates only: online now, matches started
+limit) feeds the lobby's 全球统计 panel (`src/ui/globalStatsUI.ts`) with aggregates only: online now, all-time players
+(browsers that started at least one match in any mode, replays aside; their ids are kept in `<analytics
+dir>/players.json`, rebuilt from the day files the first time), matches started
 per public mode (ranked-solo / ranked-ffa / cricket / custom / pvp) since the first day on disk and over the current
 hour so far plus the 23 whole hours before it (UTC+8, from per-hour counts), and the ranked bot tallies summed over
 all days. Today's state is written to `<analytics dir>/YYYY-MM-DD.json` every minute and on

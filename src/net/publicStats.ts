@@ -20,6 +20,7 @@ export interface PublicStats {
   since: string; // YYYY-MM-DD (UTC+8)
   updatedAt: string;
   online: number;
+  players: number; // browsers that started at least one match in any mode since `since`
   total: Record<PublicMode, number>; // matches started
   last24h: { from: string; to: string; modes: Record<PublicMode, number> }; // current hour + the 23 before it
   bots: Record<'ranked-solo' | 'ranked-ffa', Record<string, BotTally>>;
@@ -53,4 +54,13 @@ export function formatCount(n: number): string {
   const [size, unit] = UNITS[i];
   const v = r / size;
   return `${v.toFixed(Math.max(0, 3 - Math.floor(Math.log10(v) + 1e-9)))}${unit}`;
+}
+
+/** The panel's top tiles: the full number up to 9 digits; beyond that 亿 with at most 9 significant digits. */
+export function formatTileCount(n: number): string {
+  if (!(n >= 1e9)) return n.toLocaleString('zh-CN');
+  const scale = 10 ** (Math.floor(Math.log10(n)) - 8); // keep 9 significant digits, rounded half up on the integer
+  const v = (Math.round(n / scale) * scale) / 1e8;
+  const decimals = Math.max(0, 8 - Math.floor(Math.log10(v) + 1e-9));
+  return `${v.toLocaleString('zh-CN', { maximumFractionDigits: decimals })}亿`;
 }
