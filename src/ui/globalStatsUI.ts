@@ -26,7 +26,7 @@ const REFRESH_MS = 30_000;
 
 type RankedMode = 'ranked-solo' | 'ranked-ffa';
 type SortKey =
-  | 'games' | 'winRate' | 'kd' | 'w' | 'd' | 'l' | 'kills' | 'deaths'
+  | 'games' | 'winRate' | 'kd' | 'w' | 'd' | 'l'
   | `k:${(typeof KILL_CAUSES)[number]}` | `d:${(typeof DEATH_CAUSES)[number]}`;
 
 interface Row {
@@ -63,8 +63,6 @@ function sortValue(r: Row, key: SortKey): number {
     case 'winRate': return winRate(r);
     case 'kd': return kd(r);
     case 'w': case 'd': case 'l': return r.t[key];
-    case 'kills': return r.kills;
-    case 'deaths': return r.deaths;
     default: {
       const [side, c] = key.split(':') as ['k' | 'd', string];
       return (side === 'k' ? r.t.kills : r.t.deaths)[c as never] ?? 0;
@@ -369,10 +367,8 @@ export class GlobalStatsPanel {
             <td class="gs-num gs-strong">${wr < 0 ? '—' : `${(wr * 100).toFixed(1)}%`}</td>
             <td class="gs-num gs-strong">${kdText}</td>
             <td class="gs-num gs-wdl" title="胜 ${fmt(r.t.w)} · 平 ${fmt(r.t.d)} · 负 ${fmt(r.t.l)}"><span class="w">${fmt(r.t.w)}</span>/<span class="d">${fmt(r.t.d)}</span>/<span class="l">${fmt(r.t.l)}</span></td>
-            ${num(r.kills, 'gs-group-start gs-kill gs-strong')}
-            ${KILL_CAUSES.map((c) => num(r.t.kills[c] ?? 0, 'gs-kill')).join('')}
-            ${num(r.deaths, 'gs-group-start gs-death gs-strong')}
-            ${DEATH_CAUSES.map((c) => num(r.t.deaths[c] ?? 0, 'gs-death')).join('')}
+            ${KILL_CAUSES.map((c, i) => num(r.t.kills[c] ?? 0, `gs-kill ${i ? '' : 'gs-group-start'}`)).join('')}
+            ${DEATH_CAUSES.map((c, i) => num(r.t.deaths[c] ?? 0, `gs-death ${i ? '' : 'gs-group-start'}`)).join('')}
           </tr>`;
       })
       .join('');
@@ -387,14 +383,12 @@ export class GlobalStatsPanel {
             ${th('winRate', '胜率', '', '胜场 ÷ 局数（平局算在局数里）', 2)}
             ${th('kd', 'KD', '', '击杀 ÷ 死亡', 2)}
             ${th('w', '胜/平/负', '', '按胜场排序', 2)}
-            <th colspan="${KILL_CAUSES.length + 1}" class="gs-group gs-group-start gs-kill">击杀</th>
-            <th colspan="${DEATH_CAUSES.length + 1}" class="gs-group gs-group-start gs-death">死亡</th>
+            <th colspan="${KILL_CAUSES.length}" class="gs-group gs-group-start gs-kill">击杀</th>
+            <th colspan="${DEATH_CAUSES.length}" class="gs-group gs-group-start gs-death">死亡</th>
           </tr>
           <tr>
-            ${th('kills', '总计', 'gs-group-start gs-kill')}
-            ${KILL_CAUSES.map((c) => th(`k:${c}`, CAUSE_LABEL[c], 'gs-kill')).join('')}
-            ${th('deaths', '总计', 'gs-group-start gs-death')}
-            ${DEATH_CAUSES.map((c) => th(`d:${c}`, CAUSE_LABEL[c], 'gs-death')).join('')}
+            ${KILL_CAUSES.map((c, i) => th(`k:${c}`, CAUSE_LABEL[c], `gs-kill ${i ? '' : 'gs-group-start'}`)).join('')}
+            ${DEATH_CAUSES.map((c, i) => th(`d:${c}`, CAUSE_LABEL[c], `gs-death ${i ? '' : 'gs-group-start'}`)).join('')}
           </tr>
         </thead>
         <tbody>${body}</tbody>
