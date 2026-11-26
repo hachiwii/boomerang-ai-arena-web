@@ -2,6 +2,7 @@
 // hover, or on tap on mobile) and a horizontally scrollable table of every ranked bot's record, SOLO / 四人 switchable.
 // Data: GET /public-stats on the relay (src/net/publicStats.ts).
 import type { RosterEntry } from '../game/types';
+import { makeHoodieAvatarDataUrl } from './hoodieAvatar';
 import {
   DEATH_CAUSES,
   fetchPublicStats,
@@ -87,10 +88,9 @@ function sortValue(r: Row, key: SortKey): number {
   }
 }
 
-/** Human row avatar: a person silhouette */
-const HUMAN_ICON =
-  '<svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true"><circle cx="12" cy="8" r="4" fill="currentColor"/>' +
-  '<path d="M4 21c.6-4.2 3.9-6.6 8-6.6s7.4 2.4 8 6.6" fill="currentColor"/></svg>';
+/** Human row avatar: the human player's blue hoodie (same as in the lobby and leaderboard) */
+let humanAvatar: string | null = null;
+const humanAvatarUrl = () => (humanAvatar ??= makeHoodieAvatarDataUrl('#3B78F0', '#262A33'));
 
 /** "2026-11-27" → "2026/11/27" */
 const slashDate = (day: string) => day.replace(/-/g, '/');
@@ -266,7 +266,7 @@ export class GlobalStatsPanel {
         name: human ? 'Human' : e?.shortName || e?.name || id,
         fullName: human ? '所有人类玩家' : e?.name || id,
         avatar: e?.avatar ?? null,
-        color: human ? '#7ff0c2' : e?.color || '#7f8db3',
+        color: human ? '#3B78F0' : e?.color || '#7f8db3',
         elo: typeof elo === 'number' ? elo : null,
         t,
         games: t.w + t.d + t.l,
@@ -396,7 +396,7 @@ export class GlobalStatsPanel {
         const k = kd(r);
         const kdText = k < 0 ? '—' : Number.isFinite(k) ? k.toFixed(2) : '∞';
         const av = r.human
-          ? `<span class="gs-av gs-av-human" aria-hidden="true">${HUMAN_ICON}</span>`
+          ? `<img class="gs-av" src="${humanAvatarUrl()}" alt="" />`
           : r.avatar
             ? `<img class="gs-av" src="${escapeHtml(r.avatar)}" alt="" />`
             : `<span class="gs-av gs-av-fallback" style="background:${escapeHtml(r.color)}">${escapeHtml(r.name.slice(0, 1))}</span>`;
@@ -441,6 +441,9 @@ export class GlobalStatsPanel {
       </table>`;
     wrap.scrollTop = top;
     wrap.scrollLeft = left;
+    // The second header row sticks right under the first (layout px: offsetHeight ignores the mobile rotation)
+    const firstHeadRow = wrap.querySelector<HTMLElement>('thead tr');
+    if (firstHeadRow) wrap.style.setProperty('--gs-head-row', `${firstHeadRow.offsetHeight}px`);
     const notes = this.bodyEl.querySelector<HTMLElement>('.gs-notes');
     if (notes) {
       notes.querySelector('.gs-empty-note')?.remove();

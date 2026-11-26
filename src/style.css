@@ -10262,7 +10262,7 @@ body.is-mobile .lobby-title-group {
 
 .gs-card {
   width: min(1080px, 95vw); /* the full bot table fits without a horizontal scrollbar on common PC widths */
-  max-height: 88vh;
+  max-height: 94vh; /* …and without a vertical one on windows taller than ~760 px */
   display: flex;
   flex-direction: column;
   border-radius: 18px;
@@ -10278,7 +10278,7 @@ body.is-mobile .lobby-title-group {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 14px 20px;
+  padding: 10px 20px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -10293,8 +10293,8 @@ body.is-mobile .lobby-title-group {
   min-height: 0;
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px 20px 18px;
+  gap: 12px;
+  padding: 12px 20px 14px;
   overflow-y: auto; /* short windows: the whole body scrolls, the table keeps a usable height */
   overscroll-behavior: contain;
 }
@@ -10331,8 +10331,8 @@ body.is-mobile .lobby-title-group {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
-  padding: 12px 16px 13px;
+  gap: 1px;
+  padding: 9px 14px 10px;
   border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   background: linear-gradient(160deg, rgba(255, 255, 255, 0.07), rgba(255, 255, 255, 0.025));
@@ -10367,7 +10367,7 @@ button.gs-tile.is-open {
 }
 
 .gs-tile-value {
-  font-size: 30px;
+  font-size: 26px;
   line-height: 1.15;
   font-weight: 900;
   color: #fff;
@@ -10506,7 +10506,7 @@ button.gs-tile.is-open .gs-pop {
 
 .gs-table th,
 .gs-table td {
-  padding: 7px 10px;
+  padding: 5px 10px;
   border-bottom: 1px solid rgba(255, 255, 255, 0.06);
 }
 
@@ -10524,7 +10524,7 @@ button.gs-tile.is-open .gs-pop {
 }
 
 .gs-table thead tr:nth-child(2) th {
-  top: 31px;
+  top: var(--gs-head-row, 27px); /* the first header row's height, measured after each render */
 }
 
 .gs-table thead th.gs-group {
@@ -10581,24 +10581,16 @@ button.gs-tile.is-open .gs-pop {
 }
 
 .gs-av {
-  width: 22px;
-  height: 22px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
   object-fit: cover;
   flex-shrink: 0;
   background: rgba(255, 255, 255, 0.08);
 }
 
-.gs-av-human {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(62, 229, 159, 0.18);
-  color: #7ff0c2;
-}
-
 .gs-table tbody tr.is-human th.gs-bot .gs-bot-name {
-  color: #7ff0c2;
+  color: #8db8ff; /* the human player's blue */
 }
 
 .gs-av-fallback {
@@ -10745,10 +10737,6 @@ body.is-mobile .gs-table {
 body.is-mobile .gs-table th,
 body.is-mobile .gs-table td {
   padding: 6px 9px;
-}
-
-body.is-mobile .gs-table thead tr:nth-child(2) th {
-  top: 29px;
 }
 
 @media (max-width: 640px) {
