@@ -17,6 +17,7 @@ import {
   RegionResolver, StatsStore, UNKNOWN_REGION, addRttSample, classifyClient, newSeatStats, provinceKey, seatRecord,
   summarize, type ClientClass, type MatchRecord, type SeatStats,
 } from './stats.ts';
+import { SiteAnalytics, isMode, isVisitorId } from './analytics.ts';
 
 const READY_MS = 20_000;
 const RECONNECT_MS = 10_000;
@@ -143,6 +144,12 @@ const rematchSlots = new Set<Match>();
 const statsDir = process.env.PVP_STATS_DIR ||
   (process.env.STATE_DIRECTORY ? join(process.env.STATE_DIRECTORY.split(':')[0], 'stats') : '');
 const statsStore = statsDir ? new StatsStore(statsDir) : null;
+// Site analytics (server/analytics.ts): online / daily UV / visitors and matches per mode, from page heartbeats
+const analyticsDir = process.env.PVP_ANALYTICS_DIR ||
+  (process.env.STATE_DIRECTORY ? join(process.env.STATE_DIRECTORY.split(':')[0], 'analytics') : (statsDir ? join(statsDir, 'analytics') : ''));
+const analytics = new SiteAnalytics(analyticsDir || null);
+void analytics.load();
+const beatsByIp = new Map<string, WindowCount>();
 const regions = new RegionResolver();
 if (statsStore) void regions.open().then(() => log('stats-ready', { dir: statsDir, regions: regions.ready }));
 
@@ -292,6 +299,7 @@ function finish(match: Match, terminal: MatchTerminal, time: number) {
   }
   log('match-ended', { matchId, ...terminal });
   recordStats(match, terminal, time);
+  if (match.go && terminal.reason !== 'cancelled') analytics.pvpMatchFinished(time);
 }
 
 function recordStats(match: Match, terminal: MatchTerminal, time: number) {
@@ -560,6 +568,7 @@ function onMessage(conn: Connection, raw: string) {
       const delay = pvpInputDelayFrames(rtt);
       match.stats.delayRtt = Math.round(rtt);
       match.go = { startAt: time + PVP_COUNTDOWN_MS, delay };
+      analytics.pvpMatchStarted(time);
       broadcast(match, { type: 'go', matchId, ...match.go });
       // Frames before the first possible sample are canonical during countdown.
       finalizeThrough(match, delay - 1);
@@ -616,11 +625,75 @@ function onMessage(conn: Connection, raw: string) {
   }
 }
 
+// Page heartbeats / match events: tiny CORS "simple" POSTs (text/plain JSON, no preflight) from the game page.
+function analyticsRequest(req: IncomingMessage, res: import('node:http').ServerResponse, path: string) {
+  // CORS for fetch(); CORP so sendBeacon (no-cors) also works on cross-origin-isolated pages (COEP require-corp)
+  const headers = {
+    'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin', 'Cache-Control': 'no-store',
+  };
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { ...headers, 'Access-Control-Allow-Methods': 'POST', 'Access-Control-Max-Age': '86400' }).end();
+    return;
+  }
+  if (req.method !== 'POST') {
+    res.writeHead(405, headers).end();
+    return;
+  }
+  const time = now();
+  const ip = ipOf(req);
+  let window = beatsByIp.get(ip);
+  if (!window) {
+    if (beatsByIp.size >= 20_000) {
+      res.writeHead(429, headers).end();
+      return;
+    }
+    beatsByIp.set(ip, (window = newWindow()));
+  }
+  if (!count(window, time, 60_000, 120)) {
+    res.writeHead(429, headers).end();
+    req.resume();
+    return;
+  }
+  let body = '';
+  let tooBig = false;
+  req.setEncoding('utf8');
+  req.on('data', (chunk: string) => {
+    body += chunk;
+    if (body.length > 512) {
+      tooBig = true;
+      req.destroy();
+    }
+  });
+  req.on('end', () => {
+    if (tooBig) return;
+    let msg: { id?: unknown; leave?: unknown; kind?: unknown; mode?: unknown };
+    try { msg = JSON.parse(body); } catch { msg = {}; }
+    if (!msg || !isVisitorId(msg.id)) {
+      res.writeHead(400, headers).end();
+      return;
+    }
+    if (path === '/beat') {
+      if (msg.leave === true) analytics.leave(msg.id);
+      else analytics.heartbeat(msg.id, time);
+    } else if (isMode(msg.mode)) {
+      if (msg.kind === 'start') analytics.matchStarted(msg.id, msg.mode, time);
+      else if (msg.kind === 'end' && msg.mode !== 'pvp') analytics.matchFinished(msg.id, msg.mode, time); // PvP: relay counts
+      else analytics.heartbeat(msg.id, time);
+    }
+    res.writeHead(204, headers).end();
+  });
+  req.on('error', () => undefined);
+}
+
 const server = createServer((req, res) => {
   const remote = req.socket.remoteAddress;
   const local = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
   const health = req.method === 'GET' && req.url === '/healthz';
   const url = new URL(req.url ?? '/', 'http://relay');
+  if ((url.pathname === '/beat' || url.pathname === '/event') && authorized(req)) {
+    analyticsRequest(req, res, url.pathname);
+    return;
+  }
   if (req.method === 'GET' && url.pathname === '/stats') {
     // Loopback only, never through the CDN (which adds the origin key to every request)
     if (!local || !statsStore) {
@@ -631,7 +704,7 @@ const server = createServer((req, res) => {
     statsStore.read(days)
       .then((records) => {
         res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' })
-          .end(JSON.stringify(summarize(records, days)));
+          .end(JSON.stringify({ ...summarize(records, days), onlineNow: analytics.onlineCount(), visitorsToday: analytics.snapshot().uv }));
       })
       .catch(() => res.writeHead(500).end());
     return;
@@ -718,6 +791,7 @@ setInterval(() => {
     }
   }
   for (const [ip, window] of challengesByIp) if (time >= window.until) challengesByIp.delete(ip);
+  for (const [ip, window] of beatsByIp) if (time >= window.until) beatsByIp.delete(ip);
   for (const [matchId, match] of retained) if (time >= match.removeAt!) evictRetained(matchId, match);
   for (const [token, p] of tokens) {
     if (!p.match && time >= p.expiresAt) {
@@ -731,6 +805,15 @@ setInterval(() => {
 if (statsStore) {
   void statsStore.prune();
   setInterval(() => void statsStore.prune(), 6 * 3_600_000).unref();
+}
+// Sample online visitors and persist today's analytics once a minute (and on shutdown)
+setInterval(() => void analytics.tick(), Number(process.env.PVP_ANALYTICS_TICK_MS ?? 60_000)).unref();
+setInterval(() => void analytics.prune(), 6 * 3_600_000).unref();
+for (const signal of ['SIGTERM', 'SIGINT'] as const) {
+  process.once(signal, () => {
+    void analytics.tick().finally(() => process.exit(0));
+    setTimeout(() => process.exit(0), 2000).unref();
+  });
 }
 
 const port = Number(process.env.PORT ?? 8787);

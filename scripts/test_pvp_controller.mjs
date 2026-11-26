@@ -11,7 +11,8 @@ import { NEUTRAL, PVP_TICK_MS } from '../src/net/pvpProtocol.ts';
 const source = new URL('../src/game/pvpMatchController.ts', import.meta.url);
 const build = await esbuild.build({
   entryPoints: [fileURLToPath(source)], bundle: true, format: 'esm', write: false,
-  define: { __BUILD_ID__: '"test"', 'import.meta.url': JSON.stringify(source.href) },
+  // Vite's import.meta.env does not exist here; PvP-off keeps site analytics (src/net/analytics.ts) silent
+  define: { __BUILD_ID__: '"test"', 'import.meta.url': JSON.stringify(source.href), 'import.meta.env': '{"VITE_PVP_ENABLED":"0"}' },
 });
 const { PvpMatchController } = await import(`data:text/javascript;base64,${Buffer.from(build.outputFiles[0].contents).toString('base64')}`);
 const map = [

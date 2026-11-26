@@ -65,6 +65,22 @@ IP → region uses the bundled data of the [ip2region](https://www.npmjs.com/pac
 data from lionsoul2014/ip2region, Apache-2.0 OR MIT). It loads asynchronously at start (~110 MB resident); update it
 by bumping the package version.
 
+## Site analytics
+
+Game pages (`src/net/analytics.ts`) send `POST /beat` every minute while visible (and `{leave:true}` when hidden or
+closed) and `POST /event` `{kind: start|end, mode}` when a match, replay or cricket batch starts / finishes. Both
+are CORS "simple" text/plain JSON requests through the CDN (origin key required), limited to 120 per IP per
+minute. The only identity is a random id the browser generated (`localStorage['boomerang-visitor-id']`); IPs are
+not stored. Pages built with PvP off (the mirror) send nothing.
+
+The relay keeps: online visitors (heartbeat within 2.5 min), per day (UTC+8) the UV, the per-minute online count
+and its peak, and per mode (ranked-solo / ranked-ffa / cricket / cricket-batch / custom / training / pvp / replay)
+the unique visitors plus matches started / finished. PvP matches are counted once by the relay (at GO and at the
+end), not by the two clients. Today's state is written to `<analytics dir>/YYYY-MM-DD.json` every minute and on
+shutdown, reloaded on start, and kept 90 days. The analytics dir is `PVP_ANALYTICS_DIR`, else
+`$STATE_DIRECTORY/analytics`, else `$PVP_STATS_DIR/analytics`. `stats-report` prints it above the latency report;
+`GET /stats` (loopback) adds `onlineNow` and `visitorsToday`.
+
 ## Protocol
 
 WebSocket messages are small JSON objects. Clients claim their reservation in

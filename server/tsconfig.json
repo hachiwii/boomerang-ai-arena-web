@@ -9,5 +9,5 @@
     "resolveJsonModule": true,
     "skipLibCheck": true
   },
-  "include": ["relay.ts", "stats.ts", "stats-report.ts"]
+  "include": ["relay.ts", "stats.ts", "stats-report.ts", "analytics.ts"]
 }

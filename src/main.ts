@@ -53,6 +53,7 @@ import { MobileControls, MobileLayoutEditor } from './ui/mobileControls';
 import { MobileExportModal } from './ui/mobileExportModal';
 import { SettingsModal } from './ui/settingsUI';
 import { TrainingPanel } from './ui/trainingUI';
+import { startAnalytics, trackMatchEnd, trackMatchStart } from './net/analytics';
 
 function parseQuickPreviewMap(map: MapMeta): EngineMapData {
   const cells: number[] = [];
@@ -487,6 +488,7 @@ async function bootstrap() {
         });
     };
 
+    trackMatchStart('cricket-batch');
     try {
       const result = await runCricketBatch({
         totalMatches: count,
@@ -517,6 +519,7 @@ async function bootstrap() {
       if (result.cancelled && result.completedMatches === 0) {
         cricketBatchModal.close();
       } else {
+        trackMatchEnd('cricket-batch');
         cricketBatchModal.showResult(result);
       }
     } catch (err) {
@@ -706,6 +709,7 @@ async function bootstrap() {
   };
 
   const startCustomAiSpectator = (cfg: MatchConfig): Promise<void> => {
+    let spectatorCounted = false; // site analytics: one 'end' per spectated match
     setTrainingChrome(false);
     clearMatchOverTimer();
     matchRecorded = false;
@@ -775,6 +779,10 @@ async function bootstrap() {
       onProgress: (ticks, simComplete) => {
         if (activeConfig !== cfg || !liveBundle || !liveMapData) return;
         if (simComplete) {
+          if (!spectatorCounted) {
+            spectatorCounted = true;
+            trackMatchEnd(cfg.matchMode);
+          }
           const rebuilt = buildMatchHistoryBundle(cfg, liveMapData, ticks, null, false);
           liveBundle.summary = {
             ...rebuilt.summary,
@@ -835,6 +843,7 @@ async function bootstrap() {
     lobbyUI.hide();
     mode = 'replay';
     const speed = opts?.speed ?? 1.0;
+    trackMatchStart('replay');
     try {
       await replayController.start(bundle, speed, getCinematicOptions(settings.get()), true);
     } catch (err) {
@@ -1386,6 +1395,7 @@ async function bootstrap() {
       if (!pvpController && controller.isTraining()) trainingPanel.onTick(next, controller.getHumanSeat());
     },
     onMatchOver: (finalState, director) => {
+      if (activeConfig && !matchRecorded) trackMatchEnd(activeConfig.matchMode);
       mobileControls?.hide();
       document.body.classList.remove('m-aim-slowmo');
       bgm.updateMatchTick(finalState);
@@ -1531,6 +1541,7 @@ async function bootstrap() {
     });
   };
 
+  startAnalytics(); // site analytics heartbeat (no-op when PvP is off, e.g. the mirror build)
   lobbyUI = new LobbyUI(uiRoot, maps, roster, leaderboard, cricketStore, settings, {
     onSelectMap: (map) => {
       if (mode === 'lobby') {

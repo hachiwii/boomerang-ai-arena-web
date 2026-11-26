@@ -10,6 +10,7 @@ import {
   MatchConfig,
   TickSnapshot,
 } from './types';
+import { trackMatchStart } from '../net/analytics';
 
 interface PendingBotDecision {
   seat: number;
@@ -265,6 +266,7 @@ export class MatchController {
     this.stop();
     this.stopped = false;
     this.config = config;
+    trackMatchStart(config.matchMode); // site analytics: covers ranked / custom / training starts and restarts
     this.gameSpeed = Math.max(0.1, Math.min(2.0, config.speed || 1.0));
     this.speedOverride = null;
     this.tickIntervalMs = LOGIC_DT_MS / this.gameSpeed;
@@ -723,6 +725,7 @@ export class MatchController {
    */
   public async startStreamingAiSim(config: MatchConfig, cb: StreamingAiCallbacks): Promise<void> {
     this.stop();
+    trackMatchStart(config.matchMode); // site analytics: all-bot custom / cricket spectating
     const mySeq = ++this.simSessionSeq;
     this.stopped = false;
     this.config = config;

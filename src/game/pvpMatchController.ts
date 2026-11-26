@@ -8,6 +8,7 @@ import {
 } from '../net/pvpProtocol';
 import { PvpEventDedup, PvpTimeline, pvpSampleFrame, pvpTargetTick } from '../net/pvpTimeline';
 import { PVP_FIXED_RULES } from '../net/pvpTypes';
+import { trackMatchStart } from '../net/analytics';
 
 /** A filled action of ours is re-sent only within this many frames (500 ms); older ones are dropped. */
 const REQUEUE_MAX_FRAMES = 10;
@@ -63,6 +64,7 @@ export class PvpMatchController {
   getResultNote() { return this.resultNote; }
 
   async start() {
+    trackMatchStart('pvp'); // site analytics: marks this visitor as a PvP player (the relay counts the match)
     this.callbacks.onStatus?.('加载 PvP 地图与引擎…');
     try {
       const origin = window.location.origin;
