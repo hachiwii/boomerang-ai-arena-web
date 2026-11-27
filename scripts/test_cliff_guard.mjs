@@ -548,4 +548,28 @@ function syntheticMap(name, spawns, rows) {
   console.log('  [TEST 13 PASS] Throw-walk speed, recall cancellation at the rim, and stationary melee.');
 }
 
-console.log('ALL 13 CLIFF-GUARD & MOUSE-DIRECTION DASH WASM PHYSICS TESTS PASSED!');
+// Test 14: Body contact never shoves a guarded human into a pit (the oldtown fountain at the
+// final ring). P1 stands on the pool's edge, P2 walks into P1 from behind: with the walking
+// guard P1 is pushed up to the edge and stops there; without it, or when P1 is a bot, the push drops P1 in.
+{
+  const rows = Array.from({ length: 16 }, (_, y) => '~' + (y >= 6 && y <= 9 ? '.'.repeat(9) + '~~~~' + '.'.repeat(9) : '.'.repeat(22)) + '~');
+  const pool = syntheticMap('pool_push', '6.0 2.9 6.0 1.5', rows);
+  const shove = (options) => {
+    startMapText(pool, 0, options);
+    let state;
+    for (let i = 0; i < 20; i++) {
+      engineStep('0 0 0 0 0 0\n0 1000 0 0 0 0');
+      state = JSON.parse(engineGetState());
+    }
+    return state.players[0];
+  };
+  let p = shove({ humanSeats: 3 });
+  assert(p.alive && p.x === 6000 && p.y > 2900 && p.y <= 3000, `Guarded P1 must be pushed up to the pool edge only, got alive=${p.alive} (${p.x}, ${p.y})`);
+  p = shove({ humanSeats: 3, walkGuard: false });
+  assert(!p.alive && p.cause === 3 && p.killer === -1, 'Without the guard the push drops P1 into the pool');
+  p = shove({ humanSeats: 2 });
+  assert(!p.alive && p.cause === 3, 'A bot P1 is still pushed into the pool');
+  console.log('  [TEST 14 PASS] A guarded human pushed toward a pit by body contact stops on the edge.');
+}
+
+console.log('ALL 14 CLIFF-GUARD & MOUSE-DIRECTION DASH WASM PHYSICS TESTS PASSED!');

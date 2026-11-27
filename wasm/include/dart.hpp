@@ -1910,6 +1910,27 @@ struct Game {
                     if (circle_hits_wall(m, cf.body_r, p[k].x, p[k].y)) {
                         p[k].x = oldx; p[k].y = oldy;
                     }
+                    // 走路防跌落的人类：身体互相推开不会把人推进坑（当成坑边有墙，推到最远的安全点为止）。
+                    // 被踢滑行中的不管（落坑照常算给踢的人）；本来就站在坑上的也不管。
+                    if (human_walk_guard && is_human(k) && p[k].st != S_STUN &&
+                        cell_of_point(cf, m, p[k].x, p[k].y, t) == C_PIT &&
+                        cell_of_point(cf, m, oldx, oldy, t) != C_PIT) {
+                        i64 lo = 0, hi = UNIT, best_x = oldx, best_y = oldy;
+                        for (int iter = 0; iter < 10; ++iter) {
+                            const i64 mid = (lo + hi + 1) / 2;
+                            i64 tx = oldx, ty = oldy, tvx = rdiv(sx[k] * mid, UNIT), tvy = rdiv(sy[k] * mid, UNIT);
+                            move_body(m, cf.body_r, tx, ty, tvx, tvy);
+                            if (!circle_hits_wall(m, cf.body_r, tx, ty) && cell_of_point(cf, m, tx, ty, t) != C_PIT) {
+                                lo = mid;
+                                best_x = tx;
+                                best_y = ty;
+                            } else {
+                                hi = mid - 1;
+                            }
+                        }
+                        p[k].x = best_x;
+                        p[k].y = best_y;
+                    }
                 }
         }
         // 在手里的镖跟着主人

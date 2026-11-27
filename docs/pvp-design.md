@@ -92,7 +92,9 @@ browser ──wss://<relay domain>/ws──► Aliyun CDN (WebSocket on, secret 
   slice / fall state is reset), so no ghost of the body stays on screen.
 - The walking cliff guard for PvP human seats runs **inside the engine step** (deterministic, applied to every
   canonical input including fills), not on the client at sampling time: with input delay the client only knows a
-  stale position. Single-player keeps its client-side guard.
+  stale position. Single-player keeps its client-side guard. The same guard stops a guarded human's body-contact
+  push (two players pushed apart) at a pit edge, as a wall would: walking into someone can't shove them into a pit
+  (kicks still can).
 - Remote input prediction: the last canonical remote input with `act = 0`.
 - When a canonical input differs from the one used, restore the engine snapshot at that frame and re-simulate to the
   present. Keep snapshots for at least the deadline window (≈ 16 frames).
