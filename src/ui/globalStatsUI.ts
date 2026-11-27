@@ -204,6 +204,7 @@ export class GlobalStatsPanel {
     this.openState = true;
     this.openTile = null;
     this.backdrop.classList.remove('hidden');
+    this.shownSig = ''; // redraw: the platform (table layout) may have changed since it was last open
     this.render();
     void this.load();
     this.refreshTimer = window.setInterval(() => {
@@ -400,39 +401,38 @@ export class GlobalStatsPanel {
     const th = (k: SortKey, label: string, cls = '', title = '', rowspan = 1) =>
       `<th class="gs-sortable ${cls} ${key === k ? `is-sorted ${desc ? 'is-desc' : 'is-asc'}` : ''}" data-gs-sort="${k}"${rowspan > 1 ? ` rowspan="${rowspan}"` : ''}${title ? ` title="${title}"` : ''}>${label}</th>`;
     const num = (n: number, cls = '') => `<td class="gs-num ${cls} ${n ? '' : 'is-zero'}">${fmt(n)}</td>`;
-    const body = rows
-      .map((r) => {
-        const wr = winRate(r);
-        const k = kd(r);
-        const kdText = k < 0 ? '—' : Number.isFinite(k) ? k.toFixed(2) : '∞';
-        const av = r.human
-          ? `<img class="gs-av" src="${humanAvatarUrl()}" alt="" />`
-          : r.avatar
-            ? `<img class="gs-av" src="${escapeHtml(r.avatar)}" alt="" />`
-            : `<span class="gs-av gs-av-fallback" style="background:${escapeHtml(r.color)}">${escapeHtml(r.name.slice(0, 1))}</span>`;
-        const ar = avgRank(r);
-        const rateCell = ffa
-          ? `<td class="gs-num gs-strong">${ar === null ? '—' : ar.toFixed(2)}</td>`
-          : `<td class="gs-num gs-strong">${wr < 0 ? '—' : `${(wr * 100).toFixed(1)}%`}</td>`;
-        return `
-          <tr class="${r.games ? '' : 'is-empty'} ${r.human ? 'is-human' : ''}">
-            <th scope="row" class="gs-bot" title="${escapeHtml(r.fullName)}"><div class="gs-bot-in">${av}<span class="gs-bot-name">${escapeHtml(r.name)}</span>${r.elo === null ? '' : `<span class="gs-elo" title="排位 ELO">${r.elo}</span>`}</div></th>
+    const rowHtml = rows.map((r) => {
+      const wr = winRate(r);
+      const k = kd(r);
+      const kdText = k < 0 ? '—' : Number.isFinite(k) ? k.toFixed(2) : '∞';
+      const av = r.human
+        ? `<img class="gs-av" src="${humanAvatarUrl()}" alt="" />`
+        : r.avatar
+          ? `<img class="gs-av" src="${escapeHtml(r.avatar)}" alt="" />`
+          : `<span class="gs-av gs-av-fallback" style="background:${escapeHtml(r.color)}">${escapeHtml(r.name.slice(0, 1))}</span>`;
+      const ar = avgRank(r);
+      const rateCell = ffa
+        ? `<td class="gs-num gs-strong">${ar === null ? '—' : ar.toFixed(2)}</td>`
+        : `<td class="gs-num gs-strong">${wr < 0 ? '—' : `${(wr * 100).toFixed(1)}%`}</td>`;
+      return {
+        cls: `${r.games ? '' : 'is-empty'} ${r.human ? 'is-human' : ''}`,
+        bot: `<th scope="row" class="gs-bot" title="${escapeHtml(r.fullName)}"><div class="gs-bot-in">${av}<span class="gs-bot-name">${escapeHtml(r.name)}</span>${r.elo === null ? '' : `<span class="gs-elo" title="排位 ELO">${r.elo}</span>`}</div></th>`,
+        data: `
             ${num(r.games, 'gs-col-games')}
             ${rateCell}
             <td class="gs-num gs-strong">${kdText}</td>
             <td class="gs-num gs-wdl" title="胜 ${fmt(r.t.w)} · 平 ${fmt(r.t.d)} · 负 ${fmt(r.t.l)}"><span class="w">${fmt(r.t.w)}</span>/<span class="d">${fmt(r.t.d)}</span>/<span class="l">${fmt(r.t.l)}</span></td>
             ${KILL_CAUSES.map((c, i) => num(r.t.kills[c] ?? 0, `gs-kill ${i ? '' : 'gs-group-start'}`)).join('')}
-            ${DEATH_CAUSES.map((c, i) => num(r.t.deaths[c] ?? 0, `gs-death ${i ? '' : 'gs-group-start'}`)).join('')}
-          </tr>`;
-      })
-      .join('');
-    const top = wrap.scrollTop;
-    const left = wrap.scrollLeft;
-    wrap.innerHTML = `
-      <table class="gs-table">
-        <thead>
-          <tr>
-            <th rowspan="2" class="gs-bot gs-corner gs-sortable ${key === 'elo' ? `is-sorted ${desc ? 'is-desc' : 'is-asc'}` : ''}" data-gs-sort="elo" title="按排位 ELO 排序">Bot</th>
+            ${DEATH_CAUSES.map((c, i) => num(r.t.deaths[c] ?? 0, `gs-death ${i ? '' : 'gs-group-start'}`)).join('')}`,
+      };
+    });
+    // Mobile: the Bot column is a table of its own in one block that sticks to the left (the body scrolls both ways),
+    // beside the data table; rows have fixed heights (style.css) so the two line up. One sticky block instead of a
+    // sticky cell per row: some phone browsers drew the per-row sticky cells blank, missing or under their row.
+    const split = document.body.classList.contains('is-mobile');
+    const corner = (rowspan: number) =>
+      `<th${rowspan > 1 ? ` rowspan="${rowspan}"` : ''} class="gs-bot gs-corner gs-sortable ${key === 'elo' ? `is-sorted ${desc ? 'is-desc' : 'is-asc'}` : ''}" data-gs-sort="elo" title="按排位 ELO 排序">Bot</th>`;
+    const headTop = `
             ${th('games', '局数', 'gs-col-games', '打完的排位局数', 2)}
             ${ffa
               ? th('avgRank', '平均名次', '', '每局最终名次的平均（1 = 第一，越小越好）', 2)
@@ -440,20 +440,42 @@ export class GlobalStatsPanel {
             ${th('kd', 'KD', '', '击杀 ÷ 死亡', 2)}
             ${th('w', '胜/平/负', '', '按胜场排序', 2)}
             <th colspan="${KILL_CAUSES.length}" class="gs-group gs-group-start gs-kill">击杀</th>
-            <th colspan="${DEATH_CAUSES.length}" class="gs-group gs-group-start gs-death">死亡</th>
-          </tr>
-          <tr>
+            <th colspan="${DEATH_CAUSES.length}" class="gs-group gs-group-start gs-death">死亡</th>`;
+    const headLeaves = `
             ${KILL_CAUSES.map((c, i) => th(`k:${c}`, CAUSE_LABEL[c], `gs-kill ${i ? '' : 'gs-group-start'}`)).join('')}
-            ${DEATH_CAUSES.map((c, i) => th(`d:${c}`, CAUSE_LABEL[c], `gs-death ${i ? '' : 'gs-group-start'}`)).join('')}
-          </tr>
+            ${DEATH_CAUSES.map((c, i) => th(`d:${c}`, CAUSE_LABEL[c], `gs-death ${i ? '' : 'gs-group-start'}`)).join('')}`;
+    const top = wrap.scrollTop;
+    const left = wrap.scrollLeft;
+    wrap.classList.toggle('is-split', split);
+    wrap.innerHTML = split
+      ? `
+      <div class="gs-frozen">
+        <table class="gs-table gs-table-bots">
+          <thead><tr>${corner(1)}</tr></thead>
+          <tbody>${rowHtml.map((r) => `<tr class="${r.cls}">${r.bot}</tr>`).join('')}</tbody>
+        </table>
+      </div>
+      <table class="gs-table gs-table-data">
+        <thead>
+          <tr>${headTop}</tr>
+          <tr>${headLeaves}</tr>
         </thead>
-        <tbody>${body}</tbody>
+        <tbody>${rowHtml.map((r) => `<tr class="${r.cls}">${r.data}</tr>`).join('')}</tbody>
+      </table>`
+      : `
+      <table class="gs-table">
+        <thead>
+          <tr>${corner(2)}${headTop}</tr>
+          <tr>${headLeaves}</tr>
+        </thead>
+        <tbody>${rowHtml.map((r) => `<tr class="${r.cls}">${r.bot}${r.data}</tr>`).join('')}</tbody>
       </table>`;
     wrap.scrollTop = top;
     wrap.scrollLeft = left;
-    // The second header row sticks right under the first (layout px: offsetHeight ignores the mobile rotation)
+    // PC: the second header row sticks right under the first (layout px: offsetHeight ignores the mobile rotation);
+    // mobile sets fixed header row heights in style.css
     const firstHeadRow = wrap.querySelector<HTMLElement>('thead tr');
-    if (firstHeadRow) wrap.style.setProperty('--gs-head-row', `${firstHeadRow.offsetHeight}px`);
+    if (firstHeadRow && !split) wrap.style.setProperty('--gs-head-row', `${firstHeadRow.offsetHeight}px`);
     const notes = this.bodyEl.querySelector<HTMLElement>('.gs-notes');
     if (notes) {
       notes.querySelector('.gs-empty-note')?.remove();

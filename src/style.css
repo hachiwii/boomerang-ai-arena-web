@@ -10663,12 +10663,13 @@ button.gs-tile.is-open .gs-pop {
 .gs-wdl .d { color: #c6d3ee; }
 .gs-wdl .l { color: #ff9e9e; }
 
-.gs-table tbody tr:hover td,
-.gs-table tbody tr:hover th {
+/* Row hover on PC only (on mobile the Bot column and the numbers are two tables, and a tap would light half a row) */
+body:not(.is-mobile) .gs-table tbody tr:hover td,
+body:not(.is-mobile) .gs-table tbody tr:hover th {
   background: rgba(61, 126, 255, 0.1);
 }
 
-.gs-table tbody tr:hover th.gs-bot {
+body:not(.is-mobile) .gs-table tbody tr:hover th.gs-bot {
   background: #17233d;
 }
 
@@ -10747,11 +10748,58 @@ body.is-mobile .gs-tiles {
   z-index: 4; /* breakdown popovers above the sticky table header */
 }
 
+/* The table: the Bot column is one block (its own table, .gs-frozen) that sticks to the left, beside the data table
+   (globalStatsUI.ts renderTable). Fixed row heights keep the two tables' rows level. Nothing between the body and the
+   sticky parts clips or scrolls (square corners). */
 body.is-mobile .gs-table-wrap {
+  --gs-head-h: 30px;
+  --gs-row-h: 34px;
   flex: none;
   min-height: 0;
+  display: flex;
+  align-items: flex-start;
   overflow: visible;
-  overflow: clip; /* rounded corners without a scroll box, which would keep the header from sticking to the body */
+  border-radius: 0;
+}
+
+body.is-mobile .gs-frozen {
+  position: sticky;
+  left: 0;
+  z-index: 3;
+  flex: none;
+}
+
+body.is-mobile .gs-table-bots {
+  min-width: 0;
+}
+
+body.is-mobile .gs-table-data {
+  flex: 1 0 auto;
+  min-width: 0;
+}
+
+body.is-mobile .gs-table-wrap.is-split thead tr {
+  height: var(--gs-head-h);
+}
+
+body.is-mobile .gs-table-wrap.is-split .gs-table-bots thead tr {
+  height: calc(2 * var(--gs-head-h)); /* level with the data table's two header rows */
+}
+
+body.is-mobile .gs-table-wrap.is-split tbody tr {
+  height: var(--gs-row-h);
+}
+
+body.is-mobile .gs-table-data thead tr:nth-child(2) th {
+  top: var(--gs-head-h);
+}
+
+body.is-mobile .gs-table-wrap.is-split tbody .gs-bot {
+  position: static; /* the block sticks, not each cell */
+}
+
+body.is-mobile .gs-table-bots thead .gs-corner {
+  left: auto; /* sticks to the top only; the block keeps it left */
 }
 
 body.is-mobile .gs-tiles {
