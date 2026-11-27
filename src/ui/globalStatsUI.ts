@@ -134,6 +134,13 @@ export class GlobalStatsPanel {
     this.bodyEl = this.card.querySelector('.gs-body')!;
     this.backdrop.appendChild(this.card);
     document.body.appendChild(this.backdrop);
+    // Mobile: the body scrolls both ways (the bot table's header sticks to its top and follows it sideways); the tiles,
+    // the section head and the notes keep to its visible width (layout px, so the mobile rotation does not matter)
+    if (typeof ResizeObserver !== 'undefined') {
+      new ResizeObserver(() => {
+        this.bodyEl.style.setProperty('--gs-body-w', `${this.bodyEl.clientWidth}px`);
+      }).observe(this.bodyEl);
+    }
 
     this.backdrop.addEventListener('click', (e) => {
       if (e.target === this.backdrop) this.close();
@@ -165,6 +172,7 @@ export class GlobalStatsPanel {
           this.renderTable();
           const wrap = this.bodyEl.querySelector<HTMLElement>('.gs-table-wrap');
           if (wrap) wrap.scrollTop = wrap.scrollLeft = 0;
+          this.bodyEl.scrollLeft = 0; // mobile: the table scrolls sideways with the body
         }
       } else if (th) {
         const key = th.dataset.gsSort as SortKey;
@@ -316,6 +324,7 @@ export class GlobalStatsPanel {
     }
     if (!this.shellBuilt) {
       this.bodyEl.innerHTML = `
+        <div class="gs-scroll">
         <div class="gs-tiles">
           ${this.tileHtml('online', '实时在线', 'live')}
           ${this.tileHtml('players', '累计玩家', 'plain', '开过至少一局（任意模式）的玩家数')}
@@ -331,6 +340,7 @@ export class GlobalStatsPanel {
         </div>
         <div class="gs-table-wrap"></div>
         <div class="gs-notes"></div>
+        </div>
       `;
       this.shellBuilt = true;
       this.shownSig = '';

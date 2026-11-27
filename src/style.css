@@ -10299,6 +10299,11 @@ body.is-mobile .lobby-title-group {
   overscroll-behavior: contain;
 }
 
+/* The body's content: no box of its own on PC; on mobile the block the body scrolls both ways (see below) */
+.gs-scroll {
+  display: contents;
+}
+
 .gs-state {
   padding: 48px 0;
   text-align: center;
@@ -10708,9 +10713,45 @@ body.is-mobile .gs-head h2 {
   font-size: 16px;
 }
 
+/* Mobile: the bot table has no scroll box of its own. The body scrolls both ways, so the table's header sticks to the
+   top of the body and its Bot column to the left edge, both moving with the table; everything else stays put sideways
+   (sticky at its resting place, as wide as the visible area). The padding is on .gs-scroll, not on the body: sticky
+   offsets count from inside the scroll box's padding, and the header should stick flush with its top. */
 body.is-mobile .gs-body {
+  --gs-pad-x: 14px;
+  padding: 0;
+  overflow: auto;
+}
+
+body.is-mobile .gs-scroll {
+  flex: none;
+  display: flex;
+  flex-direction: column;
   gap: 10px;
-  padding: 10px 14px max(10px, var(--sa-bottom));
+  box-sizing: border-box;
+  width: max-content;
+  min-width: 100%;
+  padding: 10px var(--gs-pad-x) max(10px, var(--sa-bottom));
+}
+
+body.is-mobile .gs-tiles,
+body.is-mobile .gs-section-head,
+body.is-mobile .gs-notes {
+  position: sticky;
+  left: var(--gs-pad-x);
+  box-sizing: border-box;
+  width: calc(var(--gs-body-w, 100vw) - 2 * var(--gs-pad-x));
+}
+
+body.is-mobile .gs-tiles {
+  z-index: 4; /* breakdown popovers above the sticky table header */
+}
+
+body.is-mobile .gs-table-wrap {
+  flex: none;
+  min-height: 0;
+  overflow: visible;
+  overflow: clip; /* rounded corners without a scroll box, which would keep the header from sticking to the body */
 }
 
 body.is-mobile .gs-tiles {
@@ -10728,16 +10769,6 @@ body.is-mobile .gs-tile-value {
 
 body.is-mobile .gs-section-note {
   display: none;
-}
-
-/* Mobile: the bot table takes its full height and scrolls up and down with the panel body; on its own it only scrolls
-   sideways (vertical swipes on it pass through to the body) */
-body.is-mobile .gs-table-wrap {
-  flex: none;
-  min-height: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  overscroll-behavior: contain auto;
 }
 
 body.is-mobile .gs-table {
