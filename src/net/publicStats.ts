@@ -43,19 +43,12 @@ export async function fetchPublicStats(signal?: AbortSignal): Promise<PublicStat
 
 export const sumModes = (m: Record<PublicMode, number>) => PUBLIC_MODES.reduce((a, k) => a + (m[k] ?? 0), 0);
 
-const UNITS: [number, string][] = [[1e4, '万'], [1e8, '亿'], [1e12, '万亿']];
-
-/** Counts on the panel: up to 10000 as is (1,234); above that 4 significant digits in 万 / 亿 / 万亿 (1.235万, 12.35万). */
+/** Counts in the ranked bot table: below 100000 the full number (99,999); from there 万 with one decimal (12.3万). */
 export function formatCount(n: number): string {
-  if (!(n > 10_000)) return n.toLocaleString('zh-CN');
-  // Round the integer itself (half up): 12345 / 10 = 1234.5 is exact, 1.2345 as a double is not
-  const scale = 10 ** (Math.floor(Math.log10(n)) - 3);
-  const r = Math.round(n / scale) * scale;
-  let i = UNITS.length - 1;
-  while (i > 0 && r < UNITS[i][0]) i--;
-  const [size, unit] = UNITS[i];
-  const v = r / size;
-  return `${v.toFixed(Math.max(0, 3 - Math.floor(Math.log10(v) + 1e-9)))}${unit}`;
+  if (!(n >= 100_000)) return n.toLocaleString('zh-CN');
+  // To the nearest 1000, half up: an integer / 1000 is exact at a half (123500 / 1000 = 123.5 → 12.4万)
+  const v = Math.round(n / 1000) / 10;
+  return `${v.toLocaleString('zh-CN', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}万`;
 }
 
 /** The panel's top tiles: the full number up to 9 digits; beyond that 亿 with at most 9 significant digits. */

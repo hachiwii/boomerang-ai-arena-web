@@ -52,7 +52,7 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]!);
 }
 
-const fmt = formatCount; // bot table: 万 / 亿 above 10000
+const fmt = formatCount; // bot table: the full number below 10万, x.x万 from there
 const raw = formatTileCount; // top tiles: the full number (亿 only beyond 9 digits)
 const sumOf = (o: Partial<Record<string, number>>) => Object.values(o).reduce<number>((a, n) => a + (n ?? 0), 0);
 
