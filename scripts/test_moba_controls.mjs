@@ -70,6 +70,10 @@ const SETTINGS_KEY = 'boomerang_arena_settings_v1';
     [kb.mobaMove, kb.mobaStop, kb.mobaThrowRecall, kb.mobaMelee, kb.mobaDash, kb.mobaQuickRestart, kb.mobaToggleHideUi],
     [['Mouse2', null], ['KeyS', null], ['KeyQ', null], ['KeyW', null], ['KeyE', null], ['KeyR', null], ['Shift+KeyF', null]],
   );
+  // 向角色朝向挥砍 exists in both schemes, unbound by default
+  assert.deepEqual([kb.meleeFacing, kb.mobaMeleeFacing], [[null, null], [null, null]]);
+  assert.ok(S.ACTION_META.some((m) => m.key === 'meleeFacing' && m.scheme === 'standard' && m.label === '向角色朝向挥砍'));
+  assert.ok(S.ACTION_META.some((m) => m.key === 'mobaMeleeFacing' && m.scheme === 'moba' && m.label === '向角色朝向挥砍'));
   // Conflicts are resolved inside one scheme only
   assert.equal(st.setBinding('throwRecall', 0, 'KeyQ').clearedFrom, undefined);
   assert.deepEqual(st.get().keybindings.mobaThrowRecall, ['KeyQ', null], 'standard rebinding leaves MOBA keys alone');
@@ -293,6 +297,59 @@ const pathLen = (h, maxTicks) => {
   const a = h4.step();
   assert.deepEqual([a.act.mx, a.act.my, a.act.act], [0, 0, 0], 'A is not a move key in MOBA');
   console.log('  [PASS] Q / W / E toward the cursor; throw keeps the walk, dash ends it; WASD unbound');
+}
+
+// 向角色朝向挥砍: melee along the character's facing, whatever the cursor; the ordinary melee still aims at the cursor
+{
+  const facingVec = (face) => {
+    const rad = (face / 100) * (Math.PI / 180);
+    return [Math.round(Math.cos(rad) * 1000), Math.round(Math.sin(rad) * 1000)];
+  };
+  // MOBA: walk down (facing +y), cursor to the right, press the bound key
+  const h = setup();
+  h.settings.setBinding('mobaMeleeFacing', 0, 'KeyF');
+  h.rightClick(4000, 10000);
+  for (let i = 0; i < 4; i++) h.step();
+  h.setMouse(9000, h.me().y);
+  const face = h.me().face;
+  h.key('KeyF');
+  const m = h.step();
+  assert.equal(m.act.act, 2, 'F = melee');
+  assert.deepEqual([m.act.ax, m.act.ay], facingVec(face), 'MOBA: melee along the facing');
+  assert.ok(m.act.ay > 990, `walking down faces down (${m.act.ax}, ${m.act.ay}), not toward the cursor on the right`);
+
+  // Standard: walk down with S, cursor above; the bound key (keyboard or a mouse button) slashes down, right click up
+  const s = setup({ scheme: 'standard' });
+  assert.equal(s.settings.setBinding('meleeFacing', 0, 'KeyF').clearedFrom, undefined);
+  s.key('KeyS');
+  for (let i = 0; i < 4; i++) s.step();
+  s.key('KeyS', false);
+  s.step();
+  s.setMouse(s.me().x, s.me().y - 3000);
+  const sFace = s.me().face;
+  s.key('KeyF');
+  const k = s.step();
+  assert.equal(k.act.act, 2);
+  assert.deepEqual([k.act.ax, k.act.ay], facingVec(sFace), 'standard: melee along the facing');
+  assert.ok(k.act.ay > 990, `facing down (${k.act.ax}, ${k.act.ay}) while the cursor is above`);
+  s.key('KeyF', false);
+  for (let i = 0; i < 20 && s.me().st !== 0; i++) s.step();
+  s.settings.setBinding('meleeFacing', 1, 'Mouse1');
+  const bFace = s.me().face;
+  s.mouseBtn(1, true);
+  const b = s.step();
+  s.mouseBtn(1, false);
+  assert.equal(b.act.act, 2, 'a mouse button works too');
+  assert.deepEqual([b.act.ax, b.act.ay], facingVec(bFace), 'mouse button: melee along the facing');
+  for (let i = 0; i < 20 && s.me().st !== 0; i++) s.step();
+  s.mouseBtn(2, true);
+  const r = s.step();
+  s.mouseBtn(2, false);
+  assert.equal(r.act.act, 2);
+  assert.ok(r.act.ay < -990, `the ordinary melee (right click) still aims at the cursor (${r.act.ax}, ${r.act.ay})`);
+  // Binding it to the melee button takes the button from melee (same-scheme conflict rule)
+  assert.equal(s.settings.setBinding('meleeFacing', 0, 'Mouse2').clearedFrom, 'melee');
+  console.log('  [PASS] 向角色朝向挥砍 (standard + MOBA, key or mouse button) slashes along the facing; melee still aims at the cursor');
 }
 
 // Countdown: a move order given before GO is walked right at GO; the standard scheme ignores right-click moves

@@ -11,6 +11,7 @@ export type ActionBindKey =
   | 'moveRight'
   | 'throwRecall'
   | 'melee'
+  | 'meleeFacing' // melee toward the character's facing instead of the mouse (unbound by default)
   | 'dash'
   | 'dashToMouse'
   | 'quickRestart'
@@ -20,6 +21,7 @@ export type ActionBindKey =
   | 'mobaStop'
   | 'mobaThrowRecall'
   | 'mobaMelee'
+  | 'mobaMeleeFacing'
   | 'mobaDash'
   | 'mobaQuickRestart'
   | 'mobaToggleHideUi';
@@ -204,6 +206,7 @@ export const ACTION_META: ActionMeta[] = [
   { key: 'moveRight', label: '向右移动', group: '移动', scheme: 'standard' },
   { key: 'throwRecall', label: '扔镖 / 长按召回', group: '战斗', scheme: 'standard' },
   { key: 'melee', label: '挥砍 / 空手踢人', group: '战斗', scheme: 'standard' },
+  { key: 'meleeFacing', label: '向角色朝向挥砍', group: '战斗', scheme: 'standard' },
   { key: 'dash', label: '冲刺', group: '战斗', scheme: 'standard' },
   { key: 'dashToMouse', label: '向鼠标方向冲刺', group: '战斗', scheme: 'standard' },
   { key: 'quickRestart', label: '重开 / 重新匹配', group: '快捷', scheme: 'standard' },
@@ -212,6 +215,7 @@ export const ACTION_META: ActionMeta[] = [
   { key: 'mobaStop', label: '停止移动', group: '移动', scheme: 'moba' },
   { key: 'mobaThrowRecall', label: '向鼠标扔镖 / 长按召回', group: '战斗', scheme: 'moba' },
   { key: 'mobaMelee', label: '挥砍 / 空手踢人', group: '战斗', scheme: 'moba' },
+  { key: 'mobaMeleeFacing', label: '向角色朝向挥砍', group: '战斗', scheme: 'moba' },
   { key: 'mobaDash', label: '向鼠标方向冲刺', group: '战斗', scheme: 'moba' },
   { key: 'mobaQuickRestart', label: '重开 / 重新匹配', group: '快捷', scheme: 'moba' },
   { key: 'mobaToggleHideUi', label: '隐藏 / 显示界面', group: '快捷', scheme: 'moba', allowCombo: true },
@@ -343,6 +347,7 @@ export function cloneDefaultKeybindings(): KeyBindings {
     moveRight: ['KeyD', 'ArrowRight'],
     throwRecall: ['Mouse0', null],
     melee: ['Mouse2', null],
+    meleeFacing: [null, null],
     dash: ['ShiftLeft', 'Space'],
     dashToMouse: [null, null],
     quickRestart: ['KeyR', null],
@@ -351,6 +356,7 @@ export function cloneDefaultKeybindings(): KeyBindings {
     mobaStop: ['KeyS', null],
     mobaThrowRecall: ['KeyQ', null],
     mobaMelee: ['KeyW', null],
+    mobaMeleeFacing: [null, null],
     mobaDash: ['KeyE', null],
     mobaQuickRestart: ['KeyR', null],
     mobaToggleHideUi: ['Shift+KeyF', null],

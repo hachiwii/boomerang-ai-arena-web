@@ -32,6 +32,8 @@ type DesktopPressKind = 'throw' | 'melee' | 'dash' | 'dashToMouse';
 
 interface DesktopPress {
   kind: DesktopPressKind;
+  /** Melee toward the character's facing when the action is made, not toward the mouse (向角色朝向挥砍) */
+  facing?: boolean;
   at: number;
   hasTarget: boolean;
   targetX: number;
@@ -288,6 +290,11 @@ export class HumanInputController {
         if (!repeat) this.recordDesktopPress('melee');
         used = true;
       }
+      if (isBoundToAction(kb, 'mobaMeleeFacing', code)) {
+        this.pressedCodes.add(code);
+        if (!repeat) this.recordDesktopPress('melee', true);
+        used = true;
+      }
       if (isBoundToAction(kb, 'mobaDash', code)) {
         this.pressedCodes.add(code);
         if (!repeat) this.recordDesktopPress('dashToMouse');
@@ -306,11 +313,12 @@ export class HumanInputController {
     }
   }
 
-  private recordDesktopPress(kind: DesktopPressKind) {
+  private recordDesktopPress(kind: DesktopPressKind, facing = false) {
     this.refreshAimFromPointer();
     const [moveX, moveY] = this.isMobaScheme() ? [0, 0] : this.getMoveVector();
     this.pendingPresses.push({
       kind,
+      facing,
       at: performance.now(),
       hasTarget: this.hasMouse,
       targetX: this.aimWorldMmX,
@@ -389,6 +397,7 @@ export class HumanInputController {
         (isBoundToAction(kb, 'dash', code) ||
           isBoundToAction(kb, 'dashToMouse', code) ||
           isBoundToAction(kb, 'melee', code) ||
+          isBoundToAction(kb, 'meleeFacing', code) ||
           isBoundToAction(kb, 'throwRecall', code))
       ) {
         e.preventDefault();
@@ -408,6 +417,11 @@ export class HumanInputController {
         if (isBoundToAction(kb, 'melee', code)) {
           if (code === 'Space') e.preventDefault();
           if (!e.repeat) this.recordDesktopPress('melee');
+          this.pressedCodes.add(code);
+        }
+        if (isBoundToAction(kb, 'meleeFacing', code)) {
+          if (code === 'Space') e.preventDefault();
+          if (!e.repeat) this.recordDesktopPress('melee', true);
           this.pressedCodes.add(code);
         }
         if (isBoundToAction(kb, 'throwRecall', code)) {
@@ -482,6 +496,11 @@ export class HumanInputController {
         this.pressedCodes.add(code);
         this.recordDesktopPress('melee');
       }
+      if (isBoundToAction(kb, 'meleeFacing', code)) {
+        e.preventDefault();
+        this.pressedCodes.add(code);
+        this.recordDesktopPress('melee', true);
+      }
       if (isBoundToAction(kb, 'dash', code)) {
         e.preventDefault();
         this.pressedCodes.add(code);
@@ -524,6 +543,11 @@ export class HumanInputController {
         return [Math.round((dx / len) * 1000), Math.round((dy / len) * 1000)];
       }
     }
+    return this.getFacingVector(face);
+  }
+
+  /** The character's facing (`face`, 0.01°) as a unit action vector (×1000). */
+  private getFacingVector(face: number): [number, number] {
     const rad = (face / 100) * (Math.PI / 180);
     return [Math.round(Math.cos(rad) * 1000), Math.round(Math.sin(rad) * 1000)];
   }
@@ -558,7 +582,7 @@ export class HumanInputController {
 
     if (press.kind === 'melee') {
       if (!canStartNew && !canDashMelee) return null;
-      let [ax, ay] = this.getAimVectorForPress(press, me.x, me.y, me.face);
+      let [ax, ay] = press.facing ? this.getFacingVector(me.face) : this.getAimVectorForPress(press, me.x, me.y, me.face);
       if (this.meleeAssistEnabled() && this.mapData) {
         [ax, ay] = applyMeleeAssist(this.mapData, state, seat, ax, ay);
       }
