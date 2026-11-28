@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Community bots: built into the game like the official ones, but category "community" (fixed ELO shown, never ranked).
+"""Community bots: built into the game like the official ones, but category "community" (never ranked).
 
 For each entry below this script
   - copies the bot's character model into public/assets/chars/<charKey>.json (with the bot's colour and label),
@@ -9,10 +9,12 @@ For each entry below this script
 The bot's C++ source lives in wasm/bots/<id>.cpp and is compiled by scripts/build_wasm.py like the others.
 
 Ratings are on the contest scale (13 official bots average 0; the in-game ELO is rating x 2 + 1000, as for the
-official bots). Run on its own, or let scripts/export_assets.py call it after writing roster.json.
+official bots). Unrated bots keep null ratings. Run on its own, or let scripts/export_assets.py call it after
+writing roster.json.
 """
 import json
 from pathlib import Path
+from typing import Optional
 
 ROOT = Path(__file__).resolve().parent.parent
 OUT_CHARS = ROOT / "public" / "assets" / "chars"
@@ -33,13 +35,27 @@ COMMUNITY_BOTS = [
         "duel_rating": 446.53,
         "ffa_rating": 302.62,
     },
+    {
+        # RLHF with Kalman-assisted trajectory correction. Ratings are pending
+        # evaluation on the contest scale; do not reuse another bot's scores.
+        "id": "astra-rlhf-kf",
+        "seat": "astra_rlhf_kf",
+        "charKey": "kf_lena",
+        "name": "RLHF-KF",
+        "shortName": "RLHF-KF",
+        "model": ROOT / "custom-bots" / "kf-lena.json",
+        "color": "#383845",
+        "rating": None,
+        "duel_rating": None,
+        "ffa_rating": None,
+    },
 ]
 
 ALT_FACES = {"face_tight", "face_happy"}
 
 
-def elo(r: float) -> int:
-    return int(round(r * 2.0 + 1000.0))
+def elo(r: Optional[float]) -> Optional[int]:
+    return None if r is None else int(round(r * 2.0 + 1000.0))
 
 
 def model_avatar_svg(parts: dict) -> str:
