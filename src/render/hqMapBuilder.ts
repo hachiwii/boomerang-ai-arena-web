@@ -27,8 +27,22 @@ import {
   Vec3,
 } from './hqGeomBuilder';
 import { BridgeSpec, PaintedGroundResult, paintHighQualityGround } from './hqGroundPaint';
+import { LiquidSurface } from './hqLiquid';
 import { buildOriginalDecorIsland } from './hqOuterIsland';
-import { getHqTheme, HqThemeSpec } from './hqThemes';
+import {
+  addBasalt,
+  addDetailExtra12,
+  addFarProp12,
+  addHarborPile,
+  addLandmarkFeature12,
+  addPierEdges,
+  addRowboat,
+  buildCastles,
+  createFlagMaterial,
+  DETAIL_DENSITY_12,
+  rowboatSpots,
+} from './hqProps12';
+import { getHqTheme, HqAmbientConfig, HqThemeSpec } from './hqThemes';
 import { buildUpstreamTerrain } from './hqUpstreamTerrain';
 
 export interface ArenaMover {
@@ -71,6 +85,13 @@ export interface IArenaMap {
   ): void;
   /** Show / hide decorative background floating islands (mobile matches hide them to declutter). */
   setBackdropVisible?(visible: boolean): void;
+  /**
+   * Episode 12: height (m) of the liquid surface (lava lake, sea, pond) under a map point at game tick `gt`, or null
+   * when there's no liquid there (or it already drained with a collapse). `freezeT`: waves after it never fall.
+   */
+  liquidZAt?(xMm: number, yMm: number, gt: number, freezeT?: number): number | null;
+  /** Episode 12: kind of liquid in this arena's pits (null = pits are open to the cloud sea). */
+  readonly liquidKind?: 'lava' | 'water' | null;
   dispose(): void;
 }
 
@@ -292,6 +313,42 @@ interface AmbientBit {
   s: number;
 }
 
+// 地面绘制（paintHighQualityGround）是建图最慢的一步：团队赛的大图 300～650 ms。大厅里来回切换同一张图预览时
+// 地图数据完全相同，结果也完全相同，所以按内容缓存最近几次，切回去直接用（纹理被上一张图 dispose 过也没关系，
+// three.js 下次渲染会重新上传）。对局的地图带真实出生点和塌陷波次，键不同，照常现画。
+const GROUND_CACHE_MAX = 4;
+const groundCache = new Map<string, PaintedGroundResult>();
+
+function fnvArray(h: number, arr: ArrayLike<number>): number {
+  for (let i = 0; i < arr.length; i++) {
+    h ^= arr[i] & 0xffff;
+    h = Math.imul(h, 16777619) >>> 0;
+  }
+  return h;
+}
+
+function groundCacheKey(mapData: EngineMapData, themeName: string, seed: number): string {
+  let h = 2166136261;
+  h = fnvArray(h, mapData.cells);
+  h = fnvArray(h, mapData.waves);
+  for (const sp of mapData.spawns ?? []) h = fnvArray(h, sp);
+  return `${themeName}|${seed}|${mapData.nx}x${mapData.ny}|${mapData.cell}|${h.toString(16)}`;
+}
+
+function paintGroundCached(mapData: EngineMapData, theme: HqThemeSpec, themeName: string, seed: number): PaintedGroundResult {
+  const key = groundCacheKey(mapData, themeName, seed);
+  const hit = groundCache.get(key);
+  if (hit) {
+    groundCache.delete(key);
+    groundCache.set(key, hit); // LRU
+    return hit;
+  }
+  const res = paintHighQualityGround(mapData, theme, seed);
+  groundCache.set(key, res);
+  while (groundCache.size > GROUND_CACHE_MAX) groundCache.delete(groundCache.keys().next().value as string);
+  return res;
+}
+
 function hashSeed(str: string): number {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < str.length; i++) {
@@ -439,6 +496,13 @@ export class HqArenaMap3D implements IArenaMap {
   private waterfallGroup: THREE.Group | null = null;
   private waterfallStreaks: THREE.Mesh[] = [];
   private waterfallMist: THREE.Mesh[] = [];
+  // Episode 12: liquid surfaces in pits, waving castle flags, second ambient set (rising embers + falling ash)
+  private liquid: LiquidSurface | null = null;
+  public readonly liquidKind: 'lava' | 'water' | null = null;
+  private flagMat: (THREE.MeshLambertMaterial & { userData: { uGt: { value: number } } }) | null = null;
+  private ambientRise = false;
+  private ambientExtraMesh: THREE.InstancedMesh | null = null;
+  private ambientExtraData: AmbientBit[] = [];
 
   private readonly _dummy = new THREE.Object3D();
   private readonly _dirScratch = new THREE.Vector3();
@@ -446,6 +510,12 @@ export class HqArenaMap3D implements IArenaMap {
   private readonly _black = new THREE.Color(0x000000);
   private readonly waveMaxDist = new Map<number, number>();
   private lastShadowBakeGt = -9999;
+
+  /** 预先画好一张图的地面（进缓存），之后建这张图时直接用；大厅空闲时调用。 */
+  public static prewarmGround(mapData: EngineMapData, themeName: string) {
+    const seed = hashSeed(`${mapData.name}_${themeName}_hq`);
+    paintGroundCached(mapData, getHqTheme(themeName), themeName, seed + 13);
+  }
 
   constructor(mapData: EngineMapData, themeName: string, edgeBeautify = true) {
     this.mapData = mapData;
@@ -460,11 +530,17 @@ export class HqArenaMap3D implements IArenaMap {
     const rng = new SeededRng(seed);
 
     // 1. Crisp 2K procedural painted ground texture + aux masks + bridges
-    this.groundResult = paintHighQualityGround(mapData, this.hqTheme, seed + 13);
+    this.groundResult = paintGroundCached(mapData, this.hqTheme, themeName, seed + 13);
 
     // Create shared material palette (7 opaque + 2 warning materials total for the whole arena!)
     // When edgeBeautify is active, cliff meshes carry explicit per-vertex smooth/faceted normals.
     this.sharedTopMat = new THREE.MeshLambertMaterial({ map: this.groundResult.texture });
+    if (this.groundResult.glowTexture) {
+      // Episode 12 caldera: cracks and the lava bank glow (only the ground top; cliffs use their own material)
+      this.sharedTopMat.emissiveMap = this.groundResult.glowTexture;
+      this.sharedTopMat.emissive.set('#FF5A1E');
+      this.sharedTopMat.emissiveIntensity = 1.1;
+    }
     this.sharedCliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: !edgeBeautify });
     this.warnTopMat = new THREE.MeshLambertMaterial({ map: this.groundResult.texture });
     this.warnCliffMat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: !edgeBeautify });
@@ -487,6 +563,18 @@ export class HqArenaMap3D implements IArenaMap {
       this.buildUpstreamTerrainWavesAndChunks(rng, seed);
     } else {
       this.buildTerrainWavesAndChunks(rng);
+    }
+
+    // 2b. Episode 12: liquid surfaces (lava lake / sea / ponds) inside enclosed pits — 2 draw calls, drained on the GPU
+    if (this.hqTheme.liquid) {
+      const lq = new LiquidSurface(mapData, this.hqTheme.liquid);
+      if (lq.root.children.length > 0) {
+        this.liquid = lq;
+        this.liquidKind = this.hqTheme.liquid.kind;
+        this.root.add(lq.root);
+      } else {
+        lq.dispose();
+      }
     }
 
     // 3. Build detailed themed obstacles (each individually occludable with lazy material clone!)
@@ -1050,9 +1138,9 @@ export class HqArenaMap3D implements IArenaMap {
     const R = this.hqTheme.rock;
     const used = new Set<string>();
 
-    const commitObstacle = (mb: HqMeshBuilder, worldX: number, worldZ: number) => {
+    const commitObstacle = (mb: HqMeshBuilder, worldX: number, worldZ: number, onChunk?: CollapseChunk) => {
       if (!mb.hasAny()) return;
-      const chunk = this.getChunkForWorld(worldX, worldZ);
+      const chunk = onChunk ?? this.getChunkForWorld(worldX, worldZ);
       const { meshes } = mb.buildMeshes({
         castShadow: true,
         receiveShadow: true,
@@ -1245,6 +1333,39 @@ export class HqArenaMap3D implements IArenaMap {
         }
         for (const [x, y] of comp) used.add(`${x},${y}`);
       }
+    } else if (R.kind === 'castle') {
+      // Episode 12 keeps: whole castles cell by cell on their collapse chunks, plaza planters / low walls per rect
+      const chunkBuilders = new Map<CollapseChunk, HqMeshBuilder>();
+      const builderFor = (x: number, y: number) => {
+        const ch = this.getChunkForCell(x, y);
+        let b = chunkBuilders.get(ch);
+        if (!b) chunkBuilders.set(ch, (b = new HqMeshBuilder()));
+        return b;
+      };
+      const built = buildCastles(
+        this.mapData,
+        rng,
+        P,
+        builderFor,
+        (mb, x0, y0, w, h) => commitObstacle(mb, (x0 + w * 0.5) * cs, (y0 + h * 0.5) * cs),
+        (cellsList) => rectsOfCells(cellsList, this.mapData, 99),
+      );
+      for (const [ch, mb] of chunkBuilders) commitObstacle(mb, ch.cx, ch.cz, ch);
+      for (const k of built.used) used.add(k);
+      if (built.flags.length) {
+        this.flagMat = createFlagMaterial();
+        for (const f of built.flags) {
+          const ch = this.getChunkForCell(f.cellX, f.cellY);
+          const mesh = new THREE.Mesh(f.geo, this.flagMat);
+          mesh.castShadow = false;
+          mesh.receiveShadow = false;
+          mesh.frustumCulled = false;
+          const localGrp = new THREE.Group();
+          localGrp.position.set(-ch.cx, 0, -ch.cz);
+          localGrp.add(mesh);
+          ch.propMount.add(localGrp);
+        }
+      }
     }
 
     const remCells: [number, number][] = [];
@@ -1269,7 +1390,11 @@ export class HqArenaMap3D implements IArenaMap {
       const hk = R.h;
       const mb = new HqMeshBuilder();
 
-      if (R.kind === 'hoodoo') {
+      if (R.kind === 'basalt') {
+        addBasalt(mb, X0, Y0, Wd, Hd, hk, rng, P);
+      } else if (R.kind === 'harbor') {
+        addHarborPile(mb, X0, Y0, Wd, Hd, rng);
+      } else if (R.kind === 'hoodoo') {
         const bands = R.bands ?? ['#FFE2A8', '#F2B470', '#E0905A', '#FBD08C'];
         if (Sh >= 1.9) {
           addMesa(mb, cx, cy, Wd * 0.5 - 0.04, Hd * 0.5 - 0.04, 1.3 * hk, rng, bands);
@@ -1651,6 +1776,32 @@ export class HqArenaMap3D implements IArenaMap {
       }
     }
 
+    // Episode 12 harbor: pier edge beams & piles along the sea (on the ground's collapse chunks) + moored rowboats
+    if (this.hqTheme.field.includes('piers') && this.liquid && this.groundResult.deckCells) {
+      const zLiq = this.liquid.spec.z;
+      const chunkBuilders = new Map<CollapseChunk, HqMeshBuilder>();
+      addPierEdges(this.mapData, this.groundResult.deckCells, this.liquid.cells, zLiq, (x, y) => {
+        const ch = this.getChunkForCell(x, y);
+        let b = chunkBuilders.get(ch);
+        if (!b) chunkBuilders.set(ch, (b = new HqMeshBuilder()));
+        return b;
+      });
+      for (const [chunk, b] of chunkBuilders) {
+        if (!b.hasAny()) continue;
+        const { meshes } = b.buildMeshes({ castShadow: false, receiveShadow: true, sharedMats: this.sharedBucketMats });
+        const localGrp = new THREE.Group();
+        localGrp.position.set(-chunk.cx, 0, -chunk.cz);
+        for (const m of meshes) localGrp.add(m);
+        chunk.propMount.add(localGrp);
+      }
+      const boats = new HqMeshBuilder();
+      for (const sp of rowboatSpots(this.mapData, this.liquid.cells)) addRowboat(boats, sp.x, sp.y, zLiq, sp.rot);
+      if (boats.hasAny()) {
+        const { meshes } = boats.buildMeshes({ castShadow: false, receiveShadow: true, sharedMats: this.sharedBucketMats });
+        for (const m of meshes) this.root.add(m);
+      }
+    }
+
     const gDark = hexLin(P.tuft_dark);
     const gLight = hexLin(P.tuft_light);
     const flMain = P.flower_main.map((h) => hexLin(h));
@@ -1708,14 +1859,15 @@ export class HqArenaMap3D implements IArenaMap {
         }
       } else {
         const densMap: Record<string, number> = { cactus: 0.06, dryshrub: 0.14, mushroom: 0.16, fern: 0.16, heather: 0.14 };
-        const nTries = Math.round(area * (densMap[ex] ?? 0.1) * 3);
+        const nTries = Math.round(area * (densMap[ex] ?? DETAIL_DENSITY_12[ex] ?? 0.1) * 3);
         for (let t = 0; t < nTries; t++) {
           const mx = rng.uniform(0, this.widthM);
           const my = rng.uniform(0, this.heightM);
           if (!okFloor(mx, my, 0.22) || sampleAux(dirt, mx, my) > 0.15) continue;
           if (rng.next() > 0.15 + 0.85 * sampleAux(quiet, mx, my)) continue;
           if (rng.next() < 0.65) continue;
-          addDetailExtra(getWaveB(waveOfWorld(mx, my)), ex, mx, -my, rng);
+          const db = getWaveB(waveOfWorld(mx, my));
+          if (!addDetailExtra12(db, ex, mx, -my, rng)) addDetailExtra(db, ex, mx, -my, rng);
         }
       }
     }
@@ -1940,7 +2092,9 @@ export class HqArenaMap3D implements IArenaMap {
             }
           }
           const fp = topPts[bestIdx];
-          addLandmarkFeature(mb, fname, fp.wx, fp.wy, sl.z + 0.01, rng, P);
+          if (!addLandmarkFeature12(mb, fname, fp.wx, fp.wy, sl.z + 0.01, rng, Wm * 0.5)) {
+            addLandmarkFeature(mb, fname, fp.wx, fp.wy, sl.z + 0.01, rng, P);
+          }
           placed.push(
             [fp.wx, fp.wy],
             [fp.wx + 1.2, fp.wy],
@@ -1975,7 +2129,7 @@ export class HqArenaMap3D implements IArenaMap {
             addFarBush(mb, p.wx, p.wy, sl.z, sc * 1.4, rng, P.bush_pal);
           } else if (tk === null || tk === 'round') {
             addFarRoundTree(mb, p.wx, p.wy, sl.z, sc, rng, pickTreePal(), P.trunk);
-          } else {
+          } else if (!addFarProp12(mb, tk, p.wx, p.wy, sl.z, sc, rng)) {
             addFarProp(mb, tk, p.wx, p.wy, sl.z, sc, rng, P, pickTreePal());
           }
         }
@@ -2055,16 +2209,25 @@ export class HqArenaMap3D implements IArenaMap {
         posAttr.setZ(i, Math.sin(Math.min(1, t * 2.2) * Math.PI * 0.5) * 0.55);
       }
       ribGeo.computeVertexNormals();
+      const lava = D.waterfall === 'lava';
       const rib = new THREE.Mesh(
         ribGeo,
-        new THREE.MeshBasicMaterial({ color: '#7CE0FA', transparent: true, opacity: 0.76, side: THREE.DoubleSide, depthWrite: false }),
+        lava
+          ? new THREE.MeshBasicMaterial({ color: '#FF6A1A', transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false })
+          : new THREE.MeshBasicMaterial({ color: '#7CE0FA', transparent: true, opacity: 0.76, side: THREE.DoubleSide, depthWrite: false }),
       );
       rib.position.set(wfX, topY - drop * 0.5, wfZ);
       rib.rotation.y = Math.PI * 0.5;
       wf.add(rib);
 
       const streakGeo = new THREE.PlaneGeometry(0.14, 1.35);
-      const streakMat = new THREE.MeshBasicMaterial({ color: '#EFFBFF', transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false });
+      const streakMat = new THREE.MeshBasicMaterial({
+        color: lava ? '#FFC24A' : '#EFFBFF',
+        transparent: true,
+        opacity: 0.85,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      });
       for (let i = 0; i < 6; i++) {
         const sm = new THREE.Mesh(streakGeo, streakMat);
         sm.rotation.y = Math.PI * 0.5;
@@ -2075,7 +2238,7 @@ export class HqArenaMap3D implements IArenaMap {
 
       const mistGeo = new THREE.IcosahedronGeometry(0.32, 0);
       const mistMat = new THREE.MeshBasicMaterial({ color: '#F4FDFF', transparent: true, opacity: 0.72, depthWrite: false });
-      for (let i = 0; i < 4; i++) {
+      for (let i = 0; i < (lava ? 0 : 4); i++) {
         const isTop = i < 2;
         const mm = new THREE.Mesh(mistGeo, mistMat);
         mm.position.set(wfX + (isTop ? 0.25 : 0.65) + (i % 2 - 0.5) * 0.18, isTop ? topY - 0.1 : topY - drop + 0.6, wfZ + ((i % 2) - 0.5) * 0.26);
@@ -2083,6 +2246,10 @@ export class HqArenaMap3D implements IArenaMap {
         mm.userData = { baseY: mm.position.y, phase: i * 1.5, baseScale: mm.scale.x };
         wf.add(mm);
         this.waterfallMist.push(mm);
+      }
+      if (lava) {
+        mistGeo.dispose();
+        mistMat.dispose();
       }
 
       this.waterfallGroup = wf;
@@ -2144,13 +2311,66 @@ export class HqArenaMap3D implements IArenaMap {
   private buildAmbientParticles(rng: SeededRng) {
     const amb = this.hqTheme.ambient;
     if (!amb || amb.cols.length === 0) return;
+    if (amb.rise) {
+      // Episode 12 caldera: glowing embers rising (70 % born over the lava lake) + a second set of falling ash
+      this.buildRisingEmbers(rng, amb);
+      if (amb.extra) {
+        const extra = this.buildFallingSet(rng, amb.extra);
+        this.ambientExtraMesh = extra.mesh;
+        this.ambientExtraData = extra.data;
+        this.root.add(extra.mesh);
+      }
+      return;
+    }
+    const set = this.buildFallingSet(rng, amb);
+    this.ambientMesh = set.mesh;
+    this.ambientData = set.data;
+    this.root.add(this.ambientMesh);
+  }
+
+  private buildRisingEmbers(rng: SeededRng, amb: HqAmbientConfig) {
+    const count = Math.max(12, Math.min(72, Math.round((amb.n * (this.widthM * this.heightM)) / 216)));
+    const s0 = amb.size * 2.2;
+    const geo = new THREE.PlaneGeometry(s0, s0 * 0.65);
+    const mat = new THREE.MeshBasicMaterial({ color: '#ffffff', side: THREE.DoubleSide, transparent: true, opacity: 0.95, toneMapped: !amb.glow });
+    this.ambientMesh = new THREE.InstancedMesh(geo, mat, count);
+    this.ambientRise = true;
+    const cs = this.mapData.cell / 1000;
+    const lc: number[] = [];
+    if (this.liquid) for (let i = 0; i < this.liquid.cells.length; i++) if (this.liquid.cells[i]) lc.push(i);
+    for (let i = 0; i < count; i++) {
+      let x = rng.uniform(-3, this.widthM + 2);
+      let z = rng.uniform(-3, this.heightM + 2);
+      if (lc.length && rng.next() < 0.7) {
+        const c = lc[rng.int(0, lc.length)];
+        x = ((c % this.mapData.nx) + rng.uniform(0, 1)) * cs;
+        z = (Math.floor(c / this.mapData.nx) + rng.uniform(0, 1)) * cs;
+      }
+      this.ambientData.push({
+        x,
+        y: 0,
+        z,
+        vx: rng.uniform(80, 150) / amb.speed, // period in game steps
+        vy: 0,
+        vz: 0,
+        phase: rng.uniform(0, 1),
+        s: rng.uniform(0.6, 1.0) * 1.6,
+      });
+      this.ambientMesh.setColorAt(i, new THREE.Color(amb.cols[rng.int(0, amb.cols.length)]));
+    }
+    if (this.ambientMesh.instanceColor) this.ambientMesh.instanceColor.needsUpdate = true;
+    this.root.add(this.ambientMesh);
+  }
+
+  private buildFallingSet(rng: SeededRng, amb: HqAmbientConfig): { mesh: THREE.InstancedMesh; data: AmbientBit[] } {
     const count = Math.max(12, Math.min(64, Math.round((amb.n * (this.widthM * this.heightM)) / 216)));
     const s0 = amb.size * 2.2;
     const geo = new THREE.PlaneGeometry(s0, s0 * 0.65);
     const mat = new THREE.MeshBasicMaterial({ color: '#ffffff', side: THREE.DoubleSide, transparent: true, opacity: 0.84 });
-    this.ambientMesh = new THREE.InstancedMesh(geo, mat, count);
+    const mesh = new THREE.InstancedMesh(geo, mat, count);
+    const data: AmbientBit[] = [];
     for (let i = 0; i < count; i++) {
-      this.ambientData.push({
+      data.push({
         x: rng.uniform(-3, this.widthM + 3),
         y: rng.uniform(0.5, 6.2),
         z: rng.uniform(-3, this.heightM + 3),
@@ -2160,10 +2380,48 @@ export class HqArenaMap3D implements IArenaMap {
         phase: rng.uniform(0, Math.PI * 2),
         s: rng.uniform(0.68, 1.12),
       });
-      this.ambientMesh.setColorAt(i, new THREE.Color(amb.cols[i % amb.cols.length]));
+      mesh.setColorAt(i, new THREE.Color(amb.cols[i % amb.cols.length]));
     }
-    if (this.ambientMesh.instanceColor) this.ambientMesh.instanceColor.needsUpdate = true;
-    this.root.add(this.ambientMesh);
+    if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+    return { mesh, data };
+  }
+
+  private updateFallingSet(mesh: THREE.InstancedMesh, data: AmbientBit[], elapsedSec: number) {
+    const spanW = this.widthM + 6;
+    const spanH = this.heightM + 6;
+    for (let i = 0; i < data.length; i++) {
+      const p = data[i];
+      const y = (((p.y + elapsedSec * p.vy) % 6.2) + 6.2) % 6.2 + 0.25;
+      const x = (((p.x + elapsedSec * p.vx + Math.sin(elapsedSec * 1.7 + p.phase) * 0.45 + 3) % spanW) + spanW) % spanW - 3;
+      const z = (((p.z + elapsedSec * p.vz + 3) % spanH) + spanH) % spanH - 3;
+      this._dummy.position.set(x, y, z);
+      this._dummy.rotation.set(elapsedSec * 2.1 + p.phase, elapsedSec * 1.5, p.phase);
+      this._dummy.scale.setScalar(p.s);
+      this._dummy.updateMatrix();
+      mesh.setMatrixAt(i, this._dummy.matrix);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** `env.Fall.update` with rise=True: embers float up from the lava (3.4 * u - 0.45 m), fading in and out. */
+  private updateRisingEmbers(elapsedSec: number) {
+    if (!this.ambientMesh) return;
+    const gt = elapsedSec * 20;
+    for (let i = 0; i < this.ambientData.length; i++) {
+      const p = this.ambientData[i];
+      const u = (((gt / p.vx + p.phase) % 1) + 1) % 1;
+      const rot = p.phase * 6.28;
+      const y = 3.4 * u - 0.45;
+      const x = p.x + 1.1 * u + 0.32 * Math.sin(gt * 0.11 + rot * 3);
+      const z = p.z - 0.25 * Math.cos(gt * 0.09 + rot * 2);
+      const sc = p.s * Math.max(0, Math.min(1, Math.min(u / 0.06, (1 - u) / 0.08)));
+      this._dummy.position.set(x, y, z);
+      this._dummy.rotation.set(gt * 0.16 + rot * 1.7, rot + gt * 0.19, 0);
+      this._dummy.scale.setScalar(Math.max(0.001, sc));
+      this._dummy.updateMatrix();
+      this.ambientMesh.setMatrixAt(i, this._dummy.matrix);
+    }
+    this.ambientMesh.instanceMatrix.needsUpdate = true;
   }
 
   public update(gt: number, elapsedSec: number, opts?: ArenaMapUpdateOpts): boolean {
@@ -2458,28 +2716,24 @@ export class HqArenaMap3D implements IArenaMap {
       this.cloudMesh.instanceMatrix.needsUpdate = true;
     }
 
-    // 5. Ambient floating petals / snow / autumn leaves
+    // 5. Ambient floating petals / snow / autumn leaves (episode 12 caldera: rising embers + falling ash)
     if (this.ambientMesh) {
       if (opts?.hideAmbient) {
         this.ambientMesh.visible = false;
       } else {
         this.ambientMesh.visible = true;
-        const spanW = this.widthM + 6;
-        const spanH = this.heightM + 6;
-        for (let i = 0; i < this.ambientData.length; i++) {
-          const p = this.ambientData[i];
-          const y = (((p.y + elapsedSec * p.vy) % 6.2) + 6.2) % 6.2 + 0.25;
-          const x = (((p.x + elapsedSec * p.vx + Math.sin(elapsedSec * 1.7 + p.phase) * 0.45 + 3) % spanW) + spanW) % spanW - 3;
-          const z = (((p.z + elapsedSec * p.vz + 3) % spanH) + spanH) % spanH - 3;
-          this._dummy.position.set(x, y, z);
-          this._dummy.rotation.set(elapsedSec * 2.1 + p.phase, elapsedSec * 1.5, p.phase);
-          this._dummy.scale.setScalar(p.s);
-          this._dummy.updateMatrix();
-          this.ambientMesh.setMatrixAt(i, this._dummy.matrix);
-        }
-        this.ambientMesh.instanceMatrix.needsUpdate = true;
+        if (this.ambientRise) this.updateRisingEmbers(elapsedSec);
+        else this.updateFallingSet(this.ambientMesh, this.ambientData, elapsedSec);
       }
     }
+    if (this.ambientExtraMesh) {
+      this.ambientExtraMesh.visible = !opts?.hideAmbient;
+      if (!opts?.hideAmbient) this.updateFallingSet(this.ambientExtraMesh, this.ambientExtraData, elapsedSec);
+    }
+
+    // 6. Episode 12: liquid drain / animation and waving castle flags (both on the GPU)
+    if (this.liquid) this.liquid.update(gt, elapsedSec, freezeT);
+    if (this.flagMat) this.flagMat.userData.uGt.value = elapsedSec * 20;
     return shadowDirty;
   }
 
@@ -2496,9 +2750,15 @@ export class HqArenaMap3D implements IArenaMap {
     for (const g of this.backdropGroups) g.visible = visible;
   }
 
+  public liquidZAt(xMm: number, yMm: number, gt: number, freezeT?: number): number | null {
+    return this.liquid ? this.liquid.zAt(xMm, yMm, gt, freezeT) : null;
+  }
+
   public dispose() {
     disposeOccluderEntries(this.occluders);
     this.groundResult.texture.dispose();
+    this.groundResult.glowTexture?.dispose();
+    this.liquid?.dispose();
     const geos = new Set<THREE.BufferGeometry>();
     const mats = new Set<THREE.Material>([
       this.sharedTopMat,

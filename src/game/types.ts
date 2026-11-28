@@ -61,7 +61,7 @@ export interface MapMeta {
 }
 
 export type RankedMode = 'solo' | 'ffa';
-export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'cricket' | 'custom' | 'training' | 'pvp';
+export type MatchMode = 'ranked-solo' | 'ranked-ffa' | 'cricket' | 'custom' | 'training' | 'pvp' | 'team';
 
 export function isRankedMatchMode(mode: MatchMode): boolean {
   return mode === 'ranked-solo' || mode === 'ranked-ffa';
@@ -96,6 +96,10 @@ export interface SlotConfig {
   avatar: string | null;
   copyNumber?: number; // 1, 2, 3... when same AI has duplicates
   remote?: boolean; // PvP: the opponent (a human on the other client); "you" styling and audio focus skip it
+  /** 5v5 团队赛：0 左队（蓝）/ 1 右队（红） */
+  side?: 0 | 1;
+  /** 5v5 团队赛：这个 bot 原本属于哪个原版队（Astra 蓝 / Fable 红），玩家没有 */
+  origTeam?: 'astra' | 'fable';
 }
 
 export interface MatchConfig {
@@ -113,6 +117,13 @@ export interface MatchConfig {
   humanSlashTicks?: number; // 3 (normal: melee 2f / block 3f) | 2 (strict: melee AI / block 2f) | 0 (AI exact)
   // Online 1v1 only (matchMode 'pvp'): both slots are kind 'human'; mySeat is the local player
   pvp?: { matchId: string; mySeat: 0 | 1 };
+  /** 5v5 团队赛（matchMode 'team'）：10 个座位的阵容、战术、布阵；slots 按座位 0～9（左队 0～4、右队 5～9） */
+  team?: import('./teamMatch').TeamMatchSetup;
+  /**
+   * 5v5 联机房间：房主（role host）跑引擎和 bot，按 seats 把别人的操作填进对应座位并把每步动作发出去；
+   * 其他人（role guest）按房主发来的动作重放。mySeat 是自己的座位（观战为 -1）。
+   */
+  teamRoom?: { matchId: string; role: 'host' | 'guest'; mySeat: number; seats: (number | null)[] };
 }
 
 /**
@@ -150,6 +161,23 @@ export interface EngineMapData {
   spawns: [number, number][];
   /** Optional cell indices (y * nx + x) of WALL cells drawn as trees instead of the theme's rocks (training ground). */
   treeCells?: number[];
+  // —— 5v5 团队赛（engine_init_team）才有；单挑 / 混战没有这些字段
+  /** 3 歼灭 / 4 占点 / 5 刺王 */
+  mode?: 3 | 4 | 5;
+  respawn?: number; // 占点：出局后几步复活
+  capture?: number; // 占点：站满几步翻点
+  kingLives?: number;
+  kingInv?: number;
+  /** 刺王：左队、右队国王的座位（其他模式 [-1, -1]） */
+  kings?: [number, number];
+  /** 每个座位的引擎短名（astra / sol2 / player …） */
+  names?: string[];
+  /** 每个座位的布阵点（毫米，场地坐标；占点里就是复活点） */
+  bases?: [number, number][];
+  /** 占点：三个点（场上固定名 A/B/C，毫米） */
+  points?: { name: string; x: number; y: number; r: number }[];
+  /** 左队布阵区（毫米 [x0, y0, x1, y1]）；右队是它绕地图中心转 180 度 */
+  deploy?: [number, number, number, number][];
 }
 
 export interface PlayerSnapshot {
@@ -178,6 +206,12 @@ export interface PlayerSnapshot {
   dashing: number;
   kickedBy: number;
   rank: number;
+  // —— 5v5 团队赛才有
+  team?: number; // 0 左队 / 1 右队
+  lives?: number; // 刺王：国王剩几条命（其他人 0）
+  inv?: number; // 刺王：国王无敌还剩几步
+  revivals?: number; // 占点：复活过几次（出局的人 timer = 还有几步复活）
+  kTeam?: number; // 误杀队友次数（kills 里也算了，敌方击杀 = kills - kTeam）
 }
 
 export interface DartSnapshot {
@@ -211,6 +245,11 @@ export interface TickSnapshot {
   darts: DartSnapshot[];
   events: GameEvent[];
   timestampMs: number;
+  // —— 5v5 占点才有意义（其他团队模式也会给，值为 -1 / 0）
+  owner?: [number, number, number]; // 每个点归哪队（-1 中立）
+  taking?: [number, number, number]; // 正在被哪队翻（-1 没有）
+  prog?: [number, number, number]; // 已经连续站了几步（满 capture 步翻点）
+  score?: [number, number]; // 两队积分（单位：步；20 个合 1 分）
 }
 
 export interface HumanAction {

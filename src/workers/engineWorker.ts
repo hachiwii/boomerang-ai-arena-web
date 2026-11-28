@@ -10,6 +10,9 @@ let engineInitWithSpawnSeed:
   | ((mapText: string, nPlayers: number, seed: number, spawnSeed: number) => number)
   | null = null;
 let engineInitTraining: ((mapText: string) => number) | null = null;
+let engineInitTeam: ((mapText: string, mode: number, seed: number, formText: string) => number) | null = null;
+/** 5v5：每一步都给所有 bot 座位发观察（占点里出局的人还在想，复活倒计时就在自己的观察里） */
+let obsForDeadBots = false;
 let pvpSimulation: PvpSimulation | null = null;
 let engineSetHumanSeats: ((seats: number) => void) | null = null;
 let engineSave: ((slot: number) => number) | null = null;
@@ -48,6 +51,12 @@ async function ensureLoaded(origin: string, buildId?: string) {
     ss: number,
   ) => number;
   engineInitTraining = mod.cwrap('engine_init_training', 'number', ['string']) as (m: string) => number;
+  engineInitTeam = mod.cwrap('engine_init_team', 'number', ['string', 'number', 'number', 'string']) as (
+    m: string,
+    mode: number,
+    seed: number,
+    form: string,
+  ) => number;
   engineSetHumanSeats = mod.cwrap('engine_set_human_seats', null, ['number']) as (seats: number) => void;
   engineSave = mod.cwrap('engine_snapshot_save', 'number', ['number']) as (slot: number) => number;
   engineRestore = mod.cwrap('engine_snapshot_restore', 'number', ['number']) as (slot: number) => number;
@@ -70,7 +79,7 @@ self.onmessage = async (ev: MessageEvent) => {
   const msg = ev.data;
   try {
     if (msg.type === 'init') {
-      const { reqId, origin, buildId, mapText, nPlayers, seed, spawnSeed, botSeats, humanSeat, humanSeats, cliffGuard, walkGuard, meleeAssist, humanSlashTicks, training } = msg as {
+      const { reqId, origin, buildId, mapText, nPlayers, seed, spawnSeed, botSeats, humanSeat, humanSeats, cliffGuard, walkGuard, meleeAssist, humanSlashTicks, training, team } = msg as {
         reqId: number;
         origin: string;
         buildId?: string;
@@ -86,12 +95,16 @@ self.onmessage = async (ev: MessageEvent) => {
         meleeAssist?: boolean;
         humanSlashTicks?: number;
         training?: boolean;
+        team?: { mode: number; formText: string };
       };
       walkGuardEnabled = walkGuard === true;
       await ensureLoaded(origin, buildId);
       const ss = typeof spawnSeed === 'number' && spawnSeed !== 0 ? (spawnSeed >>> 0) : 0;
       // Training ground: fixed 8-seat layout with training-only rules (see engine_init_training in engine_wasm.cpp)
-      const ok = training
+      obsForDeadBots = Boolean(team);
+      const ok = team
+        ? engineInitTeam!(mapText, team.mode, seed >>> 0, team.formText)
+        : training
         ? engineInitTraining!(mapText)
         : ss !== 0
           ? engineInitWithSpawnSeed!(mapText, nPlayers, seed, ss)
@@ -155,7 +168,7 @@ self.onmessage = async (ev: MessageEvent) => {
       const obs: Record<number, string> = {};
       if (!state.over) {
         for (const seat of botSeats) {
-          if (state.players[seat]?.alive) {
+          if (obsForDeadBots || state.players[seat]?.alive) {
             obs[seat] = engineGetObs!(seat);
           }
         }

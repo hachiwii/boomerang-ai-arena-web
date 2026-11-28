@@ -74,6 +74,11 @@ export const ICON_SKIP_START = svg(
 
 export const ICON_DOWNLOAD = svg(stroke('M12 4v11') + stroke('M7.5 10.8 12 15.3l4.5-4.5') + stroke('M5 19.5h14'));
 
+/** 分享：从托盘里往上的箭头 */
+export const ICON_SHARE = svg(
+  stroke('M12 15V4.2') + stroke('M7.8 8.4 12 4.2l4.2 4.2') + stroke('M5 12.5v5.6a1.6 1.6 0 0 0 1.6 1.6h10.8a1.6 1.6 0 0 0 1.6-1.6v-5.6'),
+);
+
 export const ICON_HISTORY = svg(stroke('M4.6 12a7.4 7.4 0 1 0 2.2-5.3') + stroke('M4.4 3.8v4.6H9') + stroke('M12 8v4.4l3 1.8'));
 
 export function iconStar(filled: boolean): string {

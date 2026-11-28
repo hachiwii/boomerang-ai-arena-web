@@ -33,6 +33,8 @@ export interface BgmMatchContext {
   matchMode: MatchMode;
   bgmSeed: number;
   slots: SlotConfig[];
+  /** 5v5 团队赛的模式：3 歼灭 / 4 占点 / 5 刺王 */
+  teamMode?: number;
 }
 
 /**
@@ -54,6 +56,11 @@ export function isBossSlot(slot: SlotConfig | undefined): boolean {
     slot.kind === 'bot' &&
     (slot.botId === FABLE_BOT_ID || slot.botId === ASTRA_BOT_ID || slot.botId === ASTRA_RLHF_BOT_ID)
   );
+}
+
+/** 5v5 团队赛的两位队长（团队版 Astra / Fable） */
+export function isTeamBossSlot(slot: SlotConfig | undefined): boolean {
+  return !!slot && slot.kind === 'bot' && (slot.botId === 'team-astra' || slot.botId === 'team-fable');
 }
 
 export function isAstraSlot(slot: SlotConfig | undefined): boolean {
@@ -106,6 +113,9 @@ export function getPrefetchTracksForMatch(ctx: BgmMatchContext, bossMusicEnabled
     return ['astra_solo', 'astra_win'];
   }
   if (ctx.slots.length >= 2 && ctx.slots.some((s) => isBossSlot(s))) {
+    return ['boss'];
+  }
+  if (ctx.matchMode === 'team' && ctx.teamMode !== 4 && ctx.slots.some((s) => isTeamBossSlot(s))) {
     return ['boss'];
   }
   return [];
@@ -213,6 +223,26 @@ export class BgmRuleEngine {
           this.astraSoloStatus = 'draw';
         } else {
           this.astraSoloStatus = 'active';
+        }
+      }
+      return;
+    }
+
+    // 5v5 歼灭 / 刺王：一方只剩最后一人、而且是 Astra / Fable（团队版队长）时开始放普通 boss 曲，
+    // 之后一直放到下一局开始或回大厅（和普通 boss 曲分出胜负后一样，不再切回）。占点会复活，不算。
+    if (this.ctx.matchMode === 'team') {
+      if (this.bossDuelStatus !== 'idle' || snapshot.over) return;
+      if (this.ctx.teamMode !== 3 && this.ctx.teamMode !== 5) return;
+      for (const side of [0, 1]) {
+        const alive: number[] = [];
+        for (let k = 0; k < snapshot.players.length; k++) {
+          const s = this.ctx.slots[k]?.side ?? (k < 5 ? 0 : 1);
+          if (s === side && snapshot.players[k]?.alive === 1) alive.push(k);
+        }
+        if (alive.length === 1 && isTeamBossSlot(this.ctx.slots[alive[0]])) {
+          this.bossDuelStatus = 'challenger_won';
+          this.bossDuelBossSeat = alive[0];
+          return;
         }
       }
       return;

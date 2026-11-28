@@ -217,36 +217,20 @@ html, body, #app {
   display: none;
 }
 
-body:not(.is-mobile) .lobby-card-ranked .lobby-title-group {
+/* 所有页（排位赛、团队赛、斗蛐蛐、自定义、PvP）顶栏同一顺序：第一行标题 + 右侧平台按钮，第二行页签 + 操作按钮 */
+body:not(.is-mobile) .lobby-title-group {
   order: 1;
   margin-right: 0;
 }
 
-body:not(.is-mobile) .lobby-card-ranked .lobby-header-platform {
+body:not(.is-mobile) .lobby-header-platform {
   order: 2;
   margin-left: auto;
 }
 
-body:not(.is-mobile) .lobby-card-ranked .lobby-nav-row {
+body:not(.is-mobile) .lobby-nav-row {
   order: 3;
   flex: 1 0 100%;
-}
-
-@media (max-width: 1220px) {
-  body:not(.is-mobile) .lobby-title-group {
-    order: 1;
-    margin-right: 0;
-  }
-
-  body:not(.is-mobile) .lobby-header-platform {
-    order: 2;
-    margin-left: auto;
-  }
-
-  body:not(.is-mobile) .lobby-nav-row {
-    order: 3;
-    flex: 1 0 100%;
-  }
 }
 
 .lobby-badge {
@@ -1660,6 +1644,23 @@ body.ui-hidden .lobby-overlay {
 
 .result-restart-btn:hover {
   background: rgba(74, 196, 128, 0.3);
+}
+
+/* 团队赛结算：返回 / 重开两个按钮一样大 */
+.result-btn-row.result-btn-row-even {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+}
+
+.result-btn-row.result-btn-row-even > button {
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+  margin: 0;
+  padding: 0 12px;
+  font-size: 15px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ---------- Custom Unified Contestant Dropdown ---------- */
@@ -3395,6 +3396,68 @@ body.is-mobile .lobby-bots-btn {
   transform: translateY(-1px);
 }
 
+/* 玩家 QQ 群: PC title-row pill (click copies the number) */
+.lobby-qq-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 38px;
+  padding: 0 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.065);
+  color: #c9d6ee;
+  font-size: 13px;
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.lobby-qq-num {
+  color: #ffffff;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.2px;
+}
+
+.lobby-qq-pill:hover {
+  background: rgba(61, 126, 255, 0.2);
+  border-color: rgba(114, 170, 255, 0.5);
+  color: #e6efff;
+}
+
+.lobby-qq-pill.is-copied .lobby-qq-num {
+  color: #7ff0b0;
+}
+
+/* Mobile QQ button + dialog icon: the official logo file when present, else the fallback penguin */
+.qq-ico {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+}
+
+.qq-ico svg,
+.qq-ico img {
+  display: block;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+
+.qq-ico .qq-logo-img + svg {
+  display: none;
+}
+
+.qq-num-input {
+  font-size: 16px;
+  letter-spacing: 1px;
+  text-align: center;
+}
+
 .settings-backdrop {
   position: fixed;
   inset: 0;
@@ -4225,10 +4288,20 @@ body.is-mobile .lobby-bots-btn {
   border-radius: 10px;
   background: rgba(255, 255, 255, 0.055);
   border: 1px solid rgba(255, 255, 255, 0.1);
+  /* 6 mode tabs: keep each label on one line; when the panel is narrower than the row, scroll it sideways */
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.history-filter-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 .history-filter-btn {
   display: inline-flex;
+  flex-shrink: 0;
+  white-space: nowrap;
   align-items: center;
   gap: 6px;
   padding: 5px 11px;
@@ -10914,4 +10987,1984 @@ body.is-mobile .gs-table td {
 
 .gs-notes:empty {
   display: none;
+}
+
+/* ---------- 团队赛（5v5）大厅 ---------- */
+.lobby-card-team {
+  width: min(1240px, 96vw);
+}
+
+.team-loading {
+  padding: 40px 0;
+  text-align: center;
+  color: var(--text-dim);
+  font-weight: 700;
+}
+
+.team-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 236px;
+  gap: 18px;
+  align-items: start;
+}
+
+@media (max-width: 1040px) {
+  body:not(.is-mobile) .team-layout {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+  body:not(.is-mobile) .team-aside {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    gap: 12px;
+    align-items: start;
+  }
+  body:not(.is-mobile) .team-aside .team-maps {
+    grid-row: span 2;
+    flex-direction: row;
+  }
+  body:not(.is-mobile) .team-aside .team-start-note,
+  body:not(.is-mobile) .team-aside .team-start-btn {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 720px) {
+  body:not(.is-mobile) .team-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.team-side {
+  border-radius: 14px;
+  padding: 12px 12px 10px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--side) 13%, transparent), rgba(255, 255, 255, 0.03) 46%);
+  border: 1px solid color-mix(in srgb, var(--side) 38%, rgba(255, 255, 255, 0.08));
+  min-width: 0;
+}
+
+.team-side-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.team-name-btn,
+.team-strat-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(11, 16, 30, 0.6);
+  color: var(--text-main);
+  font-weight: 900;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.team-name-btn {
+  font-size: 15px;
+  padding: 6px 10px;
+  min-width: 0;
+  max-width: 62%;
+}
+
+.team-name-btn:hover,
+.team-strat-btn:hover,
+.team-name-btn.is-open,
+.team-strat-btn.is-open {
+  border-color: rgba(110, 168, 255, 0.6);
+  background: rgba(20, 30, 54, 0.82);
+}
+
+.team-name-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tc);
+  box-shadow: 0 0 10px var(--tc);
+  flex-shrink: 0;
+}
+
+.team-name-text {
+  color: var(--tc);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-chev {
+  color: var(--text-dim);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.team-side-tag {
+  font-size: 11px;
+  font-weight: 800;
+  color: color-mix(in srgb, var(--side) 75%, #fff);
+  white-space: nowrap;
+}
+
+.team-strat-btn {
+  margin-left: auto;
+  font-size: 12.5px;
+  padding: 5px 10px;
+  flex-shrink: 0;
+}
+
+.team-side-sub {
+  margin: 6px 2px 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.team-slot {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) 82px;
+  align-items: center;
+  gap: 7px;
+}
+
+.team-seat {
+  width: 24px;
+  height: 24px;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  font-size: 12px;
+  font-weight: 900;
+  background: color-mix(in srgb, var(--side) 30%, rgba(255, 255, 255, 0.06));
+  color: #fff;
+}
+
+.team-seat.is-king {
+  background: linear-gradient(135deg, #ffd45a, #f0a020);
+  font-size: 13px;
+}
+
+.team-pick {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  padding: 5px 9px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: rgba(11, 16, 30, 0.62);
+  color: var(--text-main);
+  cursor: pointer;
+  text-align: left;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.team-pick:hover,
+.team-pick.is-open {
+  border-color: rgba(110, 168, 255, 0.55);
+  background: rgba(20, 30, 54, 0.78);
+}
+
+.team-slot.is-human .team-pick {
+  border-color: rgba(232, 238, 252, 0.4);
+  background: rgba(30, 40, 66, 0.72);
+}
+
+.team-av {
+  width: 34px;
+  height: 34px;
+  border-radius: 9px;
+  border: 2px solid;
+  background: rgba(255, 255, 255, 0.1);
+  object-fit: contain;
+  flex-shrink: 0;
+}
+
+.team-pick-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+
+.team-pick-name {
+  font-size: 13.5px;
+  font-weight: 800;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-pick-sub {
+  font-size: 10.5px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-tac-btn {
+  height: 100%;
+  min-height: 34px;
+  border-radius: 9px;
+  border: 1px dashed rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-dim);
+  font-size: 12.5px;
+  font-weight: 800;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  padding: 0 6px;
+}
+
+.team-tac-btn:hover {
+  border-color: rgba(110, 168, 255, 0.6);
+  color: #d8e7ff;
+}
+
+.team-tac-btn.is-set {
+  border-style: solid;
+  border-color: color-mix(in srgb, var(--side) 60%, transparent);
+  background: color-mix(in srgb, var(--side) 18%, transparent);
+  color: #fff;
+}
+
+.team-tac-btn.is-empty {
+  border: none;
+  background: none;
+  cursor: default;
+}
+
+.team-aside {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.team-maps {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.team-map-tile {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  cursor: pointer;
+  text-align: left;
+  min-width: 0;
+  flex: 1;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.team-map-tile:hover {
+  border-color: rgba(110, 168, 255, 0.45);
+}
+
+.team-map-tile.active {
+  border-color: #66a3ff;
+  background: rgba(61, 126, 255, 0.14);
+  box-shadow: 0 0 0 2px rgba(61, 126, 255, 0.24);
+}
+
+.team-map-mini {
+  width: 88px;
+  height: 57px;
+  border-radius: 7px;
+  flex-shrink: 0;
+}
+
+.team-map-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.team-map-title {
+  font-size: 14px;
+  font-weight: 900;
+}
+
+.team-map-mode {
+  align-self: flex-start;
+  font-size: 11px;
+  font-weight: 800;
+  padding: 1px 7px;
+  border-radius: 999px;
+}
+
+.team-map-mode.m3 { background: rgba(255, 106, 48, 0.2); color: #ffb48a; }
+.team-map-mode.m4 { background: rgba(60, 170, 255, 0.2); color: #9fd6ff; }
+.team-map-mode.m5 { background: rgba(255, 200, 60, 0.2); color: #ffe08a; }
+
+.team-map-desc {
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.team-speed {
+  margin-top: 0;
+}
+
+.team-start-note {
+  font-size: 11.5px;
+  font-weight: 700;
+  min-height: 0;
+}
+
+.team-start-note.is-err {
+  color: #ff9c9c;
+}
+
+.team-start-btn {
+  margin-top: 0;
+}
+
+/* 下拉菜单里的小件 */
+.team-menu .team-chip {
+  background: color-mix(in srgb, var(--tc) 24%, transparent);
+  color: color-mix(in srgb, var(--tc) 70%, #fff);
+}
+
+.team-menu-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  margin: 0 4px;
+  flex-shrink: 0;
+}
+
+.team-menu-sub {
+  font-size: 11px;
+  color: var(--text-dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.team-menu-note {
+  font-size: 11px;
+  color: var(--text-dim);
+  padding: 6px 10px 4px;
+}
+
+.team-layout-item {
+  margin-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.team-layout-ico {
+  width: 28px;
+  text-align: center;
+  font-size: 18px;
+  color: #8cc2ff;
+}
+
+/* 弹窗：战术面板、布局编辑器 */
+.team-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 9600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 10, 20, 0.7);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: auto;
+}
+
+.team-modal {
+  width: min(560px, 100%);
+  max-height: 100%;
+  display: flex;
+  flex-direction: column;
+  border-radius: 16px;
+  background: rgba(14, 20, 36, 0.98);
+  border: 1px solid rgba(115, 168, 255, 0.3);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  overflow: hidden;
+}
+
+.team-layout-modal {
+  width: auto;
+  max-width: 100%;
+}
+
+.team-modal-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.team-modal-title {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+
+.team-modal-title strong {
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.team-modal-title span {
+  font-size: 11.5px;
+  color: var(--text-dim);
+}
+
+.team-modal-x {
+  border: none;
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-dim);
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.team-modal-body {
+  padding: 12px 14px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.team-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.team-field-label {
+  font-size: 12.5px;
+  font-weight: 900;
+  color: #dbe7ff;
+  min-width: 30px;
+}
+
+.team-seg {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 3px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.team-seg button {
+  border: none;
+  border-radius: 7px;
+  padding: 6px 12px;
+  background: transparent;
+  color: var(--text-dim);
+  font-weight: 800;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.team-seg button.active {
+  background: #3d7eff;
+  color: #fff;
+}
+
+.team-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+  line-height: 1.55;
+}
+
+.team-adv-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.team-dialect {
+  font-size: 11px;
+  font-weight: 800;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tc) 22%, transparent);
+  color: color-mix(in srgb, var(--tc) 65%, #fff);
+}
+
+.team-adv {
+  width: 100%;
+  resize: vertical;
+  min-height: 96px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(6, 10, 20, 0.7);
+  color: #e8f0ff;
+  font: 12.5px/1.55 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 8px 10px;
+  user-select: text;
+}
+
+.team-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.team-issue {
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+}
+
+.team-issue.error { color: #ffb0b0; background: rgba(235, 82, 82, 0.14); }
+.team-issue.warn { color: #ffd98a; background: rgba(255, 180, 50, 0.12); }
+
+.team-ref summary {
+  font-size: 12px;
+  font-weight: 800;
+  color: #9ecbff;
+  cursor: pointer;
+}
+
+.team-ref-row {
+  display: grid;
+  grid-template-columns: 72px 1fr;
+  gap: 8px;
+  font-size: 11.5px;
+  color: #cbd7f0;
+  padding: 3px 0;
+}
+
+.team-ref-row.is-dim { opacity: 0.55; }
+.team-ref-row code { color: #ffd98a; font-weight: 800; }
+.team-ref-row em { color: #8cc2ff; font-style: normal; }
+
+.team-final pre {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #d8e6ff;
+  white-space: pre-wrap;
+  user-select: text;
+}
+
+.team-modal-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 10px 14px 12px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.team-foot-gap { flex: 1; }
+
+.team-btn {
+  border: none;
+  border-radius: 9px;
+  padding: 8px 16px;
+  font-weight: 900;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.team-btn.ghost { background: rgba(255, 255, 255, 0.07); color: #d8e4ff; }
+.team-btn.primary { background: linear-gradient(135deg, #3d7eff, #635bff); color: #fff; }
+.team-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.team-layout-stage {
+  position: relative;
+  margin: 12px 14px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  touch-action: none;
+}
+
+.team-layout-stage canvas {
+  display: block;
+}
+
+.team-marker {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  border: 3px solid var(--mc);
+  background: rgba(10, 14, 26, 0.85);
+  box-shadow: 0 0 0 2px rgba(0, 0, 0, 0.45), 0 4px 10px rgba(0, 0, 0, 0.5);
+  cursor: grab;
+  touch-action: none;
+}
+
+.team-marker img {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  object-fit: contain;
+  pointer-events: none;
+}
+
+.team-marker-n {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  min-width: 16px;
+  height: 16px;
+  border-radius: 8px;
+  background: var(--mc);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 900;
+  display: grid;
+  place-items: center;
+  padding: 0 3px;
+}
+
+.team-marker.is-drag {
+  cursor: grabbing;
+  z-index: 2;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.6), 0 6px 16px rgba(0, 0, 0, 0.6);
+}
+
+.team-marker.is-bad {
+  border-color: #ff4d4d;
+  box-shadow: 0 0 0 3px rgba(255, 77, 77, 0.45);
+}
+
+.team-layout-status {
+  padding: 8px 14px 0;
+  font-size: 12px;
+  font-weight: 700;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+
+.team-layout-status .is-err { color: #ff9c9c; }
+.team-layout-status .is-ok { color: #7ef0b1; }
+
+/* 手机横屏：三列挤一屏 */
+body.is-mobile .team-layout {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 150px;
+  gap: 8px;
+}
+
+body.is-mobile .team-side {
+  padding: 6px 6px 5px;
+  border-radius: 10px;
+}
+
+body.is-mobile .team-side-head {
+  gap: 4px;
+}
+
+body.is-mobile .team-name-btn {
+  font-size: 12.5px;
+  padding: 3px 7px;
+  max-width: 70%;
+}
+
+body.is-mobile .team-side-tag {
+  display: none;
+}
+
+body.is-mobile .team-strat-btn {
+  font-size: 11.5px;
+  padding: 3px 7px;
+}
+
+body.is-mobile .team-side-sub {
+  margin: 3px 2px 4px;
+  font-size: 10px;
+}
+
+body.is-mobile .team-slots {
+  gap: 3px;
+}
+
+body.is-mobile .team-slot {
+  grid-template-columns: 16px minmax(0, 1fr) 54px;
+  gap: 4px;
+}
+
+body.is-mobile .team-seat {
+  width: 16px;
+  height: 22px;
+  font-size: 10px;
+  border-radius: 5px;
+}
+
+body.is-mobile .team-pick {
+  gap: 5px;
+  padding: 2px 5px;
+  border-radius: 8px;
+}
+
+body.is-mobile .team-av {
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border-width: 1.5px;
+}
+
+body.is-mobile .team-pick-name {
+  font-size: 11.5px;
+}
+
+body.is-mobile .team-pick-sub,
+body.is-mobile .team-pick .team-chev {
+  display: none;
+}
+
+body.is-mobile .team-tac-btn {
+  min-height: 28px;
+  font-size: 10.5px;
+  padding: 0 3px;
+  border-radius: 7px;
+}
+
+body.is-mobile .team-aside {
+  gap: 5px;
+}
+
+body.is-mobile .team-maps {
+  gap: 4px;
+}
+
+body.is-mobile .team-map-tile {
+  padding: 3px;
+  gap: 5px;
+  border-radius: 8px;
+}
+
+body.is-mobile .team-map-mini {
+  width: 46px;
+  height: 30px;
+  border-radius: 5px;
+}
+
+body.is-mobile .team-map-title {
+  font-size: 11.5px;
+}
+
+body.is-mobile .team-map-mode {
+  font-size: 9.5px;
+}
+
+body.is-mobile .team-map-desc {
+  display: none;
+}
+
+body.is-mobile .team-speed {
+  padding: 5px 8px 6px;
+}
+
+body.is-mobile .team-speed .speed-head {
+  margin-bottom: 4px;
+}
+
+body.is-mobile .team-speed .speed-title,
+body.is-mobile .team-speed .speed-readout {
+  font-size: 10.5px;
+}
+
+body.is-mobile .team-start-btn {
+  padding: 9px 8px;
+  font-size: 13px;
+}
+
+body.is-mobile .team-start-note {
+  font-size: 10px;
+}
+
+body.is-mobile .team-modal-backdrop {
+  padding: 8px;
+}
+
+body.is-mobile .team-modal-body {
+  padding: 8px 12px;
+  gap: 7px;
+}
+
+body.is-mobile .team-modal-head {
+  padding: 8px 12px 6px;
+}
+
+body.is-mobile .team-modal-foot {
+  padding: 6px 12px 8px;
+}
+
+body.is-mobile .team-adv {
+  min-height: 64px;
+}
+
+/* ---------- 团队赛（5v5）对局 HUD ---------- */
+.hud-top.is-team {
+  /* perf | left team | score | right team | buttons: equal outer columns keep the score pill centred */
+  grid-template-columns: 1fr auto auto auto 1fr;
+  gap: 10px;
+}
+
+.hud-top.is-team .hud-perf-left {
+  justify-self: start;
+  white-space: pre;
+  line-height: 1.45;
+}
+
+.hud-team-side {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+
+.hud-team-side.s1 {
+  align-items: flex-start;
+}
+
+.hud-team-label {
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.4px;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.75);
+  padding: 0 2px;
+  white-space: nowrap;
+}
+
+/* 一横排，朝中间比分排（左队靠右、右队靠左） */
+.hud-team-cards {
+  display: flex;
+  gap: 4px;
+  flex-wrap: nowrap;
+}
+
+.hud-tile {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  width: 38px;
+  transition: opacity 0.2s ease;
+}
+
+.hud-tile-av {
+  position: relative;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: rgba(13, 19, 34, 0.7);
+  border: 2px solid var(--pcol);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  transition: filter 0.25s ease;
+}
+
+.hud-tile-av img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border-radius: 6px;
+  display: block;
+}
+
+.hud-tile.is-human .hud-tile-av {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 0 12px var(--pcol);
+}
+
+.hud-tile.is-dead .hud-tile-av {
+  filter: grayscale(1) brightness(0.55);
+}
+
+.hud-tile.is-dead .hud-tile-k {
+  opacity: 0.55;
+}
+
+.hud-tile.is-inv .hud-tile-av {
+  animation: hud-inv-blink 0.25s steps(2) infinite;
+}
+
+@keyframes hud-inv-blink {
+  50% { opacity: 0.35; }
+}
+
+.hud-tile-k {
+  font-size: 12px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  color: #f2f6ff;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+}
+
+/* 占点：出局时头像上的复活倒计时 */
+.hud-tile-cd {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 900;
+  color: #ffe08a;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.95);
+  pointer-events: none;
+}
+
+.hud-tile-cd:empty {
+  display: none;
+}
+
+/* 刺王：国王头像上的王冠和剩余命数 */
+.hud-tcrown,
+.m-tcrown {
+  position: absolute;
+  top: -10px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: 13px;
+  line-height: 1;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.7));
+}
+
+.hud-tile-hearts {
+  position: absolute;
+  left: 50%;
+  bottom: -2px;
+  transform: translateX(-50%);
+  font-size: 8.5px;
+  line-height: 1;
+  letter-spacing: -1px;
+  color: #ff5b6e;
+  text-shadow: 0 0 2px #000, 0 1px 2px #000;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
+.hud-team-center {
+  min-width: 150px;
+}
+
+.hud-team-score {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 8px;
+  font-size: 26px;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+.hud-team-score span {
+  color: var(--text-dim);
+  font-size: 18px;
+}
+
+.hud-team-sub {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 2px;
+  font-size: 11.5px;
+  font-weight: 800;
+  color: var(--text-dim);
+  white-space: nowrap;
+}
+
+.hud-tclock {
+  font-variant-numeric: tabular-nums;
+  color: #e8f0ff;
+  margin-right: 4px;
+}
+
+.hud-tclock.urgent { color: #ff8a8a; }
+.hud-tcollapse.warn { color: #ffb347; }
+
+.hud-tpoint {
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: inline-grid;
+  place-items: center;
+  font-size: 11px;
+  font-weight: 900;
+  color: #fff;
+  background: var(--oc);
+  box-shadow: inset 0 0 0 2px var(--tc);
+}
+
+.hud-tpoint.is-taking {
+  animation: hud-point-pulse 0.6s ease-in-out infinite alternate;
+}
+
+@keyframes hud-point-pulse {
+  to { box-shadow: inset 0 0 0 4px var(--tc); }
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team {
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  gap: 6px;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-hud-avatars {
+  gap: 3px;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-av {
+  width: 24px;
+  height: 24px;
+  border-width: 1.5px;
+  overflow: visible;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-av img {
+  border-radius: 50%;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-tcrown {
+  top: -9px;
+  font-size: 11px;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-hud-avatars {
+  align-items: flex-start;
+  padding-bottom: 10px;
+}
+
+.m-tkills {
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  margin-top: 1px;
+  transform: translateX(-50%);
+  font-size: 9.5px;
+  font-weight: 900;
+  line-height: 1;
+  color: #f2f6ff;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.9);
+  font-variant-numeric: tabular-nums;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .hud-tile-cd {
+  font-size: 9px;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .hud-tile-hearts {
+  font-size: 7px;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-team-right {
+  justify-self: end;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-hud-center {
+  gap: 2px;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-hud-label {
+  font-size: 10px;
+  padding: 2px 9px;
+}
+
+.hud-root.is-mobile-hud .hud-team-score {
+  font-size: 18px;
+}
+
+.hud-root.is-mobile-hud .hud-team-sub {
+  font-size: 10px;
+}
+
+.hud-root.is-mobile-hud .hud-tpoint {
+  width: 16px;
+  height: 16px;
+  font-size: 9.5px;
+}
+
+/* 结算：两队并排 */
+.result-card-team {
+  width: min(760px, 94vw);
+}
+
+.result-team-detail {
+  margin-top: 2px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-dim);
+}
+
+.result-team-table {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-top: 12px;
+  text-align: left;
+}
+
+.result-team-name {
+  font-size: 13px;
+  font-weight: 900;
+  margin-bottom: 4px;
+}
+
+.result-team-col .result-row {
+  grid-template-columns: 26px minmax(0, 1fr) auto;
+}
+
+.result-team-col .r-cause {
+  grid-column: 2 / -1;
+}
+
+body.is-mobile .result-team-table {
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.hud-root.is-mobile-hud .hud-top.is-team .m-av.is-inv img {
+  animation: hud-inv-blink 0.25s steps(2) infinite;
+}
+
+/* 占点：玩家等复活时的灰色蒙层 + 顶部中间的复活倒计时 */
+.hud-death-veil {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+}
+
+#game-canvas,
+.nameplate-layer {
+  transition: filter 0.25s ease-out;
+}
+
+body.hud-dead-veil #game-canvas,
+body.hud-dead-veil .nameplate-layer {
+  filter: grayscale(1) brightness(0.72);
+}
+
+.hud-respawn-banner {
+  position: absolute;
+  top: 104px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  padding: 8px 22px 10px;
+  border-radius: 14px;
+  background: rgba(10, 14, 26, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+  text-align: center;
+}
+
+.hud-respawn-banner span {
+  font-size: 13px;
+  font-weight: 800;
+  letter-spacing: 1px;
+  color: #cfdaf2;
+}
+
+.hud-respawn-banner b {
+  font-size: 34px;
+  font-weight: 900;
+  line-height: 1.05;
+  color: #ffe08a;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.hud-death-veil.is-mobile .hud-respawn-banner {
+  top: calc(max(8px, var(--sa-top, 0px)) + 62px);
+  padding: 5px 16px 6px;
+  border-radius: 11px;
+}
+
+.hud-death-veil.is-mobile .hud-respawn-banner span {
+  font-size: 11px;
+}
+
+.hud-death-veil.is-mobile .hud-respawn-banner b {
+  font-size: 24px;
+}
+
+/* ---------- 分享对局：结算界面 / 回放里的「分享」按钮 + 短链接弹窗 (src/ui/shareDialog.ts) ---------- */
+.share-btn-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.share-btn-icon svg {
+  width: 13px;
+  height: 13px;
+}
+
+.hud-btn.hud-share-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  transition: all 0.14s ease;
+}
+
+.hud-btn.hud-share-btn .share-btn-icon {
+  color: #8fc1ff;
+}
+
+.hud-btn.hud-share-btn:hover:not(:disabled) {
+  background: rgba(30, 62, 120, 0.86);
+  border-color: rgba(130, 186, 255, 0.7);
+}
+
+.hud-btn.hud-share-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.result-share-corner-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e4ecff;
+  font-size: 11.5px;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+}
+
+.result-share-corner-btn .share-btn-icon,
+.rr-share-mini-btn .share-btn-icon {
+  color: #8fc1ff;
+}
+
+.result-share-corner-btn:hover,
+.rr-share-mini-btn:hover {
+  background: rgba(61, 126, 255, 0.28);
+  border-color: rgba(146, 196, 255, 0.7);
+  color: #fff;
+}
+
+.rr-share-mini-btn {
+  border-color: rgba(255, 255, 255, 0.24);
+  background: rgba(255, 255, 255, 0.08);
+  color: #e4ecff;
+}
+
+.m-share-btn svg {
+  width: 19px;
+  height: 19px;
+  color: #a9cfff;
+}
+
+.m-share-btn:disabled {
+  opacity: 0.45;
+}
+
+.share-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10050;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+  background: rgba(6, 10, 20, 0.66);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+.share-card {
+  width: min(440px, 100%);
+  max-height: 100%;
+  overflow: auto;
+  border-radius: 16px;
+  background: rgba(13, 19, 34, 0.98);
+  border: 1px solid rgba(114, 170, 255, 0.32);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.7);
+  color: #e6efff;
+  animation: fadeIn 0.15s ease;
+}
+
+.share-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 12px 10px 16px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.share-head-icon svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+  color: #8fc1ff;
+}
+
+.share-title {
+  flex: 1;
+  font-size: 15px;
+  font-weight: 800;
+}
+
+.share-close {
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: #b6c4de;
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.share-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+}
+
+.share-body {
+  padding: 14px 16px 16px;
+  font-size: 13px;
+}
+
+.share-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  color: #c9d6ee;
+}
+
+.share-spinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid rgba(143, 193, 255, 0.25);
+  border-top-color: #8fc1ff;
+  animation: shareSpin 0.8s linear infinite;
+}
+
+@keyframes shareSpin {
+  to { transform: rotate(360deg); }
+}
+
+.share-hint {
+  margin-bottom: 10px;
+  color: #c9d6ee;
+}
+
+.share-link-row {
+  display: flex;
+  gap: 8px;
+}
+
+.share-link-input {
+  flex: 1;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(114, 170, 255, 0.4);
+  background: rgba(4, 8, 18, 0.7);
+  color: #fff;
+  font: 600 13px/1.3 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.share-copy-btn,
+.share-retry-btn {
+  flex-shrink: 0;
+  padding: 8px 14px;
+  border-radius: 9px;
+  border: 1px solid rgba(146, 196, 255, 0.6);
+  background: linear-gradient(135deg, #3d7eff 0%, #2a5fd0 100%);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.share-copy-btn:hover,
+.share-retry-btn:hover {
+  filter: brightness(1.1);
+}
+
+.share-copy-btn.is-done {
+  background: linear-gradient(135deg, #2fb36b 0%, #1f8a50 100%);
+  border-color: rgba(140, 230, 180, 0.7);
+}
+
+.share-error {
+  color: #ffb4a8;
+  line-height: 1.5;
+}
+
+.share-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}
+
+/* 打开分享链接（?r=）：回放开始前盖住页面，不露出大厅 */
+.share-opening {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: radial-gradient(circle at 50% 35%, rgba(61, 126, 255, 0.22), transparent 60%), #0b1020;
+  color: #c9d6ee;
+  font-size: 15px;
+  font-weight: 700;
+  transition: opacity 0.2s ease;
+}
+
+.share-opening.is-leaving {
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 对局历史：团队赛一行 */
+.hm-mode-team {
+  background: rgba(255, 106, 48, 0.18);
+  color: #ffc39e;
+}
+
+.hm-players.is-team {
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+}
+
+.hm-tside {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.hm-tlabel {
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--text-dim);
+  margin-right: 3px;
+  white-space: nowrap;
+}
+
+.hm-tside.s0 .hm-tlabel { color: #8cc2ff; }
+.hm-tside.s1 .hm-tlabel { color: #ffaaa1; }
+.hm-tside.is-winner .hm-tlabel { color: #ffd98a; }
+
+.hm-tchip {
+  position: relative;
+  display: inline-flex;
+}
+
+.hm-tchip.is-human .hm-p-av {
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85);
+}
+
+.hm-tchip-k {
+  position: absolute;
+  right: -4px;
+  bottom: -4px;
+  min-width: 12px;
+  height: 12px;
+  padding: 0 2px;
+  border-radius: 6px;
+  background: rgba(10, 14, 26, 0.92);
+  color: #ffe08a;
+  font-size: 8.5px;
+  font-weight: 900;
+  line-height: 12px;
+  text-align: center;
+}
+
+.result-team-col .r-teamkill {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  color: rgba(200, 210, 230, 0.45);
+}
+
+.result-team-col .r-teamkill.has {
+  color: #ff9c9c;
+}
+
+/* ---------- 团队赛联机房间条（队伍模块上方） ---------- */
+.team-room-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+.team-room-bar.is-in {
+  border-color: rgba(114, 170, 255, 0.38);
+  background: rgba(61, 126, 255, 0.08);
+}
+
+.trb-title {
+  font-size: 13px;
+  font-weight: 900;
+  color: #cfe0ff;
+  margin-right: 2px;
+}
+
+.trb-btn {
+  height: 32px;
+  padding: 0 12px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.07);
+  color: #e6efff;
+  font-size: 12.5px;
+  font-weight: 800;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.trb-btn:hover:not(:disabled) {
+  background: rgba(61, 126, 255, 0.22);
+  border-color: rgba(114, 170, 255, 0.5);
+}
+
+.trb-btn.primary {
+  background: linear-gradient(135deg, #3d7eff 0%, #5a63ff 100%);
+  border-color: rgba(146, 196, 255, 0.6);
+  color: #fff;
+}
+
+.trb-btn.ghost {
+  background: transparent;
+}
+
+.trb-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.trb-btn.trb-watch {
+  border-color: rgba(114, 234, 166, 0.5);
+  background: rgba(74, 196, 128, 0.18);
+  color: #bff5d4;
+}
+
+.trb-input {
+  width: 100px;
+  height: 32px;
+  padding: 0 10px;
+  border-radius: 9px;
+  border: 1px solid rgba(114, 170, 255, 0.4);
+  background: rgba(4, 8, 18, 0.6);
+  color: #fff;
+  font: 700 14px/1 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 1px;
+}
+
+.trb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 30px;
+  padding: 0 10px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: #b9c6e4;
+  font-size: 12.5px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.trb-chip strong {
+  color: #fff;
+  font-weight: 900;
+  font-variant-numeric: tabular-nums;
+}
+
+.trb-code strong {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 1px;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.trb-host {
+  font-style: normal;
+  font-size: 11px;
+  font-weight: 900;
+  padding: 1px 6px;
+  border-radius: 6px;
+  background: rgba(255, 196, 61, 0.2);
+  color: #ffe08a;
+}
+
+.trb-rtt.good strong { color: #7ff0b0; }
+.trb-rtt.ok strong { color: #ffd36b; }
+.trb-rtt.bad strong { color: #ff8a7a; }
+
+.trb-gap {
+  flex: 1;
+}
+
+.trb-hint {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.trb-err {
+  font-size: 12px;
+  font-weight: 800;
+  color: #ff9a8a;
+}
+
+/* 其他人只读：只能点 bot 席位顶替上场，能看战术和布局 */
+.team-layout.is-readonly .team-pick:disabled {
+  cursor: default;
+  opacity: 1;
+  color: inherit;
+}
+
+.team-slot.is-claimable .team-pick {
+  cursor: pointer;
+}
+
+.team-slot.is-claimable .team-pick:hover {
+  border-color: rgba(114, 234, 166, 0.6);
+  background: rgba(74, 196, 128, 0.12);
+}
+
+.team-claim {
+  margin-left: auto;
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(114, 234, 166, 0.45);
+  color: #aef4cc;
+  font-size: 11.5px;
+  font-weight: 900;
+  opacity: 0.35;
+  transition: opacity 0.15s ease;
+}
+
+.team-slot.is-claimable .team-pick:hover .team-claim {
+  opacity: 1;
+}
+
+.team-slot.is-me .team-pick {
+  box-shadow: inset 0 0 0 1.5px rgba(114, 234, 166, 0.7);
+}
+
+.team-layout.is-readonly .team-name-btn:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+.team-layout.is-readonly .team-name-btn:disabled .team-chev {
+  display: none;
+}
+
+.team-map-tile:disabled {
+  cursor: default;
+}
+
+.team-map-tile:disabled:not(.active) {
+  opacity: 0.5;
+}
+
+.team-wait-note {
+  text-align: center;
+  color: #b9c6e4;
+  font-weight: 800;
+}
+
+/* 观战按钮在两队阵容下方（右侧地图 / 速度 / 开始那一栏跨两行） */
+.team-layout.is-room .team-side {
+  grid-row: 1;
+}
+
+.team-layout.is-room .team-aside {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+
+.team-room-foot {
+  grid-column: 1 / 3;
+  grid-row: 2;
+  display: flex;
+  justify-content: center;
+}
+
+@media (max-width: 1040px) {
+  body:not(.is-mobile) .team-layout.is-room .team-aside {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+  body:not(.is-mobile) .team-room-foot {
+    grid-column: 1 / -1;
+    grid-row: auto;
+  }
+}
+
+@media (max-width: 720px) {
+  body:not(.is-mobile) .team-layout.is-room .team-side {
+    grid-row: auto;
+  }
+}
+
+.team-spectate-btn {
+  width: min(320px, 100%);
+  height: 38px;
+  border-radius: 11px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  background: rgba(255, 255, 255, 0.06);
+  color: #e6efff;
+  font-size: 13px;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.team-spectate-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.team-spectate-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.team-readonly-tag {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.team-layout-modal.is-readonly .team-marker {
+  cursor: default;
+}
+
+/* 联机结算：X/X 玩家想要再来一局 / 倒计时 / 有人退出 */
+.result-room-status {
+  min-height: 18px;
+  margin-top: 10px;
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
+  color: #c9d6ee;
+}
+
+.result-room-status.is-countdown {
+  color: #aef4cc;
+}
+
+.result-room-status.is-blocked {
+  color: #ff9a8a;
+}
+
+.result-restart-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+body.is-mobile .team-room-bar {
+  gap: 6px;
+  padding: 5px 8px;
+  margin-bottom: 6px;
+}
+
+body.is-mobile .trb-btn,
+body.is-mobile .trb-input {
+  height: 28px;
+  font-size: 12px;
+}
+
+body.is-mobile .trb-chip {
+  height: 26px;
+  padding: 0 8px;
+  font-size: 11.5px;
+}
+
+body.is-mobile .team-room-bar .trb-hint {
+  display: none;
+}
+
+body.is-mobile .team-spectate-btn {
+  height: 30px;
+}
+
+/* ---------- 击杀播报（右上角，CS 式；src/ui/killFeed.ts） ---------- */
+.kill-feed {
+  position: absolute;
+  top: var(--kf-top, 72px);
+  right: 16px;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+  max-width: min(440px, 46vw);
+  pointer-events: none;
+}
+
+.kill-feed-line {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  padding: 4px 10px;
+  border-radius: 9px;
+  background: var(--bg-glass);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  font-size: 12.5px;
+  font-weight: 800;
+  line-height: 1.25;
+  white-space: nowrap;
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.6);
+  animation: kill-feed-life 5.6s linear forwards;
+}
+
+.kill-feed-line.is-mine {
+  border-color: rgba(255, 255, 255, 0.72);
+  background: rgba(24, 31, 50, 0.9);
+}
+
+.kill-feed.is-paused .kill-feed-line {
+  animation-play-state: paused;
+}
+
+.kill-feed-name {
+  min-width: 0;
+  max-width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.kill-feed-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
+  color: #eef3ff;
+  filter: drop-shadow(0 1px 1.5px rgba(0, 0, 0, 0.6));
+}
+
+.kill-feed-icon svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes kill-feed-life {
+  0% {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  4% {
+    opacity: 1;
+    transform: none;
+  }
+  86% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+/* 手机：更小，只留最新 3 行；对局里右侧有触屏按键（挥砍 / 取消瞄准），整列往左让开 */
+.hud-root.is-mobile-hud .kill-feed {
+  right: max(10px, var(--sa-right, 0px));
+  gap: 3px;
+  max-width: 52vw;
+}
+
+.hud-root.is-mobile-hud .kill-feed.is-touch {
+  right: calc(max(10px, var(--sa-right, 0px)) + 30vh);
+  right: calc(max(10px, var(--sa-right, 0px)) + 30dvh);
+}
+
+.hud-root.is-mobile-hud .kill-feed-line {
+  gap: 4px;
+  padding: 2px 7px;
+  border-radius: 7px;
+  font-size: 10px;
+}
+
+.hud-root.is-mobile-hud .kill-feed-line:nth-child(n + 4) {
+  display: none;
+}
+
+.hud-root.is-mobile-hud .kill-feed-name {
+  max-width: 6em;
+}
+
+.hud-root.is-mobile-hud .kill-feed-icon {
+  width: 14px;
+  height: 14px;
+}
+
+.kill-feed-lives {
+  margin-left: 2px;
+  font-size: 0.85em;
+  font-weight: 900;
+  color: #ff8a8a;
+}
+
+/* 回旋镖图标是体素画，比线条图标稍大一点才看得清 */
+.kill-feed-icon.kf-dart {
+  width: 22px;
+  height: 22px;
+}
+
+.hud-root.is-mobile-hud .kill-feed-icon.kf-dart {
+  width: 16px;
+  height: 16px;
 }

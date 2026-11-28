@@ -1,8 +1,9 @@
 import { EloUpdateResult } from './leaderboard';
+import type { TeamMapId, TeamModeNum } from './teamMatch';
 import { EngineMapData, MatchConfig, MatchMode, SlotConfig, TickSnapshot } from './types';
 
 export const MAX_HISTORY_PER_MODE = 50;
-export const HISTORY_MODE_BUCKETS = ['ranked', 'cricket', 'custom', 'pvp'] as const;
+export const HISTORY_MODE_BUCKETS = ['ranked', 'team', 'cricket', 'custom', 'pvp'] as const;
 export type HistoryModeBucket = (typeof HISTORY_MODE_BUCKETS)[number];
 export const MAX_HISTORY_RECORDS = MAX_HISTORY_PER_MODE * HISTORY_MODE_BUCKETS.length;
 
@@ -10,6 +11,7 @@ export function getHistoryModeBucket(matchMode: MatchMode): HistoryModeBucket {
   if (matchMode === 'ranked-solo' || matchMode === 'ranked-ffa') return 'ranked';
   if (matchMode === 'cricket') return 'cricket';
   if (matchMode === 'pvp') return 'pvp';
+  if (matchMode === 'team') return 'team';
   return 'custom';
 }
 
@@ -59,6 +61,8 @@ export interface MatchHistorySummary {
   favorite?: boolean;
   /** Online 1v1 only: server match id and the local seat (seat 0 = P1 challenger, seat 1 = P2). */
   pvp?: { matchId: string; mySeat: 0 | 1 };
+  /** 5v5 团队赛：地图、模式和两队队名（winner 是队伍号 0 左 / 1 右，-1 平局） */
+  team?: { mapId: TeamMapId; mode: TeamModeNum; labels: [string, string] };
 }
 
 export interface MatchReplayPayload {
@@ -130,6 +134,9 @@ export function buildMatchHistoryBundle(
     eloNewRank: eloResult ? eloResult.newRank : null,
     favorite: false,
     ...(config.matchMode === 'pvp' && config.pvp ? { pvp: { matchId: config.pvp.matchId, mySeat: config.pvp.mySeat } } : {}),
+    ...(config.matchMode === 'team' && config.team
+      ? { team: { mapId: config.team.mapId, mode: config.team.mode, labels: [config.team.sides[0].label, config.team.sides[1].label] as [string, string] } }
+      : {}),
   };
 
   const replay: MatchReplayPayload = {
@@ -291,6 +298,7 @@ export class MatchHistoryStore {
     const buckets: readonly HistoryModeBucket[] = targetBucket ? [targetBucket] : HISTORY_MODE_BUCKETS;
     const byBucket: Record<HistoryModeBucket, MatchHistorySummary[]> = {
       ranked: [],
+      team: [],
       cricket: [],
       custom: [],
       pvp: [],

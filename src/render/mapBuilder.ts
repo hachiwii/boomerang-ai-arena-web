@@ -7,6 +7,8 @@ import {
   IArenaMap,
   OccluderEntry,
 } from './hqMapBuilder';
+import { LiquidSurface } from './hqLiquid';
+import { getHqTheme } from './hqThemes';
 import { getTheme, ThemeConfig } from './themes';
 
 interface TileInstanceRef {
@@ -72,6 +74,9 @@ export class ArenaMap3D implements IArenaMap {
   private readonly _warnCol = new THREE.Color('#ff5a2b');
   private readonly _dirScratch = new THREE.Vector3();
   private lastShadowBakeGt = -9999;
+  // Episode 12: liquid surfaces in enclosed pits (lava lake / sea / ponds), shared with the HQ arena
+  private liquid: LiquidSurface | null = null;
+  public readonly liquidKind: 'lava' | 'water' | null = null;
 
   constructor(mapData: EngineMapData, themeName: string) {
     this.mapData = mapData;
@@ -85,6 +90,19 @@ export class ArenaMap3D implements IArenaMap {
     this.buildGrass();
     this.buildClouds();
     this.buildAmbientParticles();
+    const lqSpec = getHqTheme(themeName).liquid;
+    if (lqSpec) {
+      const lq = new LiquidSurface(mapData, lqSpec);
+      if (lq.root.children.length > 0) {
+        this.liquid = lq;
+        this.liquidKind = lqSpec.kind;
+        this.root.add(lq.root);
+      } else lq.dispose();
+    }
+  }
+
+  public liquidZAt(xMm: number, yMm: number, gt: number, freezeT?: number): number | null {
+    return this.liquid ? this.liquid.zAt(xMm, yMm, gt, freezeT) : null;
   }
 
   private buildTerrain() {
@@ -726,6 +744,7 @@ export class ArenaMap3D implements IArenaMap {
         this.ambientMesh.instanceMatrix.needsUpdate = true;
       }
     }
+    if (this.liquid) this.liquid.update(gt, elapsedSec, freezeT);
     return shadowDirty;
   }
 
@@ -740,6 +759,7 @@ export class ArenaMap3D implements IArenaMap {
 
   public dispose() {
     disposeOccluderEntries(this.occluders);
+    this.liquid?.dispose();
     const geos = new Set<THREE.BufferGeometry>(this.wallSharedGeos);
     const mats = new Set<THREE.Material>();
     this.root.traverse((obj) => {

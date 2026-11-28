@@ -94,6 +94,47 @@ export class SoundFX {
     src.stop(t0 + dur + 0.015);
   }
 
+  /** 带频率扫动的带通噪声（上游网页版 sfx.ts 的 noise(dur, f0, f1, q, g0)） */
+  private noiseSweep(dur: number, f0: number, f1: number, q: number, gainVal: number, delay = 0) {
+    const ctx = this.ensure();
+    if (!ctx) return;
+    const gScaled = Math.max(0.0002, gainVal * this.volume);
+    const len = Math.max(1, Math.floor(ctx.sampleRate * dur));
+    const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    const flt = ctx.createBiquadFilter();
+    flt.type = 'bandpass';
+    flt.Q.value = q;
+    const baseTime = this.offlineCtx ? this.offlineTimeSec : ctx.currentTime;
+    const t0 = Math.max(0.001, baseTime + delay);
+    flt.frequency.setValueAtTime(f0, t0);
+    flt.frequency.exponentialRampToValueAtTime(Math.max(40, f1), t0 + dur);
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.exponentialRampToValueAtTime(gScaled, t0 + Math.min(0.03, dur * 0.25));
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + dur);
+    src.connect(flt).connect(g).connect(ctx.destination);
+    src.start(t0);
+    src.stop(t0 + dur + 0.02);
+  }
+
+  // —— 5v5 团队赛：与上游网页版（boomerang-team/web-play 的 sfx.ts）相同的合成音 ——
+  /** 占点翻点（CAPTURE）：两声上行三角波 784 Hz → 1175 Hz */
+  public playCapture() {
+    this.tone(784, 784, 0.18, 'triangle', 0.12);
+    this.tone(1175, 1175, 0.22, 'triangle', 0.12, 0.1);
+  }
+
+  /** 国王掉命（LIFE）：方波 523→392 + 三角波 1047→784 + 3000→800 Hz 噪声 */
+  public playKingLife() {
+    this.tone(523, 392, 0.4, 'square', 0.07);
+    this.tone(1047, 784, 0.5, 'triangle', 0.1);
+    this.noiseSweep(0.3, 3000, 800, 1, 0.18);
+  }
+
   public playThrow() {
     this.tone(420, 860, 0.11, 'triangle', 0.12);
     this.noise(0.09, 0.08, 1600, 1.2);

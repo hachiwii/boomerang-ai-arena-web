@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { CellType, EngineMapData } from '../game/types';
 import { SeededRng } from './hqGeomBuilder';
+import { paintEp12Ground, wantsEp12Ground } from './hqGroundPaint12';
 import { HqThemeSpec, RGB } from './hqThemes';
 
 export interface BridgeSpec {
@@ -23,6 +24,10 @@ export interface PaintedGroundResult {
   dirt: Float32Array;
   quiet: Float32Array;
   bridges: BridgeSpec[];
+  /** Episode 12 caldera: emissive mask (glowing cracks & lava bank), same UV layout as `texture`. */
+  glowTexture?: THREE.CanvasTexture | null;
+  /** Episode 12 harbor: per-cell pier deck (0 none, 1 east-west, 2 north-south). */
+  deckCells?: Int8Array | null;
 }
 
 function clamp01(x: number): number {
@@ -802,6 +807,30 @@ export function paintHighQualityGround(
     }
   }
 
+  // Episode 12 layers (caldera ash, harbor piers, keeps castle floors) — own RNG, only for those themes
+  const ep12 = wantsEp12Ground(theme)
+    ? paintEp12Ground({
+        mapData,
+        theme,
+        ctx,
+        TW,
+        TH,
+        hiPPM,
+        MG,
+        W,
+        H,
+        PPM,
+        tallF,
+        dirt,
+        nBig,
+        nMid,
+        nSm,
+        nFine,
+        seed,
+      })
+    : null;
+  const notick = ep12?.notick ?? null;
+
   // 9. Crisp Painterly Grass Strokes & Road Pebbles at 2K!
   const nTick = Math.round(area * 15);
   const rgbaStr = (c: [number, number, number, number]) =>
@@ -818,6 +847,7 @@ export function paintHighQualityGround(
     const my = rng.uniform(0, Hm);
     const li = lowIdxAt(mx, my);
     if (!solid[li] || wall[li]) continue;
+    if (notick && notick[li]) continue;
     const px = toX(mx), py = toY(my);
     if (st.ticks === 'none' && dirt[li] <= 0.5) {
       if (rng.next() < 0.14) {
@@ -871,5 +901,7 @@ export function paintHighQualityGround(
     dirt,
     quiet,
     bridges,
+    glowTexture: ep12?.glowTexture ?? null,
+    deckCells: ep12?.deckCells ?? null,
   };
 }

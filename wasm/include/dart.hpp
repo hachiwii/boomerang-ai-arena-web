@@ -30,6 +30,8 @@
 #pragma once
 
 #include <cmath>
+#include <algorithm>
+#include <sstream>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -58,6 +60,24 @@
 #include <time.h>
 #endif
 
+#if defined(__EMSCRIPTEN__) && defined(DART_WASM_BOT)
+#include <time.h>
+#include <emscripten/emscripten.h>
+#include <emscripten/html5.h>
+// 网页版 bot 的思考预算翻倍：有的 bot 直接用 std::chrono::steady_clock 按时间截断搜索（Astra、Fable、Carbon、
+// Hydrogen 等团队 bot），这里在 bot 的 WASM 里把非墙上时钟（单调时钟、CPU 时间）换成半速，和下面的
+// thread_cpu_100ns 一样，等于每个按时间截断的预算 ×2（手机等慢设备上少被截断）。墙上时间照常。只编进 bot，引擎不受影响。
+extern "C" int clock_gettime(clockid_t clk, struct timespec* ts) {
+    if (!ts) return -1;
+    double ms = clk == CLOCK_REALTIME ? emscripten_date_now() : emscripten_get_now() * 0.5;
+    if (ms < 0) ms = 0;
+    const double whole = (double)(long long)(ms / 1000.0);
+    ts->tv_sec = (time_t)whole;
+    ts->tv_nsec = (long)((ms - whole * 1000.0) * 1000000.0);
+    return 0;
+}
+#endif
+
 namespace dart {
 
 using i64 = long long;
@@ -67,6 +87,9 @@ using u64 = unsigned long long;
 #include <emscripten/emscripten.h>
 #endif
 
+// 浏览器里拿不到线程 CPU 时间，只能用墙上时钟；让 bot 看到的时钟走半速 = 时间预算翻倍
+constexpr double WASM_BOT_CLOCK_RATE = 0.5;
+
 // 当前线程CPU时间（100ns）。仅作选手自限搜索的辅助，不参与游戏物理；失败/非Windows返回-1。
 inline i64 thread_cpu_100ns() {
 #ifdef _WIN32
@@ -75,12 +98,12 @@ inline i64 thread_cpu_100ns() {
     auto ticks=[](FILETIME f) { return (u64(f.dwHighDateTime)<<32)|f.dwLowDateTime; };
     return i64(ticks(kernel)+ticks(user));
 #elif defined(__EMSCRIPTEN__)
-    return i64(emscripten_get_now() * 10000.0);
+    return i64(emscripten_get_now() * 10000.0 * WASM_BOT_CLOCK_RATE);
 #elif defined(__wasi__)
     // 和 Emscripten 版一样用墙上时钟（浏览器里拿不到线程 CPU 时间）
     timespec ts;
     if (clock_gettime(CLOCK_MONOTONIC, &ts) != 0) return -1;
-    return i64(ts.tv_sec) * 10000000 + i64(ts.tv_nsec) / 100;
+    return i64(double(i64(ts.tv_sec) * 10000000 + i64(ts.tv_nsec) / 100) * WASM_BOT_CLOCK_RATE);
 #else
     return -1;
 #endif
@@ -88,7 +111,7 @@ inline i64 thread_cpu_100ns() {
 
 constexpr const char* ENGINE_VERSION = "dartfu-v3";
 constexpr int MAX_DELAY = 20;      // DELAY 的上限（步）
-constexpr int MAXP = 8;            // 一局最多几人
+constexpr int MAXP = 10;            // 一局最多几人
 constexpr i64 TICKS = 20;          // 每秒步数
 constexpr i64 FULL = 36000;        // 一圈
 constexpr i64 CELL = 500;          // 格子边长（毫米）；程序勿写死格子尺寸
@@ -214,9 +237,9 @@ struct SplitMix64 {
 
 // ------------------------------------------------------------------ 参数
 
-enum Mode { M_DUEL = 0, M_FFA = 1, M_TEAM = 2 };
-constexpr const char* MODE_NAME[3] = {"duel", "ffa", "team"};
-constexpr int MODE_PLAYERS[3] = {2, 4, 8};
+enum Mode { M_DUEL = 0, M_FFA = 1, M_TEAM = 2, M_ELIM = 3, M_CONTROL = 4, M_KING = 5 };
+constexpr const char* MODE_NAME[6] = {"duel", "ffa", "team", "elimination", "control", "king"};
+constexpr int MODE_PLAYERS[6] = {2, 4, 8, 10, 10, 10};
 
 struct Config {
     // 比赛
@@ -284,9 +307,17 @@ struct Config {
     // 出生点抖动：种子决定把出生点整体挪一点（所有座位按固定seat_sym偏移变换一起挪；地图本身不保证反射对称），同一张图打出不同的局
     i64 spawn_jit = 1000;    // 最多挪多远（x、y 各自 -spawn_jit..spawn_jit）；种子 0 不挪
 
+    i64 respawn = 60, capture = 20, king_lives = 3, king_inv = 30;
+    bool custom_steps = false, custom_start = false, custom_jitter = false;
+    void select_mode(i64 md) {
+        mode = md;
+        if (!custom_steps) steps = md >= M_ELIM ? 1200 : 800;
+        if (!custom_start) col_start = md >= M_ELIM ? 300 : 240;
+        if (!custom_jitter) spawn_jit = md >= M_ELIM ? 500 : 1000;
+    }
     bool set(const std::string& key, const std::string& val);
     std::string cfg_line() const;
-    int nplayers() const { return MODE_PLAYERS[iclamp(mode, 0, 2)]; }
+    int nplayers() const { return MODE_PLAYERS[iclamp(mode, 0, 5)]; }
     i64 cstart() const { return col_start; }
     i64 cevery() const { return col_every; }
 };
@@ -311,6 +342,7 @@ inline const std::vector<CfgItem>& cfg_items() {
         {"RECALL", &Config::recall}, {"RECALL_PRE", &Config::recall_pre}, {"RECALL_V", &Config::recall_v},
         {"RECALL_WALL", &Config::recall_wall}, {"BLOCK", &Config::block}, {"BLOCK_COS", &Config::block_cos}, {"SLASH_MISS", &Config::slash_miss},
         {"CLASH", &Config::clash}, {"DASH_SLASH", &Config::dash_slash},
+        {"RESPAWN", &Config::respawn}, {"CAPTURE", &Config::capture}, {"KING_LIVES", &Config::king_lives}, {"KING_INV", &Config::king_inv},
         {"MSG_MAX", &Config::msg_max}, {"SPAWN_JIT", &Config::spawn_jit},
     };
     return v;
@@ -321,7 +353,11 @@ inline bool Config::set(const std::string& key, const std::string& val) {
     if (val.empty() || !end || *end) return false;
     for (const CfgItem& it : cfg_items())
         if (key == it.name) {
-            this->*(it.f) = v;
+            if (it.f == &Config::mode) select_mode(v);
+            else this->*(it.f) = v;
+            if (it.f == &Config::steps) custom_steps = true;
+            if (it.f == &Config::col_start) custom_start = true;
+            if (it.f == &Config::spawn_jit) custom_jitter = true;
             return true;
         }
     return false;
@@ -329,6 +365,7 @@ inline bool Config::set(const std::string& key, const std::string& val) {
 inline std::string Config::cfg_line() const {
     std::string o;
     for (const CfgItem& it : cfg_items()) {
+        if (mode < M_ELIM && (it.f == &Config::respawn || it.f == &Config::capture || it.f == &Config::king_lives || it.f == &Config::king_inv)) continue;
         if (!o.empty()) o += ' ';
         o += std::string(it.name) + "=" + std::to_string(this->*(it.f));
     }
@@ -336,7 +373,8 @@ inline std::string Config::cfg_line() const {
 }
 // 参数是否自洽（裁判启动时检查）。返回空串 = 没问题。
 inline std::string cfg_problem(const Config& cf) {
-    if (cf.mode < 0 || cf.mode > 2) return "MODE 要在 0..2";
+    if (cf.respawn < 1 || cf.capture < 1 || cf.king_lives < 1 || cf.king_inv < 0) return "复活步数、翻点步数和命数至少为 1，无敌步数不能为负";
+    if (cf.mode < 0 || cf.mode > 5) return "MODE 要在 0..5";
     if (cf.steps < 20 || cf.steps > 100000) return "STEPS 要在 20..100000";
     if (cf.delay < 0 || cf.delay > MAX_DELAY) return "DELAY 要在 0..20";
     if (cf.body_r < 100 || cf.body_r > CELL) return "BODY_R 要在 100..CELL（500毫米），保证3x3推墙邻域完整";
@@ -372,14 +410,24 @@ enum CellType { C_FLOOR = 0, C_WALL = 1, C_PIT = 2, C_GRASS = 3 };
 constexpr char CELL_CHAR[4] = {'.', '#', '~', '"'};  // 地图文件里的字符：地面 墙 坑 草丛
 
 // 地图（人工设计，从地图文件读，格式见 RULES 第 4 节 / parse_map）。第三版起可以是长方形：nx 列 × ny 行。
+struct Point { std::string name; i64 x = 0, y = 0, r = 0; };
+struct Deploy { i64 x0, y0, x1, y1; };
 struct Map {
+    std::vector<Deploy> deploy;
+    std::vector<Point> points;
+    bool in_deploy(int seat, i64 x, i64 y) const {
+        if (seat >= 5) { x = width() - x; y = height() - y; }
+        for (const auto& z : deploy)
+            if (x >= z.x0 && x <= z.x1 && y >= z.y0 && y <= z.y1) return true;
+        return false;
+    }
     int nx = 0, ny = 0;                        // 宽（列数，x 方向）和高（行数，y 方向）；地图是 nx×ny个0.5米见方的格子
     std::string name;                          // 地图名
     std::vector<signed char> c;                // c[y * nx + x]，开局时的格子（塌陷另算）
     std::vector<signed char> w;                // w[y * nx + x]，这一格在第几波塌（0 起）；-1 = 永不塌
     int nwave = 0;                             // 一共几波（最大波号 + 1）
-    bool modes[3] = {false, false, false};     // 这张图能打哪几种形式
-    i64 spx[3][MAXP] = {}, spy[3][MAXP] = {};  // 每种形式的出生点（毫米）
+    bool modes[6] = {};     // 这张图能打哪几种形式
+    i64 spx[6][MAXP] = {}, spy[6][MAXP] = {};  // 每种形式的出生点（毫米）
     bool inside(int x, int y) const { return x >= 0 && y >= 0 && x < nx && y < ny; }
     int at(int x, int y) const { return inside(x, y) ? c[size_t(y) * nx + x] : C_PIT; }
     // 第几波塌；-1 = 永不；地图外 -2（一直是坑）
@@ -463,7 +511,7 @@ inline int seat_sym(int mode, int k) {
         return f[k & 3];
     }
     if (mode == 0) return k == 1 ? 3 : 0;
-    return k >= 4 ? 3 : 0;
+    return k >= (mode >= M_ELIM ? 5 : 4) ? 3 : 0;
 }
 // 四人局：对称掩码 → 座位（seat_sym 的反函数）
 inline int ffa_seat_of_sym(int k) {
@@ -571,7 +619,7 @@ inline std::string parse_map(const std::string& text, Map& M) {
         if (!cur.empty()) v.push_back(cur);
         return v;
     };
-    bool have_grid = false, have_wave = false, have_spawn[3] = {false, false, false};
+    bool have_grid = false, have_wave = false, have_spawn[6] = {};
     for (size_t li = 0; li < lines.size(); ++li) {
         const std::string& L = lines[li];
         const std::vector<std::string> wd = words(L);
@@ -582,17 +630,28 @@ inline std::string parse_map(const std::string& text, Map& M) {
             M.name = wd.size() > 1 ? wd[1] : "";
         } else if (key == "MODES") {
             for (size_t i = 1; i < wd.size(); ++i) {
-                if (wd[i] != "0" && wd[i] != "1" && wd[i] != "2") return where + "：MODES 只能是 0 1 2";
+                if (wd[i].size() != 1 || wd[i][0] < '0' || wd[i][0] > '5') return where + "：MODES 只能是 0 到 5";
                 M.modes[wd[i][0] - '0'] = true;
             }
         } else if (key == "SPAWN") {
-            if (wd.size() < 2 || (wd[1] != "0" && wd[1] != "1" && wd[1] != "2")) return where + "：SPAWN 后面先写形式 0 / 1 / 2";
+            if (wd.size() < 2 || (wd[1].size() != 1 || wd[1][0] < '0' || wd[1][0] > '5')) return where + "：SPAWN 后面先写形式 0 到 5";
             const int md = wd[1][0] - '0';
             if (int(wd.size()) != 2 + 2 * MODE_PLAYERS[md]) return where + "：形式 " + wd[1] + " 要 " + std::to_string(MODE_PLAYERS[md]) + " 个出生点（x y 成对）";
             for (int k = 0; k < MODE_PLAYERS[md]; ++k)
                 if (!parse_meters(wd[size_t(2 + 2 * k)], M.spx[md][k]) || !parse_meters(wd[size_t(3 + 2 * k)], M.spy[md][k]))
                     return where + "：出生点坐标要是米数（例如 3.5）";
             have_spawn[md] = true;
+        } else if (key == "DEPLOY") {
+            Deploy z{};
+            if (wd.size() != 5 || !parse_meters(wd[1], z.x0) || !parse_meters(wd[2], z.y0) ||
+                !parse_meters(wd[3], z.x1) || !parse_meters(wd[4], z.y1) || z.x0 > z.x1 || z.y0 > z.y1) return where + "：布阵区格式有误";
+            M.deploy.push_back(z);
+        } else if (key == "POINT") {
+            Point pt;
+            if (wd.size() != 5 || !parse_meters(wd[2], pt.x) || !parse_meters(wd[3], pt.y) ||
+                !parse_meters(wd[4], pt.r) || pt.r <= 0) return where + "：占点格式有误";
+            pt.name = wd[1];
+            M.points.push_back(pt);
         } else if (key == "CELL") {
             if (wd.size() != 2 || wd[1] != std::to_string(CELL)) return where + "：本引擎只支持CELL 500，旧图请先用地图工具转换";
         } else if (key == "GRID") {
@@ -601,7 +660,7 @@ inline std::string parse_map(const std::string& text, Map& M) {
 #ifdef DART_TRAINING
             constexpr int max_grid = 120;
 #else
-            constexpr int max_grid = 60;
+            constexpr int max_grid = 80;
 #endif
             if (nx < 6 || nx > max_grid || ny < 6 || ny > max_grid) return where + "：宽、高要在 6.." + std::to_string(max_grid);
             M.nx = nx;
@@ -647,7 +706,7 @@ inline std::string parse_map(const std::string& text, Map& M) {
     M.nwave = 0;
     for (signed char v : M.w) M.nwave = int(imax(M.nwave, i64(v) + 1));
     bool any = false;
-    for (int md = 0; md < 3; ++md) {
+    for (int md = 0; md < 6; ++md) {
         if (!M.modes[md]) continue;
         any = true;
         if (!have_spawn[md]) return "MODES 里有形式 " + std::to_string(md) + "，但没有它的 SPAWN";
@@ -658,17 +717,19 @@ inline std::string parse_map(const std::string& text, Map& M) {
                 return "形式 " + std::to_string(md) + " 的 " + std::to_string(k) + " 号出生点不在能站的格子上";
         }
     }
+    if ((M.modes[3] || M.modes[4] || M.modes[5]) && M.deploy.empty()) return "缺少布阵区";
+    if (M.modes[M_CONTROL] && (M.points.size() != 3 || M.nwave != 0)) return "占点图需要三个点和不塌陷的地图";
     if (!any) return "MODES 至少要有一种形式";
     return "";
 }
 // 写成地图文件（parse_map 能读回来）
 inline std::string map_file_text(const Map& M) {
     std::string o = "CELL " + std::to_string(CELL) + "\nNAME " + M.name + "\nMODES";
-    for (int md = 0; md < 3; ++md)
+    for (int md = 0; md < 6; ++md)
         if (M.modes[md]) o += " " + std::to_string(md);
     o += "\n";
     char buf[64];
-    for (int md = 0; md < 3; ++md) {
+    for (int md = 0; md < 6; ++md) {
         if (!M.modes[md]) continue;
         o += "SPAWN " + std::to_string(md);
         for (int k = 0; k < MODE_PLAYERS[md]; ++k) {
@@ -676,6 +737,14 @@ inline std::string map_file_text(const Map& M) {
             o += buf;
         }
         o += "\n";
+    }
+    for (const auto& z : M.deploy) {
+        std::snprintf(buf, sizeof buf, "DEPLOY %.3f %.3f %.3f %.3f\n", z.x0/1000., z.y0/1000., z.x1/1000., z.y1/1000.);
+        o += buf;
+    }
+    for (const auto& pt : M.points) {
+        std::snprintf(buf, sizeof buf, " %.3f %.3f %.3f\n", pt.x/1000., pt.y/1000., pt.r/1000.);
+        o += "POINT " + pt.name + buf;
     }
     o += "GRID " + std::to_string(M.nx) + " " + std::to_string(M.ny) + "\n";
     for (int y = 0; y < M.ny; ++y) {
@@ -706,7 +775,7 @@ inline std::string map_sym_problem(const Map& M, int md) {
             }
         const int np = MODE_PLAYERS[md];
         for (int s = 0; s < np; ++s) {
-            const int ns = md == 0 ? 1 - s : md == 2 ? (s + 4) % 8 : ffa_seat_of_sym(seat_sym(1, s) ^ k);
+            const int ns = md == 0 ? 1 - s : md >= 3 ? (s + 5) % 10 : md == 2 ? (s + 4) % 8 : ffa_seat_of_sym(seat_sym(1, s) ^ k);
             i64 ox, oy;
             sym_point(M.width(), M.height(), k, M.spx[md][s], M.spy[md][s], ox, oy);
             if (ox != M.spx[md][ns] || oy != M.spy[md][ns]) return std::string("出生点 ") + std::to_string(s) + " " + nm + "后不是 " + std::to_string(ns) + " 号";
@@ -1132,6 +1201,7 @@ struct Player {
     i64 dead_t = -1, cause = K_NONE, killer = -1;
     i64 px = 0, py = 0;      // 这一步开始时的位置
     i64 mvx = 0, mvy = 0;    // 这一步的移动意图
+    i64 lives = 0, inv = 0, revivals = 0;
     i64 retired = 0;         // 程序已被结束（之后动作一律为 0）
     i64 unknown = 0;         // 只在选手的模拟里：位置未知（看不见），不参与模拟
     i64 slash_win = 0;       // 人类挥砍多帧砍镖判定剩余步数（0 = 未激活；Bot 始终为 0）
@@ -1177,14 +1247,36 @@ inline i64 dart_step_len(const Config& cf, const Dart& D) {
 
 enum EventType {
     EV_THROW, EV_RELEASE, EV_TURN, EV_CATCH, EV_DROP, EV_PICK, EV_RECALL, EV_LOST, EV_SLASH, EV_KICK, EV_SWING, EV_DASH, EV_STOP,
-    EV_HIT, EV_CUT, EV_KICKHIT, EV_FALL, EV_DEATH, EV_WARN, EV_COLLAPSE, EV_END, EV_BLOCK, EV_CALL, EV_CANCEL, EV_CLASH, EV_COUNT
+    EV_HIT, EV_CUT, EV_KICKHIT, EV_FALL, EV_DEATH, EV_WARN, EV_COLLAPSE, EV_END, EV_BLOCK, EV_CALL, EV_CANCEL, EV_CLASH, EV_CAPTURE, EV_RESPAWN, EV_LIFE, EV_COUNT
 };
 constexpr const char* EV_NAME[EV_COUNT] = {"THROW", "RELEASE", "TURN", "CATCH", "DROP", "PICK", "RECALL", "LOST", "SLASH", "KICK", "SWING",
                                            "DASH", "STOP", "HIT", "CUT", "KICKHIT", "FALL", "DEATH", "WARN", "COLLAPSE", "END",
-                                           "BLOCK", "CALL", "CANCEL", "CLASH"};
+                                           "BLOCK", "CALL", "CANCEL", "CLASH", "CAPTURE", "RESPAWN", "LIFE"};
 struct Event { i64 t, type, a, b, c, d; };
 
+struct Scoreboard {
+    i64 owner[3] = {-1,-1,-1}, taking[3] = {-1,-1,-1}, prog[3] = {};
+    i64 score[2] = {}, captures[2] = {};
+};
+
+struct Formation {
+    i64 x[MAXP]{}, y[MAXP]{};
+    int king[2] = {0,5};
+    std::string names[MAXP], plan[2];
+    static Formation defaults(const Map& m, int mode) {
+        Formation f;
+        for (int k = 0; k < MODE_PLAYERS[mode]; ++k) {
+            f.x[k] = m.spx[mode][k]; f.y[k] = m.spy[mode][k];
+            f.names[k] = std::to_string(k);
+        }
+        return f;
+    }
+};
 struct GameInfo {
+    int king[2] = {-1,-1};
+    std::string names[MAXP], plan;
+    std::vector<Point> points;
+    i64 base_x[MAXP]{}, base_y[MAXP]{};
     Config cfg;
     std::shared_ptr<const Map> map;
     int n = 0;               // 这一局几人
@@ -1193,9 +1285,24 @@ struct GameInfo {
     i64 spx[MAXP], spy[MAXP];  // 本局每人的出生点（地图的出生点 + 按种子的抖动）
     i64 step_ms = 0, first_ms = 0;
     const Map& M() const { return *map; }
+    // 用本队战术单里的点名查场上索引，可直接读 points 和观察的 owner/taking/prog。
+    int point_index(const std::string& local_name) const {
+        for (int i = 0; i < int(points.size()); ++i) {
+            const auto& p = points[i];
+            if (p.name != local_name) continue;
+            if (team[seat] == 0) return i;
+            for (int j = 0; j < int(points.size()); ++j) {
+                if (points[j].x == M().width() - p.x && points[j].y == M().height() - p.y)
+                    return j;
+            }
+        }
+        return -1;
+    }
 };
 
-struct Obs {
+struct Obs : Scoreboard {
+    int mode = 0;
+    i64 lives[MAXP]{}, inv[MAXP]{};
     i64 t = 0;
     int n = 0, seat = 0;
     Player p[MAXP];
@@ -1206,7 +1313,8 @@ struct Obs {
 
 // ------------------------------------------------------------------ 对局
 
-struct Game {
+struct Game : Scoreboard {
+    Formation formation;
     Config cf;
     u64 seed = 0;
     std::shared_ptr<const Map> map;
@@ -1260,7 +1368,14 @@ struct Game {
 
     Game() {}
     // 裁判用：在地图 m 上开一局（m 必须支持 cfg.mode）；seed 决定出生点抖动（0 = 不抖）
-    Game(const Config& cfg, std::shared_ptr<const Map> m, bool rec, u64 seed_ = 0) : cf(cfg), seed(seed_), map(m), record(rec) {
+    Game(const Config& cfg, std::shared_ptr<const Map> m, bool rec, u64 seed_ = 0, const Formation* f = nullptr) : cf(cfg), seed(seed_), map(m), record(rec) {
+        // 兼容旧式接口：选手可直接给 Config::mode 赋值。
+        if (cf.mode >= M_ELIM) {
+            if (!cf.custom_steps && cf.steps == 800) cf.steps = 1200;
+            if (!cf.custom_start && cf.col_start == 240) cf.col_start = 300;
+            if (!cf.custom_jitter && cf.spawn_jit == 1000) cf.spawn_jit = 500;
+        }
+        formation = f ? *f : Formation::defaults(*map, int(cf.mode));
         init_players();
         hist = std::make_shared<std::vector<Snap>>(size_t(iclamp(cf.delay, 0, MAX_DELAY) + 1));
         snapshot();
@@ -1269,9 +1384,15 @@ struct Game {
     // 注意：观察里别人是 DELAY 步以前的样子，这里照原样放进来（要往前推，自己写）。
     Game(const GameInfo& gi, const Obs& o) : cf(gi.cfg), map(gi.map), n(gi.n) {
         for (int k = 0; k < n; ++k) { spx[k] = gi.spx[k]; spy[k] = gi.spy[k]; }
+        static_cast<Scoreboard&>(*this) = o;
+        for (int side = 0; side < 2; ++side) formation.king[side] = gi.king[side];
         t = o.t;
         for (int k = 0; k < n; ++k) {
+            formation.x[k] = gi.base_x[k];
+            formation.y[k] = gi.base_y[k];
             p[k] = o.p[k];
+            p[k].lives = o.lives[k];
+            p[k].inv = o.inv[k];
             p[k].team = gi.team[k];
             p[k].px = p[k].x;
             p[k].py = p[k].y;
@@ -1285,16 +1406,30 @@ struct Game {
 
     // 出生点抖动：从种子取一个偏移 (dx, dy)，0 号座位（4v4 是 0～3 号）挪 (dx, dy)，其他座位按地图的对称挪转过去的偏移；
     // 任何一个出生点挪完站不住（圆心不在地面 / 草丛，或碰到墙）就换下一个偏移，试 32 次都不行就不挪。
-    static void jitter_spawns(const Config& cf, const Map& m, u64 seed, i64* sx, i64* sy) {
-        const int md = int(iclamp(cf.mode, 0, 2));
+    static void jitter_spawns(const Config& cf, const Map& m, u64 seed, i64* sx, i64* sy, const Formation* f = nullptr) {
+        const int md = int(iclamp(cf.mode, 0, 5));
         const int np = MODE_PLAYERS[md];
         for (int k = 0; k < np; ++k) {
-            sx[k] = m.spx[md][k];
-            sy[k] = m.spy[md][k];
+            sx[k] = f ? f->x[k] : m.spx[md][k];
+            sy[k] = f ? f->y[k] : m.spy[md][k];
         }
-        if (seed == 0 || cf.spawn_jit <= 0) return;
+        if ((seed == 0 && md < M_ELIM) || cf.spawn_jit <= 0) return;
         SplitMix64 rng(seed * 0x9E3779B97F4A7C15ULL + 0x51ED270B27C6F3A1ULL);
         const i64 W = m.width(), H = m.height();
+        if (md >= M_ELIM) {
+            for (int k = 0; k < np; ++k) {
+                for (int attempt = 0; attempt < 32; ++attempt) {
+                    const i64 x = sx[k] + rng.range(-cf.spawn_jit, cf.spawn_jit);
+                    const i64 y = sy[k] + rng.range(-cf.spawn_jit, cf.spawn_jit);
+                    const int terrain = cell_of_point(cf, m, x, y, 0);
+                    if ((terrain == C_FLOOR || terrain == C_GRASS) && m.in_deploy(k, x, y) && !circle_hits_wall(m, cf.body_r, x, y)) {
+                        sx[k] = x; sy[k] = y;
+                        break;
+                    }
+                }
+            }
+            return;
+        }
         for (int attempt = 0; attempt < 32; ++attempt) {
             const i64 dx = rng.range(-cf.spawn_jit, cf.spawn_jit), dy = rng.range(-cf.spawn_jit, cf.spawn_jit);
             i64 tx[MAXP], ty[MAXP];
@@ -1324,7 +1459,7 @@ struct Game {
     void init_players() {
         n = cf.nplayers();
         const Map& m = M();
-        jitter_spawns(cf, m, seed, spx, spy);
+        jitter_spawns(cf, m, seed, spx, spy, &formation);
         for (int k = 0; k < n; ++k) {
             Player& P = p[k];
             P = Player();
@@ -1332,7 +1467,8 @@ struct Game {
             P.y = spy[k];
             P.px = P.x;
             P.py = P.y;
-            P.team = cf.mode == M_DUEL ? k : cf.mode == M_FFA ? k : (k < 4 ? 0 : 1);
+            P.team = cf.mode == M_DUEL ? k : cf.mode == M_FFA ? k : (k < n / 2 ? 0 : 1);
+            if (cf.mode == M_KING && formation.king[P.team] == k) P.lives = cf.king_lives;
             P.face = iatan2(m.height() / 2 - P.y, m.width() / 2 - P.x);  // 面向场地中心
             d[k] = Dart();
             d[k].x = P.x;
@@ -1362,6 +1498,17 @@ struct Game {
             gi.team[k] = k < n ? p[k].team : -1;
             gi.spx[k] = spx[k];
             gi.spy[k] = spy[k];
+        }
+        if (cf.mode >= M_ELIM) {
+            gi.plan = formation.plan[p[seat].team];
+            gi.points = M().points;
+            if (cf.mode == M_KING) std::copy_n(formation.king, 2, gi.king);
+            for (int k = 0; k < n; ++k) {
+                gi.names[k] = formation.names[k];
+                gi.base_x[k] = mates(seat, k) ? formation.x[k] : -1;
+                gi.base_y[k] = mates(seat, k) ? formation.y[k] : -1;
+                if (!mates(seat, k)) gi.spx[k] = gi.spy[k] = -1;
+            }
         }
         gi.step_ms = step_ms;
         gi.first_ms = first_ms;
@@ -1398,6 +1545,8 @@ struct Game {
     // 看不看得见也按那一刻算；队友的消息是当前的（上一步发的）。
     Obs observe(int seat) const {
         Obs o;
+        o.mode = int(cf.mode);
+        static_cast<Scoreboard&>(o) = *this;
         o.t = t;
         o.n = n;
         o.seat = seat;
@@ -1418,6 +1567,8 @@ struct Game {
             const bool see = old ? ((S->vis[k] >> seat) & 1) != 0 : can_see(seat, k);
             Q.vis = see ? 1 : 0;
             if (see) {
+                o.lives[k] = P.lives;
+                o.inv[k] = P.inv;
                 Q.x = P.x; Q.y = P.y; Q.vx = P.vx; Q.vy = P.vy; Q.face = P.face; Q.st = P.st; Q.timer = P.timer;
                 Q.ax = P.ax; Q.ay = P.ay; Q.cd = P.cd; Q.expose = P.expose;
             } else {
@@ -1713,6 +1864,48 @@ struct Game {
         a.my = best_y;
     }
 
+    void revive(int k) {
+        auto& q = p[k];
+        q.alive = 1; q.st = S_FREE; q.timer = 0;
+        q.unknown = formation.x[k] < 0;
+        q.x = q.px = q.unknown ? 0 : formation.x[k];
+        q.y = q.py = q.unknown ? 0 : formation.y[k];
+        q.vx = q.vy = q.ax = q.ay = q.cd = q.expose = q.msg = 0;
+        q.dashing = q.dash_pit = 0;
+        q.slash_win = q.melee_win = q.slash_win_hits = q.melee_win_used = q.block_win_used = q.swing_emitted = 0;
+        q.dash_has_target = q.dash_rem_x = q.dash_rem_y = q.dash_total_len = 0;
+        q.dash_pt_n = 0;
+        q.kicked_by = q.kick_t = q.dead_t = q.killer = -1;
+        q.cause = K_NONE;
+        q.face = iatan2(M().height()/2 - q.y, M().width()/2 - q.x);
+        d[k] = Dart();
+        d[k].x = q.x; d[k].y = q.y;
+        ++q.revivals;
+        ev(EV_RESPAWN, k, q.x, q.y);
+    }
+    void count_points() {
+        for (int i = 0; i < 3; ++i) {
+            const auto& pt = M().points[i];
+            int mask = 0;
+            for (int k = 0; k < n; ++k) {
+                if (!p[k].alive || p[k].unknown) continue;
+                const i64 dx = p[k].x - pt.x, dy = p[k].y - pt.y;
+                if (dx*dx + dy*dy <= pt.r*pt.r) mask |= 1 << p[k].team;
+            }
+            const int side = mask == 1 ? 0 : mask == 2 ? 1 : -1;
+            if (side < 0 || side == owner[i]) {
+                taking[i] = -1; prog[i] = 0;
+            } else {
+                if (taking[i] != side) { taking[i] = side; prog[i] = 0; }
+                if (++prog[i] >= cf.capture) {
+                    ev(EV_CAPTURE, i, owner[i], side);
+                    owner[i] = side; taking[i] = -1; prog[i] = 0;
+                    ++captures[side];
+                }
+            }
+            if (owner[i] >= 0) ++score[owner[i]];
+        }
+    }
     void step(const Action* acts) {
         if (over) return;
         const Map& m = LM();
@@ -1864,6 +2057,9 @@ struct Game {
             P.vy = next.vy;
             if (P.st == S_FREE && (P.vx || P.vy) && ilen(P.vx, P.vy) >= 20) P.face = iatan2(P.vy, P.vx);
         }
+        if (cf.mode == M_CONTROL)
+            for (int k = 0; k < n; ++k)
+                if (!p[k].alive && --p[k].timer <= 0) revive(k);
         // 3. 互相推开（地上的活人；同时算、同时推）
         {
             i64 sx[MAXP] = {}, sy[MAXP] = {};
@@ -1880,6 +2076,7 @@ struct Game {
                         dx = p[b].px - p[a].px; dy = p[b].py - p[a].py;
                         if (!dx && !dy) { dx = spx[b] - spx[a]; dy = spy[b] - spy[a]; }
                     }
+                    if (!dx && !dy && cf.mode >= M_ELIM) dx = 1;
                     const i64 dl = ilen(dx, dy);
                     if (!dl) continue;  // 非法地图的重复出生点无法提供几何方向
 #ifdef DART_TRAINING
@@ -1945,12 +2142,24 @@ struct Game {
         bool dies[MAXP] = {};
         i64 dcause[MAXP] = {}, dkiller[MAXP];
         for (int k = 0; k < MAXP; ++k) dkiller[k] = -1;
+        bool lost_life[MAXP]{};
         auto kill = [&](int victim, i64 cause, i64 killer, i64 prio) {
             // 同一步被几种方式打中：挥砍 > 飞镖 > 落坑；同种按凶手号小的
             (void)prio;
 #ifdef DART_TRAINING
             if (training && (train_flags[victim] & TF_NODIE) && cause != K_FALL) return;  // 训练：无敌（只记事件不出局）
 #endif
+            if (cf.mode == M_KING && victim == formation.king[p[victim].team]) {
+                Player& king = p[victim];
+                if (cause == K_FALL) king.lives = 0;
+                else {
+                    if (king.inv || lost_life[victim]) return;
+                    lost_life[victim] = true;
+                    --king.lives;
+                    ev(EV_LIFE, victim, king.lives, killer, cause);
+                    if (king.lives > 0) { king.inv = cf.king_inv; return; }
+                }
+            }
             if (!dies[victim]) {
                 dies[victim] = true;
                 dcause[victim] = cause;
@@ -2001,6 +2210,7 @@ struct Game {
                 if (human_melee_active[k] || (fire[k] && !P.melee_win_used)) {
                     for (int q = 0; q < n; ++q) {
                         if (q == k || !p[q].alive || p[q].unknown) continue;
+                        if (slash && p[q].inv > 0) continue;  // 刺王：无敌中的国王砍不动（踢照样）
                         if (!slash && kick_protected[q]) continue;
                         const i64 dx = p[q].x - P.x, dy = p[q].y - P.y;
                         const i64 dd = dx * dx + dy * dy;
@@ -2100,6 +2310,7 @@ struct Game {
                     if (!P.melee_win_used) {
                         for (int q = 0; q < n; ++q) {
                             if (q == k || !p[q].alive || p[q].unknown) continue;
+                            if (slash && p[q].inv > 0) continue;  // 刺王：无敌中的国王砍不动（踢照样）
                             if (!slash && kick_protected[q]) continue;
                             const i64 dx = p[q].x - P.x, dy = p[q].y - P.y;
                             const i64 dd = dx * dx + dy * dy;
@@ -2306,6 +2517,7 @@ struct Game {
                 if (q == k || !p[q].alive || p[q].unknown) continue;
                 if (M5.swept_blk && q == M5.blk_by) continue;  // 已被该挥砍者在本步击中前格挡
                 const Player& Q = p[q];
+                if (Q.inv > 0) continue;  // 刺王：无敌中的国王镖穿过去
                 const i64 qx1 = M5.swept_blk ? (Q.px + i64(std::llround(double(Q.x - Q.px) * M5.blk_s))) : Q.x;
                 const i64 qy1 = M5.swept_blk ? (Q.py + i64(std::llround(double(Q.y - Q.py) * M5.blk_s))) : Q.y;
                 if (seg_near_origin(x0 - Q.px, y0 - Q.py, x1 - qx1, y1 - qy1, R)) {
@@ -2448,7 +2660,8 @@ struct Game {
             Player& P = p[k];
             P.alive = 0;
             P.st = S_DEAD;
-            P.timer = 0;
+            P.inv = 0;
+            P.timer = cf.mode == M_CONTROL ? cf.respawn : 0;
             P.dash_has_target = 0;
             P.dash_rem_x = P.dash_rem_y = 0;
             P.dash_pt_n = 0;
@@ -2494,11 +2707,13 @@ struct Game {
             }
             if (d[k].st != D_HAND) ++P.empty_steps;
         }
+        if (cf.mode == M_CONTROL) count_points();
         // 10. 计时、塌陷、判定结束
         for (int k = 0; k < n; ++k) {
             if (p[k].st == S_FREE && p[k].timer > 0) --p[k].timer;
             if (p[k].expose > 0) --p[k].expose;
             if (p[k].cd > 0) --p[k].cd;
+            if (p[k].inv > 0 && !lost_life[k]) --p[k].inv;
         }
         for (int r = 0; r < M().nwave; ++r) {  // 下一步起塌 / 预警的波（事件记在这一步）
             const i64 f = wave_fall_step(cf, r);
@@ -2608,7 +2823,22 @@ struct Game {
 #ifdef DART_TRAINING
         if (training) return;  // 训练：不限时、不结束
 #endif
-        if (cf.mode == M_TEAM) {
+        if (cf.mode == M_CONTROL) {
+            over = t >= cf.steps;
+            if (over) winner = score[0] == score[1] ? -1 : score[0] > score[1] ? 0 : 1;
+        } else if (cf.mode == M_KING) {
+            const Player& a = p[formation.king[0]];
+            const Player& b = p[formation.king[1]];
+            if (!a.alive || !b.alive || t >= cf.steps) {
+                over = true;
+                int delta = int(a.alive - b.alive);
+                if (!delta && a.alive) {
+                    if (a.lives != b.lives) delta = a.lives > b.lives ? 1 : -1;
+                    else for (int k = 0; k < n; ++k) delta += p[k].alive ? (p[k].team ? -1 : 1) : 0;
+                }
+                winner = delta > 0 ? 0 : delta < 0 ? 1 : -1;
+            }
+        } else if (cf.mode == M_TEAM || cf.mode == M_ELIM) {
             int alive_t[2] = {0, 0};
             for (int k = 0; k < n; ++k)
                 if (p[k].alive) ++alive_t[p[k].team & 1];
@@ -2659,6 +2889,11 @@ struct Game {
                 mix(v);
             const Dart& D = d[k];
             for (i64 v : {D.st, D.x, D.y, D.vx, D.vy, D.left, D.age}) mix(v);
+        }
+        if (cf.mode >= M_ELIM) {
+            for (int i = 0; i < 3; ++i) { mix(owner[i]); mix(taking[i]); mix(prog[i]); }
+            for (int i = 0; i < 2; ++i) { mix(score[i]); mix(captures[i]); }
+            for (int k = 0; k < n; ++k) { mix(p[k].lives); mix(p[k].inv); mix(p[k].revivals); }
         }
         char buf[32];
         std::snprintf(buf, sizeof buf, "%016llx", h);
@@ -2715,6 +2950,12 @@ inline bool read_map(std::istream& is, Map& M) {
     return true;
 }
 
+inline std::string points_line(const std::vector<Point>& points) {
+    std::ostringstream os;
+    os << "POINTS " << points.size();
+    for (const auto& pt : points) os << ' ' << pt.name << ' ' << pt.x << ' ' << pt.y << ' ' << pt.r;
+    return os.str() + "\n";
+}
 inline std::string protocol_header(const GameInfo& gi) {
     std::string o = "DART 2\nCFG " + gi.cfg.cfg_line() + "\n";
     o += "SEAT " + std::to_string(gi.seat) + " " + std::to_string(gi.n) + " " + std::to_string(gi.step_ms) + " " + std::to_string(gi.first_ms) + "\n";
@@ -2724,6 +2965,18 @@ inline std::string protocol_header(const GameInfo& gi) {
     o += "SPAWN";
     for (int i = 0; i < gi.n; ++i) o += " " + std::to_string(gi.spx[i]) + " " + std::to_string(gi.spy[i]);
     o += "\n";
+    if (gi.cfg.mode >= M_ELIM) {
+        o += "BASE";
+        for (int k = 0; k < gi.n; ++k) o += " " + std::to_string(gi.base_x[k]) + " " + std::to_string(gi.base_y[k]);
+        o += "\nNAMES";
+        for (int k = 0; k < gi.n; ++k) o += " " + gi.names[k];
+        o += "\nKING " + std::to_string(gi.king[0]) + " " + std::to_string(gi.king[1]) + "\n";
+        o += points_line(gi.points);
+        o += "PLAN ";
+        constexpr char hex[] = "0123456789abcdef";
+        for (unsigned char c : gi.plan) { o += hex[c >> 4]; o += hex[c & 15]; }
+        o += "\n";
+    }
     return o;
 }
 
@@ -2745,6 +2998,12 @@ inline std::string protocol_step(const Obs& ob) {
         const Dart& D = ob.d[i];
         for (i64 v : {D.st, D.x, D.y, D.vx, D.vy, D.left, D.age}) num(v);
         nl();
+    }
+    if (ob.mode >= M_ELIM) {
+        o += "STATE ";
+        for (int i = 0; i < ob.n; ++i) { num(ob.lives[i]); num(ob.inv[i]); }
+        for (int i = 0; i < 3; ++i) { num(ob.owner[i]); num(ob.taking[i]); num(ob.prog[i]); }
+        num(ob.score[0]); num(ob.score[1]); nl();
     }
     return o;
 }
@@ -2811,7 +3070,7 @@ inline bool read_info(std::istream& is, GameInfo& gi) {
         if (!(is >> gi.team[i])) return false;
     auto m = std::make_shared<Map>();
     if (!read_map(is, *m)) return false;
-    const int md = int(iclamp(gi.cfg.mode, 0, 2));
+    const int md = int(iclamp(gi.cfg.mode, 0, 5));
     m->modes[md] = true;
     if (!(is >> tok) || tok != "SPAWN") return false;
     for (int i = 0; i < gi.n; ++i) {
@@ -2819,12 +3078,33 @@ inline bool read_info(std::istream& is, GameInfo& gi) {
         m->spx[md][i] = gi.spx[i];
         m->spy[md][i] = gi.spy[i];
     }
+    if (md >= M_ELIM) {
+        if (!(is >> tok) || tok != "BASE") return false;
+        for (int k = 0; k < gi.n; ++k) if (!(is >> gi.base_x[k] >> gi.base_y[k])) return false;
+        if (!(is >> tok) || tok != "NAMES") return false;
+        for (int k = 0; k < gi.n; ++k) if (!(is >> gi.names[k])) return false;
+        if (!(is >> tok >> gi.king[0] >> gi.king[1]) || tok != "KING") return false;
+        int count;
+        if (!(is >> tok >> count) || tok != "POINTS" || count != (md == M_CONTROL ? 3 : 0)) return false;
+        m->points.resize(count);
+        for (auto& pt : m->points) if (!(is >> pt.name >> pt.x >> pt.y >> pt.r)) return false;
+        gi.points = m->points;
+        if (!(is >> tok) || tok != "PLAN") return false;
+        std::getline(is, line);
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (!line.empty() && line.front() == ' ') line.erase(0,1);
+        if (line.size() % 2 || line.find_first_not_of("0123456789abcdef") != std::string::npos) return false;
+        gi.plan.clear();
+        for (size_t i = 0; i < line.size(); i += 2)
+            gi.plan += char(std::strtol(line.substr(i,2).c_str(), nullptr, 16));
+    }
     gi.map = m;
     return true;
 }
 
 inline bool read_obs(std::istream& is, const GameInfo& gi, Obs& o) {
     if (!(is >> o.t)) return false;
+    o.mode = int(gi.cfg.mode);
     o.n = gi.n;
     o.seat = gi.seat;
     for (int i = 0; i < gi.n; ++i) {
@@ -2840,6 +3120,13 @@ inline bool read_obs(std::istream& is, const GameInfo& gi, Obs& o) {
         D = Dart();
         if (!(is >> D.st >> D.x >> D.y >> D.vx >> D.vy >> D.left >> D.age)) return false;
     }
+    if (o.mode >= M_ELIM) {
+        std::string tag;
+        if (!(is >> tag) || tag != "STATE") return false;
+        for (int k = 0; k < o.n; ++k) if (!(is >> o.lives[k] >> o.inv[k])) return false;
+        for (int i = 0; i < 3; ++i) if (!(is >> o.owner[i] >> o.taking[i] >> o.prog[i])) return false;
+        if (!(is >> o.score[0] >> o.score[1])) return false;
+    }
     return true;
 }
 
@@ -2847,12 +3134,14 @@ inline bool read_obs(std::istream& is, const GameInfo& gi, Obs& o) {
 
 inline std::string replay_header(const Game& g, const std::string* names) {
     std::string o = "DART-REPLAY 2\nENGINE " + std::string(ENGINE_VERSION) + "\nCFG " + g.cf.cfg_line() + "\nSEED " + std::to_string(g.seed) + "\n";
-    o += "MODE " + std::to_string(g.cf.mode) + " " + MODE_NAME[iclamp(g.cf.mode, 0, 2)] + "\n";
+    o += "MODE " + std::to_string(g.cf.mode) + " " + MODE_NAME[iclamp(g.cf.mode, 0, 5)] + "\n";
     o += "MAPNAME " + (g.M().name.empty() ? std::string("_") : g.M().name) + "\n";
     o += map_text(g.M());
     o += "WAVES " + std::to_string(g.M().nwave);
     for (int r = 0; r < g.M().nwave; ++r) o += " " + std::to_string(wave_fall_step(g.cf, r));
     o += "\n";
+    if (g.cf.mode == M_CONTROL) o += points_line(g.M().points);
+    if (g.cf.mode == M_KING) o += "KING " + std::to_string(g.formation.king[0]) + " " + std::to_string(g.formation.king[1]) + "\n";
     o += "PLAYERS " + std::to_string(g.n) + "\n";
     for (int k = 0; k < g.n; ++k) o += "PLAYER " + std::to_string(k) + " " + std::to_string(g.p[k].team) + " " + names[k] + "\n";
     return o;
@@ -2883,6 +3172,15 @@ inline std::string replay_state(const Game& g) {
     o += "| ";
     num(fallen);
     num(warn);
+    if (g.cf.mode == M_CONTROL) {
+        o += "| ";
+        for (int i = 0; i < 3; ++i) { num(g.owner[i]); num(g.taking[i]); num(g.prog[i]); }
+        num(g.score[0]); num(g.score[1]);
+    }
+    if (g.cf.mode == M_KING) {
+        o += "| ";
+        for (int k : g.formation.king) { num(g.p[k].lives); num(g.p[k].inv); }
+    }
     o.back() = '\n';
     return o;
 }
@@ -2906,8 +3204,10 @@ inline std::string replay_end(const Game& g) {
     int alive_t[2] = {0, 0};
     for (int k = 0; k < g.n; ++k)
         if (g.p[k].alive) ++alive_t[g.p[k].team & 1];
-    const bool ko = g.cf.mode == M_TEAM ? (alive_t[0] == 0 || alive_t[1] == 0) : g.alive_count() <= 1;
-    std::string o = "END " + std::to_string(g.t) + " " + std::to_string(g.winner) + " " + g.digest() + (ko ? " ko" : " time") + "\n";
+    const bool ko = g.cf.mode == M_CONTROL ? false : g.cf.mode == M_KING ?
+        (!g.p[g.formation.king[0]].alive || !g.p[g.formation.king[1]].alive) :
+        (g.cf.mode == M_TEAM || g.cf.mode == M_ELIM) ? (alive_t[0] == 0 || alive_t[1] == 0) : g.alive_count() <= 1;
+    std::string o = "END " + std::to_string(g.t) + " " + std::to_string(g.winner) + " " + g.digest() + (ko ? " ko" : (g.cf.mode == M_KING || g.cf.mode == M_ELIM) ? " limit" : " time") + "\n";
     int rank[MAXP];
     g.ranks(rank);
     for (int k = 0; k < g.n; ++k) {

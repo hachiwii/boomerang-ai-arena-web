@@ -15,6 +15,8 @@ import { ICON_DESKTOP, ICON_FULLSCREEN, ICON_FULLSCREEN_EXIT, ICON_GLOBE, ICON_P
 import { GlobalStatsPanel } from './globalStatsUI';
 import { publicStatsAvailable } from '../net/publicStats';
 import { LeaderboardPanel } from './leaderboardUI';
+import { TeamLobbyPanel } from './teamLobby';
+import { bindQqGroupPill, openQqGroupDialog, qqGroupButtonHtml, qqGroupPillHtml } from './qqGroup';
 
 const DUP_RING_ACCENTS = ['#FF4D6D', '#2EC4B6', '#FFB703', '#8338EC'];
 const MAP_POOLS_STORAGE_KEY = 'boomerang_arena_map_pools_v1';
@@ -44,7 +46,12 @@ interface DraftSlot {
 
 export interface LobbyCallbacks {
   onSelectMap: (map: MapMeta) => void;
+  /** 空闲时预先准备这些地图的预览（团队赛页切图不卡） */
+  onPrewarmMaps?: (maps: MapMeta[]) => void;
   onStartMatch: (config: MatchConfig) => void;
+  /** 5v5 联机房主开局 / 进入房间里正在进行的对局 */
+  onStartRoomMatch?: (start: import('../net/teamRoomProtocol').RoomMatchStart) => void;
+  onWatchRoomMatch?: () => void;
   onStartCricketBatch?: (count: number) => void;
   onOpenHistory: () => void;
   onOpenSettings: () => void;
@@ -58,7 +65,7 @@ export interface LobbyCallbacks {
   onToggleFullscreen?: () => void;
 }
 
-export type LobbyTab = 'ranked' | 'cricket' | 'custom' | 'pvp';
+export type LobbyTab = 'ranked' | 'team' | 'cricket' | 'custom' | 'pvp';
 
 /** Short, one-line reasons shown under the PvP code input. */
 const PVP_FAIL_TEXT: Record<PvpChallengeFailReason, string> = {
@@ -232,6 +239,7 @@ export class LobbyUI {
   private readonly callbacks: LobbyCallbacks;
 
   private activeTab: LobbyTab = 'ranked';
+  private readonly teamPanel: TeamLobbyPanel;
   private rankedMode: RankedMode = 'solo';
   private showLeaderboard = false;
   private mapPoolOpen = false;
@@ -331,6 +339,19 @@ export class LobbyUI {
     this.container = document.createElement('div');
     this.container.className = 'lobby-overlay';
     root.appendChild(this.container);
+
+    // 团队赛页（5v5）：自己管理阵容、战术和布局
+    this.teamPanel = new TeamLobbyPanel({
+      settings,
+      onStartMatch: (config) => this.callbacks.onStartMatch(config),
+      onStartRoomMatch: (start) => this.callbacks.onStartRoomMatch?.(start),
+      onWatchRoomMatch: () => this.callbacks.onWatchRoomMatch?.(),
+      onPreviewMap: (map) => {
+        if (this.activeTab === 'team') this.callbacks.onSelectMap(map);
+      },
+      onPrewarmMaps: (maps) => this.callbacks.onPrewarmMaps?.(maps),
+      isLoading: () => this.loadingMessage !== null,
+    });
 
     // Custom contestant dropdown portal
     this.dropdownMenu = document.createElement('div');
@@ -501,6 +522,13 @@ export class LobbyUI {
 
   public setLoading(msg: string | null) {
     this.loadingMessage = msg;
+    if (this.activeTab === 'team') {
+      const btn = this.container.querySelector<HTMLButtonElement>('#team-start');
+      if (btn && msg) {
+        btn.disabled = true;
+        btn.textContent = msg;
+      } else if (!msg) this.teamPanel.syncLoading();
+    }
     // Something is launching (training, a match): not challengeable meanwhile; back on the tab if it failed
     this.syncPvpPresence();
     if (this.activeTab === 'pvp') {
@@ -630,6 +658,11 @@ export class LobbyUI {
 
   public getSelectedMap(): MapMeta {
     return this.maps.find((m) => m.id === this.selectedMapId) || this.maps[0];
+  }
+
+  /** 大厅背景该显示的地图：团队赛页是选中的团队图，其他页是自定义里选中的地图。 */
+  public getLobbyPreviewMap(): MapMeta {
+    return this.activeTab === 'team' ? this.teamPanel.previewMeta() : this.getSelectedMap();
   }
 
   /**
@@ -2509,7 +2542,9 @@ export class LobbyUI {
       : '';
 
     const bodyHtml =
-      this.activeTab === 'ranked'
+      this.activeTab === 'team'
+        ? `<div class="team-lobby" id="team-lobby-mount"></div>`
+        : this.activeTab === 'ranked'
         ? this.renderRankedBody()
         : this.activeTab === 'cricket'
           ? this.renderCricketBody()
@@ -2549,7 +2584,7 @@ export class LobbyUI {
         </a>`;
 
     this.container.innerHTML = `
-      <div class="lobby-card ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''} ${this.activeTab === 'cricket' ? 'lobby-card-cricket' : ''} ${this.activeTab === 'pvp' ? 'lobby-card-pvp' : ''}">
+      <div class="lobby-card ${this.activeTab === 'team' ? 'lobby-card-team' : ''} ${this.activeTab === 'ranked' && !this.showLeaderboard ? 'lobby-card-ranked' : ''} ${this.activeTab === 'cricket' ? 'lobby-card-cricket' : ''} ${this.activeTab === 'pvp' ? 'lobby-card-pvp' : ''}">
         <header class="lobby-header">
           <div class="lobby-title-group">
             <h1>回旋镖大作战</h1>
@@ -2557,11 +2592,13 @@ export class LobbyUI {
           <div class="lobby-nav-right lobby-nav-row">
             <div class="lobby-tabs">
               <button class="lobby-tab ${this.activeTab === 'ranked' ? 'active' : ''}" id="tab-ranked"><span class="nav-ico">🏆</span> 排位赛</button>
+              <button class="lobby-tab ${this.activeTab === 'team' ? 'active' : ''}" id="tab-team" title="5v5 团队赛：歼灭 / 占点 / 刺王"><span class="nav-ico">⚔️</span> 团队赛</button>
               <button class="lobby-tab ${this.activeTab === 'cricket' ? 'active' : ''}" id="tab-cricket"><span class="nav-ico">🦗</span> 斗蛐蛐</button>
               <button class="lobby-tab ${this.activeTab === 'custom' ? 'active' : ''}" id="tab-custom"><span class="nav-ico">🎛️</span> 自定义</button>
               ${isPvpAvailable() ? `<button class="lobby-tab lobby-tab-pvp ${this.activeTab === 'pvp' ? 'active' : ''}" id="tab-pvp" title="在线 1v1：用 6 位对战码和好友对战"><span class="nav-ico">🌐</span> PvP</button>` : ''}
             </div>
             <div class="lobby-nav-actions">
+              ${headerToolsInNav ? qqGroupButtonHtml() : ''}
               <button type="button" class="lobby-settings-btn lobby-training-btn" id="btn-start-training" title="训练场：打稻草人、练走位冲刺、练躲镖挡镖（不限时，玩家无敌）" aria-label="训练"><span class="nav-ico">🎯</span><span class="nav-label"> 训练</span></button>
               <button type="button" class="lobby-settings-btn lobby-history-btn" id="btn-open-history" title="查看对局历史与观战回放（各模式分别保存最近 50 场）" aria-label="对局历史"><span class="nav-ico">📜</span><span class="nav-label"> 对局历史</span></button>
               <button type="button" class="lobby-settings-btn lobby-bots-btn" id="btn-open-bot-manager" title="上传 C++ 源码在浏览器里编译成自定义 Bot，可在自定义对局和斗蛐蛐中使用" aria-label="管理 Bot"><span class="nav-ico">🤖</span><span class="nav-label"> 管理 Bot</span></button>
@@ -2570,6 +2607,7 @@ export class LobbyUI {
             </div>
           </div>
           <div class="lobby-header-platform">
+            ${headerToolsInNav ? '' : qqGroupPillHtml()}
             ${headerToolsInNav ? '' : headerToolsHtml}
             <span class="lobby-platform-slot">${this.renderPlatformButtonsHtml()}</span>
           </div>
@@ -2596,6 +2634,13 @@ export class LobbyUI {
       this.callbacks.onToggleFullscreen?.();
     });
 
+    // 玩家 QQ 群: PC pill copies the number, mobile penguin button opens the dialog
+    bindQqGroupPill(this.container.querySelector<HTMLButtonElement>('#btn-copy-qq-group'));
+    this.container.querySelector('#btn-open-qq-group')?.addEventListener('click', () => {
+      this.closeDropdown();
+      openQqGroupDialog();
+    });
+
     // Bind top tabs, training, history & settings buttons
     this.container.querySelector('#btn-start-training')?.addEventListener('click', () => {
       this.closeDropdown();
@@ -2616,8 +2661,22 @@ export class LobbyUI {
     this.container.querySelector('#btn-toggle-bgm')?.addEventListener('click', () => {
       this.settings.setBgmEnabled(!this.settings.get().bgmEnabled);
     });
+    const leaveTeamTab = () => {
+      if (this.activeTab !== 'team') return;
+      this.teamPanel.unmount();
+      this.callbacks.onSelectMap(this.getSelectedMap());
+    };
+    this.container.querySelector('#tab-team')?.addEventListener('click', () => {
+      if (this.activeTab === 'team') return;
+      this.activeTab = 'team';
+      this.showLeaderboard = false;
+      this.closeMapPoolModal();
+      this.leaderboardPanel.hideTooltip();
+      this.render();
+    });
     this.container.querySelector('#tab-ranked')?.addEventListener('click', () => {
       if (this.activeTab === 'ranked' && !this.showLeaderboard) return;
+      leaveTeamTab();
       this.activeTab = 'ranked';
       this.showLeaderboard = false;
       this.closeMapPoolModal();
@@ -2626,6 +2685,7 @@ export class LobbyUI {
     });
     this.container.querySelector('#tab-cricket')?.addEventListener('click', () => {
       if (this.activeTab === 'cricket') return;
+      leaveTeamTab();
       this.activeTab = 'cricket';
       this.showLeaderboard = false;
       this.closeMapPoolModal();
@@ -2634,6 +2694,7 @@ export class LobbyUI {
     });
     this.container.querySelector('#tab-custom')?.addEventListener('click', () => {
       if (this.activeTab === 'custom') return;
+      leaveTeamTab();
       this.activeTab = 'custom';
       this.showLeaderboard = false;
       this.closeMapPoolModal();
@@ -2642,6 +2703,7 @@ export class LobbyUI {
     });
     this.container.querySelector('#tab-pvp')?.addEventListener('click', () => {
       if (this.activeTab === 'pvp') return;
+      leaveTeamTab();
       this.activeTab = 'pvp';
       this.showLeaderboard = false;
       this.closeMapPoolModal();
@@ -2651,6 +2713,13 @@ export class LobbyUI {
 
     // Become challengeable only while the PvP tab is on screen
     this.syncPvpPresence();
+
+    // 团队赛页
+    if (this.activeTab === 'team') {
+      const mount = this.container.querySelector<HTMLElement>('#team-lobby-mount');
+      if (mount) void this.teamPanel.mount(mount);
+      return;
+    }
 
     // PvP tab bindings
     if (this.activeTab === 'pvp') {

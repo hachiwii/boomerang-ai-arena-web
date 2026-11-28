@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { computeDartVoxels, DART_CELL } from './dartShape';
 
 export interface VoxelPartData {
@@ -463,6 +464,8 @@ export function buildSlicedHalves(model: VoxelModelData, colorHex: string): {
   const lowerGroup = new THREE.Group();
   const mat = createVoxelMaterial(0.2).clone();
   const omat = getOutlineMaterial();
+  // Each half is rigid: merge all its parts into one body mesh + one outline mesh (2 draw calls instead of ~20)
+  const geos = { upMain: [] as THREE.BufferGeometry[], upOut: [] as THREE.BufferGeometry[], loMain: [] as THREE.BufferGeometry[], loOut: [] as THREE.BufferGeometry[] };
 
   for (const [nm, part] of Object.entries(model.parts)) {
     if (nm.startsWith('face_') && nm !== 'face_tight') continue;
@@ -495,15 +498,29 @@ export function buildSlicedHalves(model: VoxelModelData, colorHex: string): {
 
     if (upPart.voxels.length > 0 || upPart.slabs.length > 0) {
       const { mainGeo, outlineGeo } = buildVoxelPartGeometry(upPart, VOX_U, OUTLINE_W);
-      upperGroup.add(new THREE.Mesh(mainGeo, mat));
-      if (outlineGeo) upperGroup.add(new THREE.Mesh(outlineGeo, omat));
+      geos.upMain.push(mainGeo);
+      if (outlineGeo) geos.upOut.push(outlineGeo);
     }
     if (loPart.voxels.length > 0 || loPart.slabs.length > 0) {
       const { mainGeo, outlineGeo } = buildVoxelPartGeometry(loPart, VOX_U, OUTLINE_W);
-      lowerGroup.add(new THREE.Mesh(mainGeo, mat));
-      if (outlineGeo) lowerGroup.add(new THREE.Mesh(outlineGeo, omat));
+      geos.loMain.push(mainGeo);
+      if (outlineGeo) geos.loOut.push(outlineGeo);
     }
   }
+  const addMerged = (grp: THREE.Group, list: THREE.BufferGeometry[], material: THREE.Material) => {
+    if (!list.length) return;
+    const merged = list.length > 1 ? mergeGeometries(list) : list[0];
+    if (merged) {
+      grp.add(new THREE.Mesh(merged, material));
+      if (merged !== list[0]) list.forEach((g) => g.dispose());
+    } else {
+      for (const g of list) grp.add(new THREE.Mesh(g, material));
+    }
+  };
+  addMerged(upperGroup, geos.upMain, mat);
+  addMerged(upperGroup, geos.upOut, omat);
+  addMerged(lowerGroup, geos.loMain, mat);
+  addMerged(lowerGroup, geos.loOut, omat);
 
   const s = CHAR_SCALE * (model.scale || 1.0);
   upperGroup.scale.setScalar(s);

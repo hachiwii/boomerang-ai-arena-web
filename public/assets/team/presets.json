@@ -1,0 +1,1040 @@
+[
+ {
+  "round": 1,
+  "mode": 3,
+  "map": "caldera",
+  "teams": {
+   "astra": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "astra": [
+       6,
+       5.6
+      ],
+      "sol": [
+       6,
+       13.6
+      ],
+      "hydrogen": [
+       5.9,
+       8.3
+      ],
+      "grok": [
+       5.8,
+       15.0
+      ],
+      "kimi": [
+       5.9,
+       11.7
+      ]
+     },
+     "king": null,
+     "plan": "wing astra N\nwing sol S\nwing hydrogen N\nwing grok S\nwing kimi S\nisland astra SCREEN\npace ALL BAL\nrally hydrogen 0,210,6.9,8.3\nrally kimi 0,210,6.9,11.7"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "astra": [
+       6,
+       5.6
+      ],
+      "sol": [
+       6,
+       13.6
+      ],
+      "hydrogen": [
+       4.7,
+       14.9
+      ],
+      "grok": [
+       5.9,
+       14.9
+      ],
+      "kimi": [
+       4.1,
+       13.4
+      ]
+     },
+     "king": null,
+     "plan": "wing astra N\nwing sol S\nwing hydrogen S\nwing grok S\nwing kimi S\nisland astra SCREEN\npace ALL BAL"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "astra": [
+       5.7,
+       5.3
+      ],
+      "sol": [
+       6.0,
+       13.6
+      ],
+      "hydrogen": [
+       4.7,
+       14.9
+      ],
+      "grok": [
+       5.9,
+       12.2
+      ],
+      "kimi": [
+       4.1,
+       9.0
+      ]
+     },
+     "king": null,
+     "plan": "wing astra N\nwing sol S\nwing hydrogen S\nwing grok S\nwing kimi N\nrole astra SCREEN\nrole sol GUARD\nrole hydrogen GUARD\nrole grok FLEX\nrole kimi FLEX\npace ALL BAL\nflex astra ROAM\nflex sol HOLD\nflex hydrogen HOLD\nflex grok ROAM\nflex kimi ROAM\nrally astra 0,55,6,3.5"
+    }
+   ],
+   "fable": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "fable": [
+       2.5,
+       7.0
+      ],
+      "opus": [
+       4.0,
+       10.0
+      ],
+      "carbon": [
+       2.5,
+       13.0
+      ],
+      "glm": [
+       5.5,
+       6.5
+      ],
+      "deepseek": [
+       5.5,
+       13.5
+      ]
+     },
+     "king": null,
+     "plan": ""
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "fable": [
+       2.5,
+       7.0
+      ],
+      "opus": [
+       4.0,
+       10.0
+      ],
+      "carbon": [
+       2.5,
+       13.0
+      ],
+      "glm": [
+       5.5,
+       6.5
+      ],
+      "deepseek": [
+       5.5,
+       13.5
+      ]
+     },
+     "king": null,
+     "plan": "fable go=14.9,10.8 until=720\nopus go=13.1,10.8 until=720\ncarbon go=14.0,9.0 until=720"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "fable": [
+       2.5,
+       7.0
+      ],
+      "opus": [
+       4.0,
+       10.0
+      ],
+      "carbon": [
+       2.5,
+       13.0
+      ],
+      "glm": [
+       5.5,
+       6.5
+      ],
+      "deepseek": [
+       5.5,
+       13.5
+      ]
+     },
+     "king": null,
+     "plan": "fable go=14.8,10.6 until=720\nopus go=13.2,9.2 until=720"
+    }
+   ]
+  }
+ },
+ {
+  "round": 2,
+  "mode": 3,
+  "map": "caldera",
+  "teams": {
+   "astra": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "astra": [
+       6,
+       5.6
+      ],
+      "sol": [
+       6,
+       13.6
+      ],
+      "hydrogen": [
+       5.9,
+       8.3
+      ],
+      "grok": [
+       5.8,
+       15.0
+      ],
+      "kimi": [
+       5.9,
+       11.7
+      ]
+     },
+     "king": null,
+     "plan": "wing astra N\nwing sol S\nwing hydrogen N\nwing grok S\nwing kimi S\nisland astra SCREEN\npace ALL BAL\nrally hydrogen 0,210,6.9,8.3\nrally kimi 0,210,6.9,11.7\nrally sol 0,70,11.0,16.5"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "astra": [
+       6,
+       5.6
+      ],
+      "sol": [
+       6,
+       13.6
+      ],
+      "hydrogen": [
+       5.9,
+       8.3
+      ],
+      "grok": [
+       5.8,
+       15.0
+      ],
+      "kimi": [
+       5.9,
+       11.7
+      ]
+     },
+     "king": null,
+     "plan": "wing astra N\nwing sol S\nwing hydrogen N\nwing grok S\nwing kimi S\nisland astra SCREEN\npace ALL BAL\nrally hydrogen 0,210,6.9,8.3\nrally kimi 0,210,6.9,11.7"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "astra": [
+       6,
+       5.6
+      ],
+      "sol": [
+       4.2,
+       13.2
+      ],
+      "hydrogen": [
+       5.9,
+       8.3
+      ],
+      "grok": [
+       5.9,
+       14.9
+      ],
+      "kimi": [
+       5.9,
+       11.7
+      ]
+     },
+     "king": null,
+     "plan": "wing astra N\nwing sol S\nwing hydrogen N\nwing grok S\nwing kimi S\nisland astra SCREEN\npace ALL BAL\nrally hydrogen 0,210,6.9,8.3\nrally kimi 0,210,6.9,11.7\nrally sol 0,62,9.0,14.3\nrally grok 0,70,10.9,16.6"
+    }
+   ],
+   "fable": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "fable": [
+       5.5,
+       5.6
+      ],
+      "opus": [
+       4.0,
+       6.6
+      ],
+      "carbon": [
+       5.5,
+       7.4
+      ],
+      "glm": [
+       3.0,
+       11.0
+      ],
+      "deepseek": [
+       5.0,
+       12.5
+      ]
+     },
+     "king": null,
+     "plan": "fable go=13.1,9.3 until=720\nopus go=13.1,10.9 until=720\ncarbon go=14.7,9.2 until=720\nglm go=4.0,9.0 until=400\ndeepseek go=4.0,11.5 until=400"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "fable": [
+       2.5,
+       7.0
+      ],
+      "opus": [
+       4.0,
+       10.0
+      ],
+      "carbon": [
+       2.5,
+       13.0
+      ],
+      "glm": [
+       5.5,
+       6.5
+      ],
+      "deepseek": [
+       5.5,
+       13.5
+      ]
+     },
+     "king": null,
+     "plan": ""
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "fable": [
+       2.5,
+       7.0
+      ],
+      "opus": [
+       4.0,
+       10.0
+      ],
+      "carbon": [
+       2.5,
+       13.0
+      ],
+      "glm": [
+       5.5,
+       6.5
+      ],
+      "deepseek": [
+       5.5,
+       13.5
+      ]
+     },
+     "king": null,
+     "plan": "fable go=14.9,10.8 until=720\nopus go=13.1,10.8 until=720\ncarbon go=14.0,9.0 until=720\nglm go=4.5,8.5 until=220\ndeepseek go=4.5,11.5 until=220"
+    }
+   ]
+  }
+ },
+ {
+  "round": 3,
+  "mode": 4,
+  "map": "piers",
+  "teams": {
+   "astra": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "astra": [
+       6.5,
+       9.0
+      ],
+      "sol": [
+       6.5,
+       16.2
+      ],
+      "hydrogen": [
+       6.5,
+       11.0
+      ],
+      "grok": [
+       6.5,
+       17.4
+      ],
+      "kimi": [
+       6.5,
+       3.8
+      ]
+     },
+     "king": null,
+     "plan": "lane astra B\nlane sol C\nlane hydrogen B\nlane grok C\nlane kimi A\nflex astra HOLD\nflex sol HOLD\nflex hydrogen ROAM\nflex grok HOLD\nflex kimi HOLD\nscreen astra SMART\npace ALL BAL\nrally kimi 0,1200,14.7,3.7"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "astra": [
+       6.5,
+       3.9
+      ],
+      "sol": [
+       6.5,
+       16.1
+      ],
+      "hydrogen": [
+       6.5,
+       9.2
+      ],
+      "grok": [
+       6.4,
+       17.6
+      ],
+      "kimi": [
+       6.4,
+       10.8
+      ]
+     },
+     "king": null,
+     "plan": "lane astra A\nlane sol C\nlane hydrogen B\nlane grok C\nlane kimi B\nflex astra HOLD\nflex sol HOLD\nflex hydrogen HOLD\nflex grok HOLD\nflex kimi HOLD\nscreen astra SMART\npace ALL BAL"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "astra": [
+       6.4,
+       3.3
+      ],
+      "sol": [
+       6.4,
+       10.9
+      ],
+      "hydrogen": [
+       6.4,
+       16.0
+      ],
+      "grok": [
+       6.4,
+       9.1
+      ],
+      "kimi": [
+       6.4,
+       17.6
+      ]
+     },
+     "king": null,
+     "plan": "lane astra A\nlane sol B\nlane hydrogen C\nlane grok B\nlane kimi C\nflex sol HOLD\npace ALL BAL"
+    }
+   ],
+   "fable": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "fable": [
+       6.5,
+       10.0
+      ],
+      "opus": [
+       6.5,
+       3.3
+      ],
+      "carbon": [
+       6.5,
+       16.7
+      ],
+      "glm": [
+       6.5,
+       15.4
+      ],
+      "deepseek": [
+       6.5,
+       4.6
+      ]
+     },
+     "king": null,
+     "plan": "fable pt=B\nopus pt=A\ndeepseek pt=A\ncarbon pt=C\nglm pt=C job=sit"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "fable": [
+       6.5,
+       10.0
+      ],
+      "opus": [
+       6.5,
+       3.3
+      ],
+      "carbon": [
+       6.5,
+       16.7
+      ],
+      "glm": [
+       6.5,
+       15.4
+      ],
+      "deepseek": [
+       6.5,
+       4.6
+      ]
+     },
+     "king": null,
+     "plan": "fable pt=B job=roam\nopus pt=A\ndeepseek pt=A\ncarbon pt=C\nglm pt=C job=sit"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "fable": [
+       6.5,
+       3.3
+      ],
+      "opus": [
+       6.5,
+       10.0
+      ],
+      "carbon": [
+       6.5,
+       16.7
+      ],
+      "glm": [
+       6.5,
+       15.4
+      ],
+      "deepseek": [
+       6.5,
+       4.6
+      ]
+     },
+     "king": null,
+     "plan": "opus pt=B\nfable pt=A\ndeepseek pt=A\ncarbon pt=C\nglm pt=C job=sit"
+    }
+   ]
+  }
+ },
+ {
+  "round": 4,
+  "mode": 4,
+  "map": "piers",
+  "teams": {
+   "astra": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "astra": [
+       6.5,
+       9.0
+      ],
+      "sol": [
+       6.5,
+       16.2
+      ],
+      "hydrogen": [
+       6.5,
+       11.0
+      ],
+      "grok": [
+       6.5,
+       17.4
+      ],
+      "kimi": [
+       6.0,
+       2.4
+      ]
+     },
+     "king": null,
+     "plan": "lane astra B\nlane sol C\nlane hydrogen B\nlane grok C\nlane kimi A\nflex astra HOLD\nflex sol HOLD\nflex hydrogen ROAM\nflex grok HOLD\nflex kimi HOLD\nscreen astra SMART\npace ALL BAL\nrally kimi 0,1200,14.5,2.2"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "astra": [
+       6.5,
+       9.0
+      ],
+      "sol": [
+       6.5,
+       16.2
+      ],
+      "hydrogen": [
+       6.5,
+       11.0
+      ],
+      "grok": [
+       6.5,
+       17.4
+      ],
+      "kimi": [
+       6.5,
+       3.8
+      ]
+     },
+     "king": null,
+     "plan": "lane astra B\nlane sol C\nlane hydrogen B\nlane grok C\nlane kimi A\nflex astra HOLD\nflex sol HOLD\nflex hydrogen ROAM\nflex grok HOLD\nflex kimi HOLD\nscreen astra SMART\npace ALL BAL\nrally kimi 0,1200,14.7,3.7"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "astra": [
+       6.5,
+       9.0
+      ],
+      "sol": [
+       6.5,
+       16.2
+      ],
+      "hydrogen": [
+       6.5,
+       11.0
+      ],
+      "grok": [
+       6.5,
+       17.4
+      ],
+      "kimi": [
+       6.5,
+       3.8
+      ]
+     },
+     "king": null,
+     "plan": "lane astra B\nlane sol C\nlane hydrogen B\nlane grok C\nlane kimi A\nflex astra ROAM\nflex sol HOLD\nflex hydrogen HOLD\nflex grok HOLD\nflex kimi HOLD\nscreen astra SMART\npace ALL BAL\nrally kimi 0,1200,14.7,3.7"
+    }
+   ],
+   "fable": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "fable": [
+       6.5,
+       3.3
+      ],
+      "opus": [
+       6.5,
+       4.6
+      ],
+      "carbon": [
+       6.5,
+       16.7
+      ],
+      "glm": [
+       6.5,
+       15.4
+      ],
+      "deepseek": [
+       6.5,
+       2.0
+      ]
+     },
+     "king": null,
+     "plan": "fable pt=A\nopus pt=A\ndeepseek pt=A\ncarbon pt=C\nglm pt=C job=sit"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "fable": [
+       6.5,
+       10.0
+      ],
+      "opus": [
+       6.5,
+       3.3
+      ],
+      "carbon": [
+       6.5,
+       16.7
+      ],
+      "glm": [
+       6.5,
+       15.4
+      ],
+      "deepseek": [
+       6.5,
+       4.6
+      ]
+     },
+     "king": null,
+     "plan": "fable pt=B\nopus pt=A\ndeepseek pt=A\ncarbon pt=C\nglm pt=C job=sit"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "fable": [
+       6.5,
+       3.3
+      ],
+      "opus": [
+       6.5,
+       4.6
+      ],
+      "carbon": [
+       6.5,
+       16.7
+      ],
+      "glm": [
+       6.5,
+       15.4
+      ],
+      "deepseek": [
+       6.5,
+       18.0
+      ]
+     },
+     "king": null,
+     "plan": "fable pt=A\nopus pt=A\ndeepseek pt=C\ncarbon pt=C\nglm pt=C job=sit"
+    }
+   ]
+  }
+ },
+ {
+  "round": 5,
+  "mode": 5,
+  "map": "keeps",
+  "teams": {
+   "astra": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "astra": [
+       4,
+       8.5
+      ],
+      "sol": [
+       5,
+       14
+      ],
+      "hydrogen": [
+       7.5,
+       12
+      ],
+      "grok": [
+       5,
+       3
+      ],
+      "kimi": [
+       7.5,
+       5
+      ]
+     },
+     "king": "astra",
+     "plan": "role astra HUNT\nrole sol HUNT\nrole hydrogen GUARD\nrole grok HUNT\nrole kimi GUARD\nwing astra N\nwing sol S\nwing hydrogen S\nwing grok N\nwing kimi N\nkingstyle astra COUNTER\npace ALL BAL\nmark ALL KING\nrally astra 0,85,4.1,8.4\nrally sol 0,90,7.4,10.7\nrally grok 0,90,7.6,6.8\nrally hydrogen 0,110,8.1,9.7\nrally kimi 0,110,8.2,7.5"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "astra": [
+       7.8,
+       8.5
+      ],
+      "sol": [
+       7.1,
+       6.4
+      ],
+      "hydrogen": [
+       7.0,
+       10.2
+      ],
+      "grok": [
+       6.0,
+       12.0
+      ],
+      "kimi": [
+       5.6,
+       5.1
+      ]
+     },
+     "king": "astra",
+     "plan": "role astra HUNT\nrole sol HUNT\nrole hydrogen GUARD\nrole grok HUNT\nrole kimi GUARD\nwing astra N\nwing sol S\nwing hydrogen S\nwing grok N\nwing kimi N\nkingstyle astra COUNTER\npace ALL BAL\nmark ALL KING\nrally sol 0,75,8.0,7.0\nrally grok 0,75,8.2,10.3\nrally hydrogen 0,115,9.7,7.4\nrally kimi 0,115,9.8,9.8"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "astra": [
+       8.0,
+       8.5
+      ],
+      "sol": [
+       8.0,
+       6.0
+      ],
+      "hydrogen": [
+       4.0,
+       8.5
+      ],
+      "grok": [
+       7.8,
+       11.1
+      ],
+      "kimi": [
+       5.0,
+       12.5
+      ]
+     },
+     "king": "hydrogen",
+     "plan": "role astra HUNT\nrole sol HUNT\nrole hydrogen GUARD\nrole grok HUNT\nrole kimi GUARD\nwing astra N\nwing sol S\nwing hydrogen S\nwing grok N\nwing kimi N\nkingstyle astra COUNTER\npace ALL BAL\nmark ALL KING\nrally hydrogen 0,150,4.1,8.5\npace astra PRESS"
+    }
+   ],
+   "fable": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "fable": [
+       4.0,
+       8.5
+      ],
+      "opus": [
+       5.2,
+       7.3
+      ],
+      "carbon": [
+       5.2,
+       9.7
+      ],
+      "glm": [
+       2.8,
+       7.3
+      ],
+      "deepseek": [
+       2.8,
+       9.7
+      ]
+     },
+     "king": "fable",
+     "plan": "fable job=safe go=4,8.5 until=380\nopus job=guard go=5.2,7.3 until=380\ncarbon job=guard go=5.2,9.7 until=380\nglm job=guard go=2.8,7.3 until=380\ndeepseek job=guard go=2.8,9.7 until=380"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "fable": [
+       5.3,
+       8.5
+      ],
+      "opus": [
+       5.2,
+       7.0
+      ],
+      "carbon": [
+       5.2,
+       10.0
+      ],
+      "glm": [
+       2.8,
+       7.5
+      ],
+      "deepseek": [
+       2.8,
+       9.5
+      ]
+     },
+     "king": "fable",
+     "plan": "fable job=safe go=5.3,8.5 until=380\nopus job=guard go=5.2,7.0 until=380\ncarbon job=guard go=5.2,10.0 until=380\nglm job=guard go=2.8,7.5 until=380\ndeepseek job=guard go=2.8,9.5 until=380"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "fable": [
+       4.0,
+       8.5
+      ],
+      "opus": [
+       7.5,
+       5.0
+      ],
+      "carbon": [
+       7.5,
+       12.0
+      ],
+      "glm": [
+       5.0,
+       3.0
+      ],
+      "deepseek": [
+       5.0,
+       14.0
+      ]
+     },
+     "king": "fable",
+     "plan": "opus job=hunt\ncarbon job=hunt\nglm job=hunt\ndeepseek job=hunt\nfable job=safe"
+    }
+   ]
+  }
+ },
+ {
+  "round": 6,
+  "mode": 5,
+  "map": "keeps",
+  "teams": {
+   "astra": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "astra": [
+       4,
+       8.5
+      ],
+      "sol": [
+       5,
+       14
+      ],
+      "hydrogen": [
+       7.5,
+       12
+      ],
+      "grok": [
+       5,
+       3
+      ],
+      "kimi": [
+       7.5,
+       5
+      ]
+     },
+     "king": "astra",
+     "plan": "role astra HUNT\nrole sol HUNT\nrole hydrogen GUARD\nrole grok HUNT\nrole kimi GUARD\nwing astra N\nwing sol S\nwing hydrogen S\nwing grok N\nwing kimi N\nkingstyle astra COUNTER\npace ALL BAL\nmark ALL KING\nrally astra 0,85,4.1,8.4\nrally sol 0,85,8.2,13.7\nrally grok 0,85,8.0,4.7\nrally hydrogen 0,115,7.6,9.3\nrally kimi 0,115,7.7,7.7\nrally sol 95,335,15.1,10.7\nrally grok 95,335,14.9,6.1\nrally hydrogen 120,395,12.4,9.6\nrally kimi 120,395,12.1,7.0\nrally astra 495,735,15.0,8.5"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "astra": [
+       4,
+       8.5
+      ],
+      "sol": [
+       5,
+       14
+      ],
+      "hydrogen": [
+       7.5,
+       12
+      ],
+      "grok": [
+       5,
+       3
+      ],
+      "kimi": [
+       7.5,
+       5
+      ]
+     },
+     "king": "astra",
+     "plan": "role astra HUNT\nrole sol HUNT\nrole hydrogen GUARD\nrole grok HUNT\nrole kimi GUARD\nwing astra N\nwing sol S\nwing hydrogen S\nwing grok N\nwing kimi N\nkingstyle astra COUNTER\npace ALL BAL\nmark ALL KING\nrally astra 0,85,4.1,8.4\nrally sol 0,90,7.4,10.7\nrally grok 0,90,7.6,6.8\nrally hydrogen 0,110,8.1,9.7\nrally kimi 0,110,8.2,7.5\nrim astra INNER"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "astra": [
+       4,
+       8.5
+      ],
+      "sol": [
+       5,
+       14
+      ],
+      "hydrogen": [
+       7.5,
+       12
+      ],
+      "grok": [
+       5,
+       3
+      ],
+      "kimi": [
+       7.5,
+       5
+      ]
+     },
+     "king": "astra",
+     "plan": "role astra HUNT\nrole sol HUNT\nrole hydrogen FLEX\nrole grok HUNT\nrole kimi GUARD\nwing astra N\nwing sol S\nwing hydrogen S\nwing grok N\nwing kimi N\nkingstyle astra COUNTER\npace ALL BAL\nmark ALL KING\nrally astra 0,110,3.6,8.5\nrally astra 110,165,7.0,9.8\nrally sol 0,75,7.4,10.7\nrally grok 0,85,7.6,6.8\nrally hydrogen 0,110,8.1,9.7\nrally kimi 0,110,8.2,7.5\nrim astra INNER"
+    }
+   ],
+   "fable": [
+    {
+     "variant": "正式",
+     "spawns": {
+      "fable": [
+       8.0,
+       8.5
+      ],
+      "opus": [
+       8.5,
+       6.6
+      ],
+      "carbon": [
+       8.5,
+       10.4
+      ],
+      "glm": [
+       6.9,
+       7.4
+      ],
+      "deepseek": [
+       6.9,
+       9.6
+      ]
+     },
+     "king": "fable",
+     "plan": "fable job=safe\nopus job=hunt\ncarbon job=hunt\nglm job=hunt\ndeepseek job=hunt"
+    },
+    {
+     "variant": "备选1",
+     "spawns": {
+      "fable": [
+       8.0,
+       8.5
+      ],
+      "opus": [
+       8.5,
+       6.6
+      ],
+      "carbon": [
+       8.5,
+       10.4
+      ],
+      "glm": [
+       6.9,
+       7.4
+      ],
+      "deepseek": [
+       6.9,
+       9.6
+      ]
+     },
+     "king": "fable",
+     "plan": "fable job=safe go=15,8.5 until=720\nopus job=guard\ncarbon job=guard\nglm job=guard\ndeepseek job=guard"
+    },
+    {
+     "variant": "备选2",
+     "spawns": {
+      "fable": [
+       4.0,
+       8.5
+      ],
+      "opus": [
+       5.2,
+       7.3
+      ],
+      "carbon": [
+       5.2,
+       9.7
+      ],
+      "glm": [
+       2.8,
+       7.3
+      ],
+      "deepseek": [
+       2.8,
+       9.7
+      ]
+     },
+     "king": "fable",
+     "plan": "fable job=safe go=4,8.5 until=380\nopus job=guard go=5.2,7.3 until=380\ncarbon job=guard go=5.2,9.7 until=380\nglm job=guard go=2.8,7.3 until=380\ndeepseek job=guard go=2.8,9.7 until=380"
+    }
+   ]
+  }
+ }
+]

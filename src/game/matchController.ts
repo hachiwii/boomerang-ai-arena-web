@@ -11,6 +11,7 @@ import {
   TickSnapshot,
 } from './types';
 import { trackMatchStart } from '../net/analytics';
+import { engineFormText } from './teamMatch';
 
 interface PendingBotDecision {
   seat: number;
@@ -18,6 +19,12 @@ interface PendingBotDecision {
 }
 
 export type CountdownStage = 3 | 2 | 1 | 'GO' | null;
+
+/** 联机房主：别人的操作从这里取，每一步的 10 行动作从这里发出去 */
+export interface TeamHostNet {
+  remoteAction(seat: number): string;
+  onFrame(frame: number, actionsText: string): void;
+}
 
 export interface StreamingAiCallbacks {
   onStatus?: (msg: string) => void;
@@ -88,6 +95,18 @@ export class MatchController {
 
   private input: HumanInputController;
   private callbacks: MatchCallbacks;
+  private teamNet: TeamHostNet | null = null;
+  private remoteSeats: number[] = [];
+  private frameNo = 0;
+
+  /** 联机房主：在 start() 之前设好；本地对局传 null */
+  public setTeamHostNet(net: TeamHostNet | null) {
+    this.teamNet = net;
+  }
+
+  public isRoomMatch(): boolean {
+    return Boolean(this.config?.teamRoom);
+  }
 
   constructor(input: HumanInputController, callbacks: MatchCallbacks) {
     this.input = input;
@@ -161,7 +180,7 @@ export class MatchController {
    * Returns the effective speed now in force.
    */
   public setSpeedOverride(speed: number | null): number {
-    if (this.precomputedTicks) return this.gameSpeed;
+    if (this.precomputedTicks || this.config?.teamRoom) return this.gameSpeed;
     this.speedOverride = speed !== null && Number.isFinite(speed) ? Math.max(0.05, Math.min(2.0, speed)) : null;
     const effective = this.speedOverride ?? this.gameSpeed;
     const nextInterval = LOGIC_DT_MS / effective;
@@ -208,6 +227,7 @@ export class MatchController {
   }
 
   public setCliffGuard(enabled: boolean) {
+    if (this.config?.teamRoom) return; // 联机：规则固定
     if (this.config) {
       this.config.cliffGuard = enabled;
     }
@@ -215,6 +235,7 @@ export class MatchController {
   }
 
   public setDashGuard(enabled: boolean) {
+    if (this.config?.teamRoom) return;
     if (this.config) {
       this.config.dashGuard = enabled;
     }
@@ -222,6 +243,7 @@ export class MatchController {
   }
 
   public setMeleeAssist(enabled: boolean) {
+    if (this.config?.teamRoom) return;
     if (this.config) {
       this.config.meleeAssist = enabled;
     }
@@ -229,6 +251,7 @@ export class MatchController {
   }
 
   public setHumanSlashTicks(ticks: number) {
+    if (this.config?.teamRoom) return;
     if (this.config) {
       this.config.humanSlashTicks = ticks;
     }
@@ -280,7 +303,11 @@ export class MatchController {
     this.mapDataCache = null;
     this.cinematicDirector = null;
 
-    this.humanSeat = config.slots.findIndex((s) => s.kind === 'human');
+    // 联机：remote 的真人席由别人操作（房主从网络取操作）；自己的席位才读本机输入
+    this.humanSeat = config.slots.findIndex((s) => s.kind === 'human' && !s.remote);
+    this.remoteSeats = config.slots.flatMap((s, i) => (s.kind === 'human' && s.remote ? [i] : []));
+    this.frameNo = 0;
+    if (!config.teamRoom) this.teamNet = null;
     this.botSeats = [];
     // Training ground: the scarecrows are not bots (no bot workers); the dart ones are driven by TrainingDummyBrain
     const isTraining = config.matchMode === 'training';
@@ -292,7 +319,12 @@ export class MatchController {
     const origin = window.location.origin;
 
     this.callbacks.onStatus?.('加载地图与引擎 WASM...');
-    const mapUrl = isTraining ? `${origin}${TRAINING_MAP_URL}` : `${origin}/assets/maps/${config.mapId}.txt`;
+    const team = config.matchMode === 'team' && config.team ? config.team : null;
+    const mapUrl = isTraining
+      ? `${origin}${TRAINING_MAP_URL}`
+      : team
+        ? `${origin}/assets/maps/team/${config.mapId}.txt`
+        : `${origin}/assets/maps/${config.mapId}.txt`;
     const mapResp = await fetch(`${mapUrl}?v=${__BUILD_ID__}`);
     if (!mapResp.ok) throw new Error(`无法加载地图 ${config.mapId}`);
     const mapText = await mapResp.text();
@@ -309,11 +341,15 @@ export class MatchController {
       spawnSeed: config.spawnSeed ?? 0,
       botSeats: this.botSeats,
       humanSeat: this.humanSeat,
+      humanSeats: config.teamRoom
+        ? config.slots.reduce((m, s, i) => (s.kind === 'human' ? m | (1 << i) : m), 0)
+        : undefined,
       cliffGuard: config.dashGuard ?? config.cliffGuard,
       walkGuard: config.cliffGuard,
       meleeAssist: config.meleeAssist ?? true,
       humanSlashTicks: config.humanSlashTicks ?? 3,
       training: isTraining,
+      team: team ? { mode: team.mode, formText: engineFormText(team) } : undefined,
     });
     if (this.stopped) return;
 
@@ -355,8 +391,9 @@ export class MatchController {
     this.killFxEnabled = cinematicCfg.killFx;
     // Pure AI match needs accelerated pre-simulation only when pre-kill slow-mo or killFx is enabled;
     // if only winnerCam is enabled, it runs live and glides to winner close-up on match end!
+    // 5v5 团队赛不做慢放镜头编排（击杀镜头、胜者特写都按单人座位设计）
     const useAcceleratedKillCam =
-      this.humanSeat < 0 && (cinematicCfg.killCam || cinematicCfg.finisherCam || cinematicCfg.killFx);
+      !team && this.humanSeat < 0 && (cinematicCfg.killCam || cinematicCfg.finisherCam || cinematicCfg.killFx);
 
     if (useAcceleratedKillCam) {
       // Pure AI spectator match with kill-cam enabled: accelerate full WASM simulation first
@@ -643,11 +680,14 @@ export class MatchController {
         const ha = this.input.sampleAction(prevState, this.humanSeat);
         actionLines[this.humanSeat] = `${ha.mx} ${ha.my} ${ha.act} ${ha.ax} ${ha.ay} ${ha.msg}`;
       }
+      if (this.teamNet) for (const seat of this.remoteSeats) actionLines[seat] = this.teamNet.remoteAction(seat);
       this.trainingBrain?.decide(prevState, actionLines);
+      const actionsText = actionLines.join('\n');
+      this.teamNet?.onFrame(this.frameNo++, actionsText);
 
       const stepPromise = this.rpc(this.engineWorker, {
         type: 'step',
-        actionsText: actionLines.join('\n'),
+        actionsText,
         botSeats: this.botSeats,
       });
       this.inflightStep = stepPromise; // a background finish (finishInBackground) picks this step up

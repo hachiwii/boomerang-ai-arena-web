@@ -187,6 +187,8 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   a.matchStarted(id(2), 'ranked-ffa', at('00:40'));
   a.pvpMatchStarted(at('05:00'));
   a.matchStarted(id(1), 'custom', at('11:10')); // the current hour counts too
+  a.matchStarted(id(2), 'team', at('11:11')); // 5v5 团队赛 is a public mode
+  a.matchFinished(id(2), 'team', at('11:14'));
   a.matchStarted(id(1), 'replay', at('11:12')); // not a public mode
   a.matchFinished(id(1), 'ranked-solo', at('11:15'), [{ b: 'glm-5.3', r: 'w', kills: { melee: 1 } }]);
   a.heartbeat(id(1), NOW);
@@ -194,9 +196,9 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   assert.equal(st.since, '2026-11-26');
   assert.equal(st.online, 1);
   assert.equal(st.players, 4, 'ids 7 and 8 from the day files, 1 and 2 today; 9 only watched replays');
-  assert.deepEqual(st.total, { 'ranked-solo': 109, 'ranked-ffa': 2, cricket: 1, custom: 6, pvp: 4 });
+  assert.deepEqual(st.total, { 'ranked-solo': 109, 'ranked-ffa': 2, team: 1, cricket: 1, custom: 6, pvp: 4 });
   // 11-27 10:00 and 11:00 are out (more than 23 whole hours back), 12:00 is in, and so is 11-28 11:10
-  assert.deepEqual(st.last24h.modes, { 'ranked-solo': 0, 'ranked-ffa': 2, cricket: 1, custom: 6, pvp: 1 });
+  assert.deepEqual(st.last24h.modes, { 'ranked-solo': 0, 'ranked-ffa': 2, team: 1, cricket: 1, custom: 6, pvp: 1 });
   assert.equal(st.last24h.from, '2026-11-27T04:00:00.000Z');
   assert.equal(st.last24h.to, '2026-11-28T03:30:00.000Z');
   assert.deepEqual(st.bots['ranked-solo']['glm-5.3'], { w: 3, d: 0, l: 1, rankSum: 0, ranked: 0, kills: { dart: 2, melee: 1 }, deaths: { fall: 1 } });

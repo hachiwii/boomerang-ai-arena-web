@@ -17,6 +17,7 @@ std::unique_ptr<dart::Game> g_game;
 size_t g_last_event_idx = 0;
 std::string g_ret_buf;
 std::string g_err_buf;
+bool g_team_mode = false;  // 当前这局是 5v5 团队赛（engine_init_team）
 
 struct Checkpoint {
     std::unique_ptr<dart::Game> game;
@@ -378,6 +379,7 @@ void randomize_spawns_symmetric(const dart::Config& cf, const dart::Map& m, dart
 
 int init_engine_impl(const char* map_text, int n_players, unsigned int seed, unsigned int spawn_seed) {
     g_err_buf.clear();
+    g_team_mode = false;
     if (n_players < 2 || n_players > 4) {
         g_err_buf = "n_players must be 2..4";
         return 0;
@@ -451,6 +453,71 @@ int init_engine_impl(const char* map_text, int n_players, unsigned int seed, uns
     return 1;
 }
 
+// ---------------------------------------------------------------- 5v5 团队赛（MODE 3 歼灭 / 4 占点 / 5 刺王）
+// 两支原版战队用两套互不兼容的队内电台：
+//   Astra 队：格x + 64·格y + 4096·意图 + 16384·(t mod 4)（0.5 米格，意图 0 走 / 1 扔 / 2 近战 / 3 冲刺）
+//   Fable 队：⌊x/250⌋ + 128·⌊y/250⌋ + 16384·F（F=1 位置，F=2 出手那步的镖路终点，F=3 冲刺那步的落点）
+// 混编时，引擎按收信方的协议把队友这一步的状态和动作重新编码后再放进观察里（“电台翻译”），真人也由此自动发电台。
+// 同协议的 bot 之间仍原样转发它自己发的消息，原版阵容的行为与原赛一致。
+enum RadioProto { RP_NONE = 0, RP_ASTRA = 1, RP_FABLE = 2 };
+int g_proto[dart::MAXP] = {};
+dart::i64 g_tmsg[dart::MAXP][3] = {};   // 每人最近一次（活着时）按两种协议编码的消息
+std::string g_seat_plan[dart::MAXP];
+bool g_has_seat_plan[dart::MAXP] = {};
+
+dart::i64 radio_astra(const dart::Player& P, const dart::Action& a, dart::i64 t) {
+    int intent = 0;
+    if (a.act == dart::A_THROW) intent = 1;
+    else if (a.act == dart::A_MELEE) intent = 2;
+    else if (a.act == dart::A_DASH) intent = 3;
+    else if (P.st == dart::S_THROW) intent = 1;
+    else if (P.st == dart::S_SLASH || P.st == dart::S_KICK) intent = 2;
+    else if (P.st == dart::S_DASH) intent = 3;
+    const dart::i64 x = dart::iclamp(dart::i64(dart::cell_index(P.x)), 0, 63);
+    const dart::i64 y = dart::iclamp(dart::i64(dart::cell_index(P.y)), 0, 63);
+    return x + 64 * y + 4096 * intent + 16384 * (t % 4);
+}
+
+dart::i64 radio_fable(const dart::Game& g, const dart::Player& P, const dart::Dart& D, const dart::Action& a) {
+    const dart::Config& cf = g.cf;
+    dart::i64 px = P.x, py = P.y, F = 1;
+    dart::i64 ux = 0, uy = 0;
+    if (a.act == dart::A_THROW && P.st == dart::S_FREE && D.st == dart::D_HAND && (a.ax || a.ay) &&
+        dart::scale_to(a.ax, a.ay, 1000, ux, uy)) {
+        const dart::i64 W = g.M().width(), H = g.M().height();
+        for (dart::i64 L = cf.range; L > 0; L -= 100) {
+            const dart::i64 qx = P.x + ux * L / 1000, qy = P.y + uy * L / 1000;
+            if (qx >= 300 && qy >= 300 && qx <= W - 300 && qy <= H - 300) { px = qx; py = qy; F = 2; break; }
+        }
+    }
+    if (a.act == dart::A_DASH && P.st == dart::S_FREE && P.cd == 0 && (a.ax || a.ay) &&
+        dart::scale_to(a.ax, a.ay, 1000, ux, uy)) {
+        const dart::i64 L = cf.dash_v * cf.dash_t;
+        px = P.x + ux * L / 1000;
+        py = P.y + uy * L / 1000;
+        F = 3;
+    }
+    return dart::iclamp(px / 250, 0, 127) + 128 * dart::iclamp(py / 250, 0, 127) + 16384 * F;
+}
+
+// 按收信方 seat 的协议改写观察里队友的 msg
+void translate_radio(const dart::Game& g, int seat, dart::Obs& o) {
+    if (!g_team_mode) return;
+    const int rp = g_proto[seat];
+    if (rp == RP_NONE) return;
+    for (int q = 0; q < g.n; ++q) {
+        if (q == seat || !g.mates(seat, q)) continue;
+        const bool same_bot = g_proto[q] == rp && !g.is_human(q);
+        if (!same_bot) o.p[q].msg = g_tmsg[q][rp];
+    }
+}
+
+std::string unhex(const std::string& h) {
+    std::string s;
+    for (size_t i = 0; i + 1 < h.size(); i += 2) s.push_back(char(std::strtol(h.substr(i, 2).c_str(), nullptr, 16)));
+    return s;
+}
+
 std::string json_escape(const std::string& s) {
     std::string out;
     out.reserve(s.size() + 8);
@@ -472,6 +539,13 @@ const char* engine_last_error() {
     return g_err_buf.c_str();
 }
 
+// Upstream's end-of-game state hash (FNV-1a over every player / dart / point field), for batch comparisons
+EMSCRIPTEN_KEEPALIVE
+const char* engine_get_digest() {
+    g_ret_buf = g_game ? g_game->digest() : std::string();
+    return g_ret_buf.c_str();
+}
+
 EMSCRIPTEN_KEEPALIVE
 int engine_init(const char* map_text, int n_players, unsigned int seed) {
     return init_engine_impl(map_text, n_players, seed, 0);
@@ -490,6 +564,7 @@ int engine_init_with_spawn_seed(const char* map_text, int n_players, unsigned in
 EMSCRIPTEN_KEEPALIVE
 int engine_init_training(const char* map_text) {
     g_err_buf.clear();
+    g_team_mode = false;
     auto m = std::make_shared<dart::Map>();
     std::string err = dart::parse_map(map_text ? map_text : "", *m);
     if (!err.empty()) {
@@ -523,6 +598,84 @@ int engine_init_training(const char* map_text) {
     for (int k = 1; k <= 5 && k < g.n; ++k) g.train_revive[k] = REVIVE_TICKS;
     for (int k = 6; k <= 7 && k < g.n; ++k) g.train_flags[k] = dart::Game::TF_NODIE | dart::Game::TF_ANCHOR;
     g.snapshot();
+    g_last_event_idx = 0;
+    g_checkpoints = {};
+    return 1;
+}
+
+// 5v5 团队赛：mode 3 歼灭 / 4 占点 / 5 刺王，10 个座位（0～4 左队，5～9 右队）。form 是若干行：
+//   NAMES n0 … n9          每个座位的短名（bot 认战术单、默认分工都看它）
+//   XY x0 y0 … x9 y9       布阵（场地毫米，右队已经转过 180 度）；不写就用地图的默认站位
+//   KING k0 k1             刺王：两队国王座位
+//   PLAN seat hex          这个座位读到的战术单（UTF-8 十六进制；每人一份，引擎只在开局协议里交给他）
+//   PROTO p0 … p9          电台协议：0 无（真人 / 不听电台）1 Astra 队 2 Fable 队
+EMSCRIPTEN_KEEPALIVE
+int engine_init_team(const char* map_text, int mode, unsigned int seed, const char* form_text) {
+    g_err_buf.clear();
+    g_team_mode = false;
+    if (mode < dart::M_ELIM || mode > dart::M_KING) {
+        g_err_buf = "team mode must be 3..5";
+        return 0;
+    }
+    auto m = std::make_shared<dart::Map>();
+    std::string err = dart::parse_map(map_text ? map_text : "", *m);
+    if (!err.empty()) {
+        g_err_buf = err;
+        return 0;
+    }
+    if (!m->modes[mode]) {
+        g_err_buf = "Map does not support requested mode";
+        return 0;
+    }
+    dart::Config cf;
+    cf.select_mode(mode);
+    cf.delay = 4;
+    dart::Formation f = dart::Formation::defaults(*m, mode);
+    for (int k = 0; k < dart::MAXP; ++k) {
+        g_proto[k] = RP_NONE;
+        g_seat_plan[k].clear();
+        g_has_seat_plan[k] = false;
+        g_tmsg[k][0] = g_tmsg[k][1] = g_tmsg[k][2] = 0;
+    }
+    std::istringstream is(form_text ? form_text : "");
+    std::string line;
+    while (std::getline(is, line)) {
+        std::istringstream ls(line);
+        std::string tag;
+        if (!(ls >> tag)) continue;
+        if (tag == "NAMES") {
+            for (int k = 0; k < 10; ++k) ls >> f.names[k];
+        } else if (tag == "XY") {
+            for (int k = 0; k < 10; ++k) ls >> f.x[k] >> f.y[k];
+        } else if (tag == "KING") {
+            ls >> f.king[0] >> f.king[1];
+        } else if (tag == "PLAN") {
+            int k = -1;
+            std::string h;
+            ls >> k >> h;
+            if (k >= 0 && k < 10) {
+                g_seat_plan[k] = unhex(h);
+                g_has_seat_plan[k] = true;
+            }
+        } else if (tag == "PROTO") {
+            for (int k = 0; k < 10; ++k) ls >> g_proto[k];
+        }
+    }
+    for (int k = 0; k < 10; ++k) {
+        if (f.names[k].empty()) f.names[k] = std::to_string(k);
+        const int terrain = dart::cell_of_point(cf, *m, f.x[k], f.y[k], 0);
+        if (!m->in_deploy(k, f.x[k], f.y[k]) || (terrain != dart::C_FLOOR && terrain != dart::C_GRASS) ||
+            dart::circle_hits_wall(*m, cf.body_r, f.x[k], f.y[k])) {
+            g_err_buf = "seat " + std::to_string(k) + " spawn is outside the deploy area or not standable";
+            return 0;
+        }
+    }
+    if (f.king[0] < 0 || f.king[0] > 4 || f.king[1] < 5 || f.king[1] > 9) {
+        g_err_buf = "kings must be one seat on each side";
+        return 0;
+    }
+    g_game = std::make_unique<dart::Game>(cf, m, true, dart::u64(seed), &f);
+    g_team_mode = true;
     g_last_event_idx = 0;
     g_checkpoints = {};
     return 1;
@@ -582,7 +735,9 @@ const char* engine_get_header(int seat) {
         g_ret_buf.clear();
         return g_ret_buf.c_str();
     }
-    g_ret_buf = dart::protocol_header(g_game->info_for(seat, 10, 1000));
+    dart::GameInfo gi = g_game->info_for(seat, 10, 1000);
+    if (g_team_mode && g_has_seat_plan[seat]) gi.plan = g_seat_plan[seat];
+    g_ret_buf = dart::protocol_header(gi);
     return g_ret_buf.c_str();
 }
 
@@ -592,7 +747,9 @@ const char* engine_get_obs(int seat) {
         g_ret_buf.clear();
         return g_ret_buf.c_str();
     }
-    g_ret_buf = dart::protocol_step(g_game->observe(seat));
+    dart::Obs o = g_game->observe(seat);
+    translate_radio(*g_game, seat, o);
+    g_ret_buf = dart::protocol_step(o);
     return g_ret_buf.c_str();
 }
 
@@ -610,6 +767,31 @@ int engine_step(const char* actions_text) {
         }
     }
     g_last_event_idx = g_game->events.size();
+    if (g_team_mode) {
+        dart::Game& g = *g_game;
+        dart::i64 enc[dart::MAXP][3] = {};
+        bool acted[dart::MAXP] = {};
+        dart::i64 revivals[dart::MAXP] = {};
+        for (int k = 0; k < g.n; ++k) {
+            revivals[k] = g.p[k].revivals;
+            const dart::Player& P = g.p[k];
+            if (!P.alive || P.unknown) continue;
+            acted[k] = true;
+            const dart::Action& a = acts[k];
+            if (!a.ok || P.retired || !dart::action_in_range(a, g.cf)) continue;  // 非法动作：消息照引擎记为 0
+            enc[k][RP_ASTRA] = radio_astra(P, a, g.t);
+            enc[k][RP_FABLE] = radio_fable(g, P, g.d[k], a);
+        }
+        g.step(acts);
+        for (int k = 0; k < g.n; ++k) {
+            if (acted[k]) {
+                g_tmsg[k][RP_ASTRA] = enc[k][RP_ASTRA];
+                g_tmsg[k][RP_FABLE] = enc[k][RP_FABLE];
+            }
+            if (g.p[k].revivals != revivals[k]) g_tmsg[k][RP_ASTRA] = g_tmsg[k][RP_FABLE] = 0;  // 占点复活当步清零
+        }
+        return g.over ? 0 : 1;
+    }
     g_game->step(acts);
     return g_game->over ? 0 : 1;
 }
@@ -735,7 +917,42 @@ const char* engine_get_map_json() {
         if (k) o += ',';
         o += "[" + std::to_string(g_game->spx[k]) + "," + std::to_string(g_game->spy[k]) + "]";
     }
-    o += "]}";
+    o += "]";
+    if (g_team_mode) {
+        const dart::Game& g = *g_game;
+        o += ",\"mode\":" + std::to_string(cf.mode);
+        o += ",\"respawn\":" + std::to_string(cf.respawn);
+        o += ",\"capture\":" + std::to_string(cf.capture);
+        o += ",\"kingLives\":" + std::to_string(cf.king_lives);
+        o += ",\"kingInv\":" + std::to_string(cf.king_inv);
+        o += ",\"kings\":[" + std::to_string(cf.mode == dart::M_KING ? g.formation.king[0] : -1) + "," +
+             std::to_string(cf.mode == dart::M_KING ? g.formation.king[1] : -1) + "]";
+        o += ",\"names\":[";
+        for (int k = 0; k < g.n; ++k) {
+            if (k) o += ',';
+            o += "\"" + json_escape(g.formation.names[k]) + "\"";
+        }
+        o += "],\"bases\":[";
+        for (int k = 0; k < g.n; ++k) {
+            if (k) o += ',';
+            o += "[" + std::to_string(g.formation.x[k]) + "," + std::to_string(g.formation.y[k]) + "]";
+        }
+        o += "],\"points\":[";
+        for (size_t i = 0; i < M.points.size(); ++i) {
+            if (i) o += ',';
+            const dart::Point& pt = M.points[i];
+            o += "{\"name\":\"" + json_escape(pt.name) + "\",\"x\":" + std::to_string(pt.x) + ",\"y\":" + std::to_string(pt.y) +
+                 ",\"r\":" + std::to_string(pt.r) + "}";
+        }
+        o += "],\"deploy\":[";
+        for (size_t i = 0; i < M.deploy.size(); ++i) {
+            if (i) o += ',';
+            const dart::Deploy& z = M.deploy[i];
+            o += "[" + std::to_string(z.x0) + "," + std::to_string(z.y0) + "," + std::to_string(z.x1) + "," + std::to_string(z.y1) + "]";
+        }
+        o += "]";
+    }
+    o += "}";
     g_ret_buf = std::move(o);
     return g_ret_buf.c_str();
 }
@@ -789,6 +1006,13 @@ const char* engine_get_state_json() {
         o += ",\"dashing\":" + std::to_string(P.dashing);
         o += ",\"kickedBy\":" + std::to_string(P.kicked_by);
         o += ",\"rank\":" + std::to_string(rks[k]);
+        if (g_team_mode) {
+            o += ",\"team\":" + std::to_string(P.team);
+            o += ",\"lives\":" + std::to_string(P.lives);
+            o += ",\"inv\":" + std::to_string(P.inv);
+            o += ",\"revivals\":" + std::to_string(P.revivals);
+            o += ",\"kTeam\":" + std::to_string(P.k_team);  // 误杀队友（kills 里也算了）
+        }
         o += "}";
     }
     o += "],\"darts\":[";
@@ -804,7 +1028,14 @@ const char* engine_get_state_json() {
         o += ",\"age\":" + std::to_string(D.age);
         o += "}";
     }
-    o += "],\"events\":";
+    o += "]";
+    if (g_team_mode) {
+        o += ",\"owner\":[" + std::to_string(g.owner[0]) + "," + std::to_string(g.owner[1]) + "," + std::to_string(g.owner[2]) + "]";
+        o += ",\"taking\":[" + std::to_string(g.taking[0]) + "," + std::to_string(g.taking[1]) + "," + std::to_string(g.taking[2]) + "]";
+        o += ",\"prog\":[" + std::to_string(g.prog[0]) + "," + std::to_string(g.prog[1]) + "," + std::to_string(g.prog[2]) + "]";
+        o += ",\"score\":[" + std::to_string(g.score[0]) + "," + std::to_string(g.score[1]) + "]";
+    }
+    o += ",\"events\":";
     append_step_events(o);
     o += '}';
     g_ret_buf = std::move(o);

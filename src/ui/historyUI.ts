@@ -8,10 +8,11 @@ import {
 import { Mp4ExportResult } from '../game/mp4Exporter';
 import { formatExportPresetLabel, SettingsStore } from '../game/settings';
 
-export type HistoryFilter = 'all' | 'ranked' | 'cricket' | 'custom' | 'pvp';
+export type HistoryFilter = 'all' | 'ranked' | 'team' | 'cricket' | 'custom' | 'pvp';
 
 const FILTER_MODE_NAME: Record<Exclude<HistoryFilter, 'all'>, string> = {
   ranked: '排位赛',
+  team: '团队赛',
   cricket: '斗蛐蛐',
   custom: '自定义',
   pvp: 'PvP',
@@ -48,6 +49,7 @@ interface ActiveExportState {
 
 function getMatchWinnerInfo(m: MatchHistorySummary): { key: string; label: string } | null {
   if (m.winner < 0) return null;
+  if (m.matchMode === 'team') return null; // 团队赛的胜者是一支队伍，不进「按赢家角色筛选」
   const p = m.players.find((pl) => pl.seat === m.winner) ?? m.players[m.winner];
   if (!p) return null;
   if (m.matchMode === 'pvp') {
@@ -167,6 +169,7 @@ export class HistoryModal {
           <div class="history-filter-tabs" role="tablist">
             <button type="button" class="history-filter-btn active" data-hfilter="all">全部 <span data-fcount="all">0</span></button>
             <button type="button" class="history-filter-btn" data-hfilter="ranked">🏆 排位赛 <span data-fcount="ranked">0</span></button>
+            <button type="button" class="history-filter-btn" data-hfilter="team">⚔️ 团队赛 <span data-fcount="team">0</span></button>
             <button type="button" class="history-filter-btn" data-hfilter="cricket">🦗 斗蛐蛐 <span data-fcount="cricket">0</span></button>
             <button type="button" class="history-filter-btn" data-hfilter="custom">🎛️ 自定义 <span data-fcount="custom">0</span></button>
             <button type="button" class="history-filter-btn" data-hfilter="pvp">🌐 PvP <span data-fcount="pvp">0</span></button>
@@ -444,6 +447,7 @@ export class HistoryModal {
     const filterCounts: Record<HistoryFilter, number> = {
       all: modePool.length,
       ranked: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'ranked').length,
+      team: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'team').length,
       cricket: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'cricket').length,
       custom: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'custom').length,
       pvp: modePool.filter((m) => getHistoryModeBucket(m.matchMode) === 'pvp').length,
@@ -612,11 +616,33 @@ export class HistoryModal {
     return bySeat.map(chip).join('<span class="hm-vs">vs</span>');
   }
 
+  /** 团队赛一行：左队五个头像 vs 右队五个头像，胜方队名带 🏆，玩家描边 */
+  private renderTeamPlayersHtml(m: MatchHistorySummary): string {
+    const labels = m.team?.labels ?? ['左队', '右队'];
+    const side = (s: 0 | 1) => {
+      const ps = [...m.players].filter((p) => (p.seat < 5 ? 0 : 1) === s).sort((a, b) => a.seat - b.seat);
+      const chips = ps
+        .map((p) => {
+          const isHuman = p.kind === 'human';
+          return `<span class="hm-tchip ${isHuman ? 'is-human' : ''}" title="${escapeHtml(p.displayName)} · ${p.kills} 杀">
+              <img class="hm-p-av" src="${p.avatar || ''}" alt="" style="border-color:${s === 0 ? '#2E8CFF' : '#FF5B4D'}" />
+              ${p.kills > 0 ? `<span class="hm-tchip-k">${p.kills}</span>` : ''}
+            </span>`;
+        })
+        .join('');
+      return `<span class="hm-tside s${s} ${m.winner === s ? 'is-winner' : ''}"><span class="hm-tlabel">${m.winner === s ? '🏆 ' : ''}${escapeHtml(labels[s])}</span>${chips}</span>`;
+    };
+    return `${side(0)}<span class="hm-vs">vs</span>${side(1)}`;
+  }
+
   private renderRow(m: MatchHistorySummary): string {
     const isRanked = m.matchMode === 'ranked-solo' || m.matchMode === 'ranked-ffa';
     const isPvp = m.matchMode === 'pvp';
-    const modeLabel =
-      m.matchMode === 'ranked-solo'
+    const isTeam = m.matchMode === 'team';
+    const teamModeLabel = isTeam ? ({ 3: '歼灭', 4: '占点', 5: '刺王' } as const)[m.team?.mode ?? 3] : '';
+    const modeLabel = isTeam
+      ? `⚔️ 团队赛 · ${teamModeLabel}${Math.abs((m.speed || 1) - 1) > 0.01 ? ` ${m.speed.toFixed(1)}x` : ''}`
+      : m.matchMode === 'ranked-solo'
         ? '⚔️ SOLO 排位'
         : m.matchMode === 'ranked-ffa'
           ? '👑 混战排位'
@@ -625,7 +651,9 @@ export class HistoryModal {
             : isPvp
               ? '🌐 PvP 1v1'
               : `🎛️ 自定义${Math.abs((m.speed || 1) - 1) > 0.01 ? ` ${m.speed.toFixed(1)}x` : ''}`;
-    const modeCls = isRanked
+    const modeCls = isTeam
+      ? 'hm-mode-team'
+      : isRanked
       ? 'hm-mode-ranked'
       : m.matchMode === 'cricket'
         ? 'hm-mode-cricket'
@@ -636,7 +664,23 @@ export class HistoryModal {
     const humanP = m.humanSeat >= 0 ? (m.players.find((p) => p.seat === m.humanSeat) ?? m.players[m.humanSeat]) : null;
     let outcomeText = '';
     let outcomeCls = 'is-spec';
-    if (isPvp && humanP) {
+    if (isTeam) {
+      const labels = m.team?.labels ?? ['左队', '右队'];
+      const mySide = humanP ? (humanP.seat < 5 ? 0 : 1) : -1;
+      const tail = m.earlyExit ? ' · 提前结束' : '';
+      if (m.winner !== 0 && m.winner !== 1) {
+        outcomeText = `🤝 平局${tail}`;
+        outcomeCls = humanP ? 'is-draw' : 'is-spec';
+      } else if (mySide < 0) {
+        outcomeText = `👁️ 观战 · ${escapeHtml(labels[m.winner])} 胜`;
+      } else if (m.winner === mySide) {
+        outcomeText = `🏆 胜利${tail}`;
+        outcomeCls = 'is-win';
+      } else {
+        outcomeText = `💥 失败${tail}`;
+        outcomeCls = 'is-loss';
+      }
+    } else if (isPvp && humanP) {
       // Outcome from your side of the 1v1
       const tail = m.earlyExit ? ' · 提前结束' : '';
       if (m.winner >= 0 && m.winner === m.humanSeat) {
@@ -698,8 +742,8 @@ export class HistoryModal {
         </div>
 
         <div class="hm-bottom">
-          <div class="hm-players ${isPvp ? 'is-pvp' : ''}">
-            ${isPvp ? this.renderPvpPlayersHtml(m) : orderedPlayers
+          <div class="hm-players ${isPvp ? 'is-pvp' : ''} ${isTeam ? 'is-team' : ''}">
+            ${isTeam ? this.renderTeamPlayersHtml(m) : isPvp ? this.renderPvpPlayersHtml(m) : orderedPlayers
               .map((p) => {
                 const isWinner = m.winner >= 0 && m.winner === p.seat;
                 const isHuman = p.kind === 'human';

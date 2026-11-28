@@ -19,6 +19,7 @@ import {
 const MODE_LABEL: Record<PublicMode, string> = {
   'ranked-solo': '排位 SOLO',
   'ranked-ffa': '排位四人',
+  team: '团队赛',
   cricket: '斗蛐蛐',
   custom: '自定义',
   pvp: 'PvP',

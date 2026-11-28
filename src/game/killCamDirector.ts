@@ -202,6 +202,8 @@ export class CinematicDirector {
     this.ticks = ticks;
     this.mapData = mapData;
     this.options = normalizeCinematicOptions(optionsOrEnabled);
+    // 5v5 团队赛：winner 是队伍号、10 人同场，慢放击杀、终结与胜者特写都按单人座位设计，只保留击杀顿帧
+    if (mapData.mode) this.options = { ...this.options, killCam: false, finisherCam: false, winnerCam: false };
     this.simComplete = simComplete;
     this.cellM = mapData.cell / 1000;
     this.widthM = mapData.nx * this.cellM;

@@ -410,7 +410,9 @@ function buildExportFilename(
         ? 'ffa'
         : summary.matchMode === 'cricket'
           ? 'cricket'
-          : 'custom';
+          : summary.matchMode === 'team'
+            ? 'team'
+            : 'custom';
   const spdTag = Math.abs(speed - 1) < 0.01 ? '1x' : `${speed.toFixed(1)}x`;
   return `boomerang_${modeTag}_${summary.mapId}_${stamp}_${resolution}_${spdTag}.mp4`;
 }
@@ -474,15 +476,17 @@ export function drawBroadcastOverlay(
   // 2. Top-Left Player Cards
   const pad = 14 * s;
   const cardW = 146 * s;
-  const cardH = 50 * s;
-  const cardGap = 8 * s;
+  // 5v5 团队赛：左列左队、右列右队，各五行，卡片矮一点
+  const isTeam = Boolean(summary.team);
+  const cardH = (isTeam ? 42 : 50) * s;
+  const cardGap = (isTeam ? 5 : 8) * s;
   const maxCols = Math.max(1, Math.min(slots.length, 2));
   for (let i = 0; i < slots.length && i < state.players.length; i++) {
     const slot = slots[i];
     const p = state.players[i];
     const d = state.darts[i];
-    const col = i % maxCols;
-    const row = Math.floor(i / maxCols);
+    const col = isTeam ? (i < 5 ? 0 : 1) : i % maxCols;
+    const row = isTeam ? i % 5 : Math.floor(i / maxCols);
     const x = pad + col * (cardW + cardGap);
     const y = pad + row * (cardH + cardGap);
     const alive = p.alive === 1;
@@ -645,12 +649,16 @@ export function drawBroadcastOverlay(
 
   // 5. Post-Match Victory Banner (smooth fade-in during outro)
   if (outroAlpha > 0.01) {
-    const winnerSlot = summary.winner >= 0 ? slots[summary.winner] : null;
+    // 团队赛的 winner 是队伍号（0 左 / 1 右）
+    const teamWinner = summary.team && (summary.winner === 0 || summary.winner === 1) ? summary.team.labels[summary.winner] : null;
+    const winnerSlot = !summary.team && summary.winner >= 0 ? slots[summary.winner] : null;
     const headline = summary.earlyExit
       ? '对局提前结算'
-      : winnerSlot
-        ? `🏆 胜者：${winnerSlot.displayName}`
-        : '🤝 平局结束';
+      : teamWinner
+        ? `🏆 胜者：${teamWinner}`
+        : winnerSlot
+          ? `🏆 胜者：${winnerSlot.displayName}`
+          : '🤝 平局结束';
     let subline = `${summary.mapTitle} · 用时 ${(summary.durationTicks / 20).toFixed(1)}s`;
     if (
       (summary.matchMode === 'ranked-solo' || summary.matchMode === 'ranked-ffa') &&

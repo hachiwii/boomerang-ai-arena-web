@@ -1,7 +1,7 @@
 // Public site stats from the relay (GET /public-stats, server/analytics.ts publicStats) for the lobby's 全球统计 panel.
 import { relayHttpUrl } from './pvpConfig';
 
-export const PUBLIC_MODES = ['ranked-solo', 'ranked-ffa', 'cricket', 'custom', 'pvp'] as const;
+export const PUBLIC_MODES = ['ranked-solo', 'ranked-ffa', 'team', 'cricket', 'custom', 'pvp'] as const;
 export type PublicMode = (typeof PUBLIC_MODES)[number];
 export const KILL_CAUSES = ['melee', 'dart', 'kick'] as const;
 export const DEATH_CAUSES = ['melee', 'dart', 'kick', 'fall', 'collapse'] as const;

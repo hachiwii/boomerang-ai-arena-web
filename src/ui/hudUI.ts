@@ -21,10 +21,24 @@ import {
   ICON_REPLAY,
   ICON_RESTART,
   ICON_SETTINGS,
+  ICON_SHARE,
   ICON_SKIP_START,
   iconStar,
 } from './icons';
 import { pvpNetDetail, pvpRttLevel, pvpRttMs } from './pvpNet';
+import { SIDE_COLOR, teamMap, TeamMapId, TeamModeNum } from '../game/teamMatch';
+import { KillFeed } from './killFeed';
+
+/** 团队赛顶栏 / 结算要用的信息（对局里从配置来，回放里从对局摘要来） */
+interface TeamHudInfo {
+  mapId: TeamMapId;
+  mode: TeamModeNum;
+  labels: [string, string];
+}
+
+function escapeHtmlLite(s: string): string {
+  return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] || c);
+}
 
 export interface ReplayPlaylistState {
   index: number;
@@ -42,6 +56,9 @@ export interface HudCallbacks {
   canQuickRestart?: () => boolean;
   onWatchCurrentReplay?: () => void;
   onToggleCurrentFavorite?: (nextFavorite: boolean) => Promise<void> | void;
+  /** 分享对局（有中转服务器时 main.ts 才给）：结算界面分享刚打完的这局，回放里分享正在看的这局 */
+  onShareCurrentMatch?: () => void;
+  onShareReplay?: (bundle: MatchReplayBundle) => void;
   onOpenSettings: () => void;
   onRankCue?: (kind: 'up' | 'down') => void;
   onReplayTogglePause?: () => void;
@@ -91,11 +108,27 @@ function dartBadge(st: number): { text: string; cls: string } {
   }
 }
 
+/** 分享按钮（结算界面 / 桌面回放：图标 + 「分享」；手机回放只有图标） */
+function renderShareBtnInner(): string {
+  return `<span class="share-btn-icon">${ICON_SHARE}</span><span>分享</span>`;
+}
+
 function renderReplayFavoriteStarSvg(filled: boolean): string {
   if (filled) {
     return `<svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2.5 15.09 8.76 22 9.77 17 14.64 18.18 21.52 12 18.27 5.82 21.52 7 14.64 2 9.77 8.91 8.76 12 2.5"/></svg>`;
   }
   return `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linejoin="round" aria-hidden="true"><polygon points="12 2.5 15.09 8.76 22 9.77 17 14.64 18.18 21.52 12 18.27 5.82 21.52 7 14.64 2 9.77 8.91 8.76 12 2.5"/></svg>`;
+}
+
+export interface RoomRematchView {
+  want: number;
+  total: number;
+  left: number;
+  iWant: boolean;
+  amPlayer: boolean;
+  isHost: boolean;
+  /** 本机时钟的倒计时结束时刻（performance.now 基准）；没有倒计时为 null */
+  deadline: number | null;
 }
 
 export class HudUI {
@@ -143,6 +176,23 @@ export class HudUI {
     cdBar: HTMLElement | null;
   }[] = [];
 
+  // 5v5 团队赛：两队各五张卡 + 中间比分
+  private teamSetup: TeamHudInfo | null = null;
+  /** 5v5 联机对局：自己是房主还是其他人；本地对局和回放为 null */
+  private roomRole: 'host' | 'guest' | null = null;
+  private roomRematch: RoomRematchView | null = null;
+  private roomRematchTimer: number | null = null;
+  private readonly deathVeil: HTMLDivElement;
+  private respawnSecEl: HTMLElement | null = null;
+  private teamEls: {
+    status: (HTMLElement | null)[];
+    cd: (HTMLElement | null)[];
+    hearts: (HTMLElement | null)[];
+    crown: (HTMLElement | null)[];
+    score: [HTMLElement | null, HTMLElement | null];
+    sub: HTMLElement | null;
+  } | null = null;
+
   // Mobile presentation
   private mobile = false;
   private mRestartBtn: HTMLButtonElement | null = null;
@@ -176,12 +226,14 @@ export class HudUI {
   private replayBannerEl: HTMLElement | null = null;
   private replaySpeedBtns: HTMLButtonElement[] = [];
   private replayFavBtn: HTMLButtonElement | null = null;
+  private replayShareBtn: HTMLButtonElement | null = null;
   private replayExportBtn: HTMLButtonElement | null = null;
   private replayGifBtn: HTMLButtonElement | null = null;
   private replayExportStatusEl: HTMLElement | null = null;
   private replayExportAbort: AbortController | null = null;
   private replayExportNoticeTimer: number | null = null;
   private replayCurrentTickIndex = 0;
+  private readonly killFeed = new KillFeed();
 
   constructor(parent: HTMLElement, settings: SettingsStore, callbacks: HudCallbacks) {
     this.settings = settings;
@@ -199,6 +251,13 @@ export class HudUI {
     this.root.className = 'hud-root hidden';
     parent.appendChild(this.root);
 
+    // 占点：玩家出局等复活时，整个画面（场景和名牌）蒙一层灰，顶部中间显示复活倒计时；HUD 本身不受影响
+    this.deathVeil = document.createElement('div');
+    this.deathVeil.className = 'hud-death-veil hidden';
+    this.deathVeil.innerHTML = `<div class="hud-respawn-banner"><span>复活倒计时</span><b data-respawn-sec>3.0</b></div>`;
+    parent.insertBefore(this.deathVeil, this.root);
+    this.respawnSecEl = this.deathVeil.querySelector<HTMLElement>('[data-respawn-sec]');
+
     // Mobile replay: full-screen tap surface (tap = toggle controls, double-tap = pause / play)
     this.mReplayTap = document.createElement('div');
     this.mReplayTap.className = 'm-replay-tap hidden';
@@ -211,6 +270,7 @@ export class HudUI {
     this.topBar = document.createElement('div');
     this.topBar.className = 'hud-top';
     this.root.appendChild(this.topBar);
+    this.killFeed.attach(this.root, this.topBar);
 
     this.bottomBar = document.createElement('div');
     this.bottomBar.className = 'hud-bottom';
@@ -284,6 +344,7 @@ export class HudUI {
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
     this.root.classList.remove('hidden');
+    this.killFeed.reset(config.matchMode, config.slots, humanSeat, this.mobile && humanSeat >= 0);
 
     const mapTag =
       config.matchMode === 'ranked-solo'
@@ -298,6 +359,30 @@ export class HudUI {
 
     this.resetMobileReplayChrome();
     this.root.classList.toggle('is-mobile-hud', this.mobile);
+    this.teamSetup =
+      config.matchMode === 'team' && config.team
+        ? { mapId: config.team.mapId, mode: config.team.mode, labels: [config.team.sides[0].label, config.team.sides[1].label] }
+        : null;
+    this.teamEls = null;
+    this.roomRole = config.teamRoom?.role ?? null;
+    this.roomRematch = null;
+    this.setDeathVeil(null);
+    this.topBar.classList.toggle('is-team', Boolean(this.teamSetup));
+    if (this.teamSetup) {
+      this.renderTeamTop(config, humanSeat);
+      this.lastTickState = null;
+      if (this.mobile) {
+        this.bottomBar.innerHTML = '';
+        this.humanHintMove = null;
+        this.humanHintLeft = null;
+        this.humanHintRight = null;
+        this.humanHintShift = null;
+        this.refreshRestartVisibility();
+      } else {
+        this.renderBottomHints(humanSeat);
+      }
+      return;
+    }
     if (this.mobile) {
       this.renderMobileTop(config.slots, `<span class="m-hud-label">${mapTag}</span>`, '');
       this.bottomBar.innerHTML = '';
@@ -462,6 +547,11 @@ export class HudUI {
           : ''
       }
       <button type="button" class="m-icon-btn m-fav-btn ${isFav ? 'is-fav' : ''}" id="hud-replay-fav" aria-pressed="${isFav}" aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}">${iconStar(isFav)}</button>
+      ${
+        this.callbacks.onShareReplay
+          ? `<button type="button" class="m-icon-btn m-share-btn" id="hud-replay-share" aria-label="分享对局" ${this.replayComputing ? 'disabled' : ''}>${ICON_SHARE}</button>`
+          : ''
+      }
       <div class="m-menu-wrap">
         <button type="button" class="m-icon-btn m-export-btn" id="m-export-btn" aria-label="导出">${ICON_DOWNLOAD}<span class="m-btn-badge hidden" id="m-export-badge"></span></button>
         <div class="m-menu m-menu-down hidden" id="m-export-menu" role="menu">
@@ -526,6 +616,7 @@ export class HudUI {
     this.humanHintShift = null;
 
     this.replayFavBtn = this.topBar.querySelector('#hud-replay-fav');
+    this.bindReplayShareBtn(this.topBar.querySelector('#hud-replay-share'));
     this.replayExportStatusEl = this.topBar.querySelector('#replay-export-status');
     this.replayExportBtn = this.topBar.querySelector('#replay-export-btn');
     this.replayGifBtn = this.topBar.querySelector('#replay-gif-btn');
@@ -803,6 +894,7 @@ export class HudUI {
     this.replayBannerEl = null;
     this.replaySpeedBtns = [];
     this.replayFavBtn = null;
+    this.replayShareBtn = null;
     this.replayExportBtn = null;
     this.replayGifBtn = null;
     this.replayExportStatusEl = null;
@@ -832,7 +924,14 @@ export class HudUI {
 
   private buildReplayEndBannerText(bundle: MatchReplayBundle): string {
     const { summary } = bundle;
-    const winnerSlot = summary.winner >= 0 ? summary.slots[summary.winner] : null;
+    // 5v5: winner is a team index (0 left / 1 right), not a seat
+    const winnerSlot = summary.team
+      ? summary.winner === 0 || summary.winner === 1
+        ? { displayName: summary.team.labels[summary.winner] }
+        : null
+      : summary.winner >= 0
+        ? summary.slots[summary.winner]
+        : null;
     if (this.replayIsLiveAi) {
       const rst = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'), 'R');
       return winnerSlot
@@ -848,6 +947,16 @@ export class HudUI {
 
   private getExportPresetLabel(): string {
     return formatExportPresetLabel(this.settings.get());
+  }
+
+  private bindReplayShareBtn(btn: HTMLButtonElement | null) {
+    this.replayShareBtn = btn;
+    btn?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this.closeMobileMenus();
+      if (!this.isReplayMode || !this.replayBundle || this.replayComputing) return;
+      this.callbacks.onShareReplay?.(this.replayBundle);
+    });
   }
 
   private syncReplayFavoriteBtn(isFav: boolean) {
@@ -885,6 +994,11 @@ export class HudUI {
     this.clearTimers();
     this.clearReplayRefs();
     this.isReplayMode = true;
+    this.teamSetup = bundle.summary.matchMode === 'team' && bundle.summary.team ? { ...bundle.summary.team } : null;
+    this.teamEls = null;
+    this.roomRole = null;
+    this.setDeathVeil(null);
+    this.topBar.classList.toggle('is-team', Boolean(this.teamSetup));
     this.replayIsLiveAi = Boolean(opts?.liveAiSpectator);
     this.replayComputing = Boolean(playback.computing);
     this.replayPlaylist = opts?.playlist ?? null;
@@ -902,6 +1016,7 @@ export class HudUI {
     this.resultOverlay.classList.add('hidden');
     this.nameplateLayer.classList.remove('hidden');
     this.root.classList.remove('hidden');
+    this.killFeed.reset(summary.matchMode, summary.slots, summary.slots.findIndex((s, i) => this.isLocalSlot(i, s)));
 
     const isCricket = summary.matchMode === 'cricket';
     const matchSpeed = Number.isFinite(summary.speed) && summary.speed > 0 ? summary.speed : 1.0;
@@ -916,7 +1031,9 @@ export class HudUI {
               : '4人混战'
             : summary.matchMode === 'pvp'
               ? 'PvP 对战'
-              : `自定义 ${matchSpeed.toFixed(1)}x`;
+              : this.teamSetup
+                ? `团队赛 · ${teamMap(this.teamSetup.mapId).modeLabel}`
+                : `自定义 ${matchSpeed.toFixed(1)}x`;
     const replayBadge = this.replayIsLiveAi
       ? isCricket
         ? '🦗 斗蛐蛐'
@@ -928,11 +1045,18 @@ export class HudUI {
     this.root.classList.toggle('is-mobile-hud', this.mobile);
     if (this.mobile) {
       this.renderMobileReplay(bundle, playback, replayBadge, modeTag, isFav);
+      if (this.teamSetup) {
+        this.teamizeMobileTop(summary.slots);
+        this.bindTeamEls(summary.slots);
+      }
       return;
     }
 
+    const team = this.teamSetup;
+    const replayPerfText = `${this.replayIsLiveAi ? (isCricket ? '斗蛐蛐' : 'AI 观战') : '回放'} ${playback.speed.toFixed(1)}x`;
     this.topBar.innerHTML = `
-      <div class="hud-players">
+      ${team ? `<div class="hud-perf hud-perf-left" id="hud-perf">${replayPerfText}</div>` : ''}
+      ${team ? this.teamSideHtml(0, summary.slots) : `<div class="hud-players">
         ${summary.slots
           .map(
             (s, i) => `
@@ -949,13 +1073,18 @@ export class HudUI {
           </div>`,
           )
           .join('')}
-      </div>
+      </div>`}
 
-      <div class="hud-center-pill hud-replay-pill">
+      <div class="hud-center-pill hud-replay-pill ${team ? 'hud-team-center' : ''}">
         <div class="hud-map-label"><span class="hud-replay-tag">${replayBadge}</span> ${summary.mapTitle} · ${modeTag}</div>
-        <div class="hud-timer" id="hud-timer">40.0s</div>
-        <div class="hud-collapse" id="hud-collapse">塌陷倒计时 12s</div>
+        ${
+          team
+            ? this.teamCenterHtml()
+            : `<div class="hud-timer" id="hud-timer">40.0s</div>
+        <div class="hud-collapse" id="hud-collapse">塌陷倒计时 12s</div>`
+        }
       </div>
+      ${team ? this.teamSideHtml(1, summary.slots) : ''}
 
       <div class="hud-actions">
         <div class="hud-action-btns">
@@ -972,11 +1101,16 @@ export class HudUI {
             aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}"
             title="${isFav ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）' : '收藏此对局（永久保留，不受每模式 50 场上限控制）'}"
           >${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span></button>
+          ${
+            this.callbacks.onShareReplay
+              ? `<button type="button" class="hud-btn hud-share-btn" id="hud-replay-share" title="${this.replayComputing ? '推演完成后可分享' : '上传本局回放，生成短链接发给好友'}" ${this.replayComputing ? 'disabled' : ''}>${renderShareBtnInner()}</button>`
+              : ''
+          }
           <button class="hud-btn" id="hud-replay-history" title="返回对局历史列表">📜 对局历史</button>
           <button class="hud-btn" id="hud-settings" title="音效、特写镜头与导出设置">⚙️ 设置</button>
           <button class="hud-btn hud-exit" id="hud-exit">${this.replayIsLiveAi ? '主界面 (ESC)' : '退出回放 (ESC)'}</button>
         </div>
-        <div class="hud-perf" id="hud-perf">${this.replayIsLiveAi ? (isCricket ? '斗蛐蛐' : 'AI 观战') : '回放'} ${playback.speed.toFixed(1)}x</div>
+        ${team ? '' : `<div class="hud-perf" id="hud-perf">${replayPerfText}</div>`}
       </div>
     `;
 
@@ -985,12 +1119,14 @@ export class HudUI {
     this.perfEl = this.topBar.querySelector('#hud-perf');
     this.netEl = null;
     this.replayFavBtn = this.topBar.querySelector('#hud-replay-fav');
+    this.bindReplayShareBtn(this.topBar.querySelector('#hud-replay-share'));
     this.cardEls = summary.slots.map((_, i) => ({
       card: this.topBar.querySelector(`[data-pcard="${i}"]`)!,
-      kills: this.topBar.querySelector(`[data-pkills="${i}"]`)!,
-      dart: this.topBar.querySelector(`[data-pdart="${i}"]`)!,
-      cdBar: this.topBar.querySelector(`[data-pcd="${i}"]`)!,
+      kills: this.topBar.querySelector<HTMLElement>(`[data-pkills="${i}"]`),
+      dart: this.topBar.querySelector<HTMLElement>(`[data-pdart="${i}"]`),
+      cdBar: this.topBar.querySelector<HTMLElement>(`[data-pcd="${i}"]`),
     }));
+    if (team) this.bindTeamEls(summary.slots);
 
     this.topBar.querySelector('#hud-exit')?.addEventListener('click', () => {
       this.clearTimers();
@@ -1362,6 +1498,10 @@ export class HudUI {
     if (this.replayBannerEl && !this.replayComputing) {
       this.replayBannerEl.textContent = this.buildReplayEndBannerText(bundle);
     }
+    if (this.replayShareBtn && this.replayShareBtn.disabled !== this.replayComputing) {
+      this.replayShareBtn.disabled = this.replayComputing;
+      if (!this.mobile) this.replayShareBtn.title = this.replayComputing ? '推演完成后可分享' : '上传本局回放，生成短链接发给好友';
+    }
     if (wasComputing && !this.replayComputing && !this.replayExportAbort && this.replayExportBtn) {
       this.replayExportBtn.disabled = false;
       this.replayExportBtn.textContent = this.mobile ? '导出全场 MP4' : '⬇ 导出';
@@ -1373,6 +1513,7 @@ export class HudUI {
   public updateReplayControls(playback: ReplayPlaybackState) {
     if (!this.isReplayMode) return;
     this.replayCurrentTickIndex = playback.tickIndex;
+    this.killFeed.setPaused(playback.paused && !playback.finished);
     this.replayComputing = Boolean(playback.computing);
     const pct = playback.maxIndex > 0 ? (playback.tickIndex / playback.maxIndex) * 100 : 100;
     if (this.replaySlider) {
@@ -1432,7 +1573,9 @@ export class HudUI {
       this.perfEl.textContent = `${spdStr}${simTag} · 渲染 ${Math.round(renderHz)}Hz · ${frameWorkMs.toFixed(1)}ms`;
       return;
     }
-    this.perfEl.textContent = `${prefix} ${spdStr}${simTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms)`;
+    this.perfEl.textContent = this.teamSetup
+      ? `${prefix} ${spdStr}${simTag}\n渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms)`
+      : `${prefix} ${spdStr}${simTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms)`;
   }
 
   private renderBottomHints(humanSeat: number) {
@@ -1451,7 +1594,9 @@ export class HudUI {
       this.humanHintRight = this.bottomBar.querySelector('#hint-right');
       this.humanHintShift = this.bottomBar.querySelector('#hint-shift');
     } else {
-      this.bottomBar.innerHTML = `<div class="action-pill spectate-pill">AI 观战模式 · 按 <kbd>${rst}</kbd> 立即原配置重开</div>`;
+      this.bottomBar.innerHTML = this.roomRole
+        ? `<div class="action-pill spectate-pill">联机观战中</div>`
+        : `<div class="action-pill spectate-pill">AI 观战模式 · 按 <kbd>${rst}</kbd> 立即原配置重开</div>`;
       this.humanHintMove = null;
       this.humanHintLeft = null;
       this.humanHintRight = null;
@@ -1482,6 +1627,16 @@ export class HudUI {
 
   public updateTick(state: TickSnapshot, colStart = 240, colEvery = 30) {
     this.lastTickState = state;
+    this.killFeed.tick(state, this.isReplayMode);
+    if (this.teamSetup) {
+      this.updateTeamTick(state, colStart);
+      if (this.mobile) {
+        this.refreshRestartVisibility();
+        return;
+      }
+      this.updateHumanActionHints(state);
+      return;
+    }
     const remSec = Math.max(0, (800 - state.t) / 20);
     if (this.timerEl) {
       this.timerEl.textContent = `${remSec.toFixed(1)}s`;
@@ -1547,7 +1702,9 @@ export class HudUI {
       if (this.humanHintMove) this.humanHintMove.style.display = 'none';
       if (this.humanHintLeft) {
         this.humanHintLeft.innerHTML =
-          this.matchMode === 'pvp'
+          this.teamSetup?.mode === 4 && !state.over
+            ? `已出局 · ${(Math.max(0, me.timer) / 20).toFixed(1)}s 后在出生点复活`
+            : this.matchMode === 'pvp' || this.roomRole
             ? '已出局 · 等待对局结束'
             : this.matchMode === 'ranked-solo' || this.matchMode === 'ranked-ffa'
               ? `已出局观战中 · 按 <kbd>${rst}</kbd> 重新匹配下一局`
@@ -1706,6 +1863,13 @@ export class HudUI {
     const capHz = frameWorkMs > 0.05 ? Math.min(999, Math.round(1000 / frameWorkMs)) : 999;
     const logicStr = logicHz < 10 ? logicHz.toFixed(1) : logicHz.toFixed(0);
     const spdTag = Math.abs(speed - 1) > 0.01 ? ` (${speed.toFixed(1)}x)` : '';
+    if (this.teamSetup) {
+      // 5v5: left of the team bar, two lines (CSS white-space: pre)
+      this.perfEl.textContent =
+        `逻辑 ${logicStr}Hz${spdTag} · AI ${botMaxMs.toFixed(1)}ms\n` +
+        `渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz)`;
+      return;
+    }
     this.perfEl.textContent = isPvp
       ? `逻辑 ${logicStr}Hz · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz)`
       : `逻辑 ${logicStr}Hz${spdTag} · 渲染 ${Math.round(renderHz)}Hz (${frameWorkMs.toFixed(1)}ms, 峰值~${capHz}Hz · AI ${botMaxMs.toFixed(1)}ms)`;
@@ -1775,6 +1939,10 @@ export class HudUI {
       this.showRankedMatchResult(finalState, eloResult, initialFavorite);
       return;
     }
+    if (this.teamSetup) {
+      this.showTeamMatchResult(finalState, initialFavorite);
+      return;
+    }
     const isPvp = this.matchMode === 'pvp';
     const rematchCard = isPvp && Boolean(opts?.pvpRematch);
     this.pvpRematchOpen = rematchCard;
@@ -1793,6 +1961,7 @@ export class HudUI {
     const hasBundle = this.humanSeat >= 0 && Boolean(this.callbacks.onWatchCurrentReplay);
     const canWatchReplay = hasBundle && !rematchCard;
     const canToggleFav = hasBundle && Boolean(this.callbacks.onToggleCurrentFavorite);
+    const canShare = hasBundle && Boolean(this.callbacks.onShareCurrentMatch);
     const isFav = Boolean(initialFavorite);
     const rstKey = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'));
 
@@ -1801,7 +1970,7 @@ export class HudUI {
     // no 本局胜者 hero and no ranking rows
     const seriesHtml = isPvp && opts?.pvpSeries && opts.pvpSeries.games > 0 ? this.renderPvpSeriesHtml(opts.pvpSeries) : '';
     const cornerActionsHtml =
-      canWatchReplay || canToggleFav
+      canWatchReplay || canToggleFav || canShare
         ? `<div class="result-corner-actions">
                 ${
                   canWatchReplay
@@ -1818,6 +1987,11 @@ export class HudUI {
                         aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}"
                         title="${isFav ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）' : '收藏此对局（永久保留，不受每模式 50 场上限控制）'}"
                       >${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span></button>`
+                    : ''
+                }
+                ${
+                  canShare
+                    ? `<button type="button" class="result-share-corner-btn" id="btn-result-share" title="上传本局回放，生成短链接发给好友">${renderShareBtnInner()}</button>`
                     : ''
                 }
               </div>`
@@ -1876,6 +2050,7 @@ export class HudUI {
       this.resultOverlay.querySelector('#btn-pvp-rematch')?.addEventListener('click', () => this.choosePvpRematch());
       this.resultOverlay.querySelector('#btn-pvp-exit')?.addEventListener('click', () => this.choosePvpExit());
       this.bindResultFavoriteBtn(this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-fav'), isFav);
+      this.bindResultShareBtn(this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-share'));
       this.syncPvpRematchCard();
       return;
     }
@@ -1927,8 +2102,27 @@ export class HudUI {
         startAutoReturnCountdown(3);
       }
     });
+    // 分享弹窗开着时不自动回主界面
+    this.bindResultShareBtn(this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-share'), () => {
+      if (this.autoReturnTimer !== null) {
+        window.clearTimeout(this.autoReturnTimer);
+        this.autoReturnTimer = null;
+      }
+      if (this.countdownInterval !== null) {
+        window.clearInterval(this.countdownInterval);
+        this.countdownInterval = null;
+      }
+      if (backBtn) backBtn.textContent = '返回主界面';
+    });
 
     startAutoReturnCountdown(4);
+  }
+
+  private bindResultShareBtn(btn: HTMLButtonElement | null, onClick?: () => void) {
+    btn?.addEventListener('click', () => {
+      onClick?.();
+      this.callbacks.onShareCurrentMatch?.();
+    });
   }
 
   /**
@@ -2122,6 +2316,7 @@ export class HudUI {
 
     const canWatchReplay = this.humanSeat >= 0 && Boolean(this.callbacks.onWatchCurrentReplay);
     const canToggleFav = canWatchReplay && Boolean(this.callbacks.onToggleCurrentFavorite);
+    const canShare = canWatchReplay && Boolean(this.callbacks.onShareCurrentMatch);
     const isFav = Boolean(initialFavorite);
 
     this.resultOverlay.innerHTML = `
@@ -2148,6 +2343,11 @@ export class HudUI {
                     aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}"
                     title="${isFav ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）' : '收藏此对局（永久保留，不受每模式 50 场上限控制）'}"
                   >${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span></button>`
+                : ''
+            }
+            ${
+              canShare
+                ? `<button type="button" class="rr-lb-mini-btn rr-share-mini-btn" id="btn-result-share" title="上传本局回放，生成短链接发给好友">${renderShareBtnInner()}</button>`
                 : ''
             }
           </div>
@@ -2246,6 +2446,7 @@ export class HudUI {
       this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-fav'),
       isFav,
     );
+    this.bindResultShareBtn(this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-share'));
 
     // Choreographed score count-up + ladder row-swap + overtake reveal animation
     const eloNumEl = this.resultOverlay.querySelector<HTMLElement>('#rr-elo-num');
@@ -2363,6 +2564,7 @@ export class HudUI {
 
   public hide() {
     this.clearTimers();
+    this.setDeathVeil(null);
     this.pvpRematchOpen = false;
     this.pvpRematchState = null;
     this.isReplayMode = false;
@@ -2378,6 +2580,326 @@ export class HudUI {
     this.mRestartBtn = null;
     this.root.classList.add('hidden');
     this.resultOverlay.classList.add('hidden');
+  }
+
+  // =====================================================================================
+  // 5v5 团队赛
+  // =====================================================================================
+
+  /** 一队的一横排头像（CS:GO 式：出局变灰，下面是击杀数）；左队靠右、右队靠左，都朝中间比分 */
+  private teamSideHtml(side: 0 | 1, slots: SlotConfig[]): string {
+    const t = this.teamSetup!;
+    const tile = (i: number) => {
+      const s = slots[i];
+      const king = t.mode === 5 && (i === 0 || i === 5);
+      return `
+          <div class="hud-tile ${this.isLocalSlot(i, s) ? 'is-human' : ''}" data-pcard="${i}" style="--pcol:${SIDE_COLOR[side]}" title="${escapeHtmlLite(s.displayName)}">
+            <div class="hud-tile-av">
+              <img src="${s.avatar || ''}" alt="" draggable="false" />
+              ${king ? `<span class="hud-tcrown" data-tcrown="${i}">👑</span><span class="hud-tile-hearts" data-thearts="${i}"></span>` : ''}
+              <span class="hud-tile-cd" data-tcd="${i}"></span>
+            </div>
+            <div class="hud-tile-k" data-tstatus="${i}">0</div>
+          </div>`;
+    };
+    const seats = side === 0 ? [0, 1, 2, 3, 4] : [5, 6, 7, 8, 9];
+    return `<div class="hud-team-side s${side}"><span class="hud-team-label" style="color:${SIDE_COLOR[side]}">${escapeHtmlLite(t.labels[side])}</span><div class="hud-team-cards">${seats.map(tile).join('')}</div></div>`;
+  }
+
+  /** 中间比分（歼灭存活人数 / 占点积分 / 刺王国王命数）和下面一行（倒计时、点的归属或塌陷提示） */
+  private teamCenterHtml(): string {
+    return `
+      <div class="hud-team-score"><b data-tscore="0" style="color:${SIDE_COLOR[0]}">5</b><span>:</span><b data-tscore="1" style="color:${SIDE_COLOR[1]}">5</b></div>
+      <div class="hud-team-sub" id="hud-team-sub"></div>`;
+  }
+
+  /** 手机顶栏（对局和回放共用 renderMobileTop 的圆头像）：右队挪到比分右边，加王冠、击杀数和复活倒计时 */
+  private teamizeMobileTop(slots: SlotConfig[]) {
+    const t = this.teamSetup!;
+    const avatars = this.topBar.querySelector<HTMLElement>('.m-hud-avatars');
+    const center = this.topBar.querySelector<HTMLElement>('.m-hud-center');
+    if (center && !center.querySelector('.hud-team-score')) center.insertAdjacentHTML('beforeend', this.teamCenterHtml());
+    if (avatars && center && !this.topBar.querySelector('.m-team-right')) {
+      const right = document.createElement('div');
+      right.className = 'm-hud-avatars m-team-right';
+      for (let i = 5; i < 10; i++) {
+        const el = avatars.querySelector(`[data-pcard="${i}"]`);
+        if (el) right.appendChild(el);
+      }
+      avatars.classList.add('m-team-left');
+      center.after(right);
+    }
+    slots.forEach((s, i) => {
+      const el = this.topBar.querySelector<HTMLElement>(`[data-pcard="${i}"]`);
+      if (!el) return;
+      el.style.setProperty('--pcol', SIDE_COLOR[s.side ?? (i < 5 ? 0 : 1)]);
+      if (t.mode === 5 && (i === 0 || i === 5)) {
+        el.insertAdjacentHTML('beforeend', '<span class="m-tcrown">👑</span>');
+        el.insertAdjacentHTML('beforeend', `<span class="hud-tile-hearts" data-thearts="${i}"></span>`);
+      }
+      el.insertAdjacentHTML('beforeend', `<span class="m-tkills" data-tstatus="${i}">0</span><span class="hud-tile-cd" data-tcd="${i}"></span>`);
+    });
+  }
+
+  private bindTeamEls(slots: SlotConfig[]) {
+    this.teamEls = {
+      status: slots.map((_, i) => this.topBar.querySelector<HTMLElement>(`[data-tstatus="${i}"]`)),
+      cd: slots.map((_, i) => this.topBar.querySelector<HTMLElement>(`[data-tcd="${i}"]`)),
+      hearts: slots.map((_, i) => this.topBar.querySelector<HTMLElement>(`[data-thearts="${i}"]`)),
+      crown: slots.map((_, i) => this.topBar.querySelector<HTMLElement>(`[data-tcrown="${i}"]`)),
+      score: [this.topBar.querySelector<HTMLElement>('[data-tscore="0"]'), this.topBar.querySelector<HTMLElement>('[data-tscore="1"]')],
+      sub: this.topBar.querySelector<HTMLElement>('#hud-team-sub'),
+    };
+  }
+
+  private renderTeamTop(config: MatchConfig, humanSeat: number) {
+    const t = this.teamSetup!;
+    const map = teamMap(t.mapId);
+    const speed = Math.abs((config.speed || 1) - 1) > 0.01 ? ` · ${config.speed.toFixed(1)}x` : '';
+    const tag = `${map.title} · ${map.modeLabel}${humanSeat < 0 ? ' · 观战' : ''}${speed}`;
+    if (this.mobile) {
+      this.renderMobileTop(config.slots, `<span class="m-hud-label">${tag}</span>`, '');
+      this.teamizeMobileTop(config.slots);
+    } else {
+      // 5 columns: perf | left team | score | right team | buttons; the two outer columns share the leftover
+      // width equally, so the score pill sits at the screen centre
+      this.topBar.innerHTML = `
+        <div class="hud-perf hud-perf-left" id="hud-perf">${this.perfLineInnerHtml('逻辑 20Hz\n渲染 --Hz')}</div>
+        ${this.teamSideHtml(0, config.slots)}
+        <div class="hud-center-pill hud-team-center">
+          <div class="hud-map-label">${tag}</div>
+          ${this.teamCenterHtml()}
+        </div>
+        ${this.teamSideHtml(1, config.slots)}
+        <div class="hud-actions">
+          <div class="hud-action-btns">
+            <button class="hud-btn" id="hud-settings" title="音效、辅助功能、帧率上限与键位设置">⚙️ 设置</button>
+            <button class="hud-btn hud-exit" id="hud-exit">主界面 (ESC)</button>
+          </div>
+        </div>`;
+      this.timerEl = null;
+      this.collapseEl = null;
+      this.bindPerfLine();
+      this.cardEls = config.slots.map((_, i) => ({
+        card: this.topBar.querySelector<HTMLElement>(`[data-pcard="${i}"]`)!,
+        kills: null,
+        dart: null,
+        cdBar: null,
+      }));
+      this.topBar.querySelector('#hud-exit')?.addEventListener('click', () => {
+        this.clearTimers();
+        this.exitFromMatch();
+      });
+      this.topBar.querySelector('#hud-settings')?.addEventListener('click', () => this.callbacks.onOpenSettings());
+    }
+    this.bindTeamEls(config.slots);
+  }
+
+  private updateTeamTick(state: TickSnapshot, colStart: number) {
+    const t = this.teamSetup!;
+    const els = this.teamEls;
+    const me = this.humanSeat >= 0 ? state.players[this.humanSeat] : null;
+    const waitingRespawn = !this.isReplayMode && t.mode === 4 && Boolean(me) && !me!.alive && !state.over;
+    this.setDeathVeil(waitingRespawn ? Math.max(0, me!.timer) / 20 : null);
+    for (let i = 0; i < state.n && i < this.cardEls.length; i++) {
+      const p = state.players[i];
+      const el = this.cardEls[i];
+      el.card?.classList.toggle('is-dead', !p.alive);
+      el.card?.classList.toggle('is-inv', Boolean(p.alive && (p.inv ?? 0) > 0));
+      const st = els?.status[i];
+      if (st) st.textContent = String(Math.max(0, p.kills - (p.kTeam ?? 0))); // 只算打掉的对手
+      const cd = els?.cd[i];
+      if (cd) cd.textContent = !p.alive && t.mode === 4 && !state.over ? (Math.max(0, p.timer) / 20).toFixed(1) : '';
+      const hearts = els?.hearts[i];
+      if (hearts) hearts.textContent = p.alive ? '♥'.repeat(Math.max(0, p.lives ?? 0)) : '';
+    }
+    if (!els) return;
+    let a = 0, b = 0;
+    if (t.mode === 4) {
+      a = Math.floor((state.score?.[0] ?? 0) / 20);
+      b = Math.floor((state.score?.[1] ?? 0) / 20);
+    } else if (t.mode === 5) {
+      a = state.players[0]?.alive ? (state.players[0].lives ?? 0) : 0;
+      b = state.players[5]?.alive ? (state.players[5].lives ?? 0) : 0;
+    } else {
+      for (let i = 0; i < state.n; i++) if (state.players[i].alive) (i < 5 ? a++ : b++);
+    }
+    if (els.score[0]) els.score[0].textContent = t.mode === 5 ? `♥${a}` : String(a);
+    if (els.score[1]) els.score[1].textContent = t.mode === 5 ? `♥${b}` : String(b);
+    if (els.sub) {
+      if (t.mode === 4) {
+        const rem = Math.max(0, (1200 - state.t) / 20);
+        const chips = ['A', 'B', 'C']
+          .map((nm, i) => {
+            const o = state.owner?.[i] ?? -1;
+            const tk = state.taking?.[i] ?? -1;
+            const col = o >= 0 ? SIDE_COLOR[o as 0 | 1] : 'rgba(255,255,255,0.18)';
+            return `<span class="hud-tpoint ${tk >= 0 ? 'is-taking' : ''}" style="--oc:${col};--tc:${tk >= 0 ? SIDE_COLOR[tk as 0 | 1] : 'transparent'}">${nm}</span>`;
+          })
+          .join('');
+        els.sub.innerHTML = `<span class="hud-tclock ${rem < 10 ? 'urgent' : ''}">${rem.toFixed(1)}s</span>${chips}`;
+      } else if (state.warn >= 0) {
+        els.sub.innerHTML = `<span class="hud-tcollapse warn">⚠ 第 ${state.warn + 1} 波即将塌陷</span>`;
+      } else if (state.t < colStart) {
+        els.sub.innerHTML = `<span class="hud-tcollapse">塌陷倒计时 ${Math.ceil((colStart - state.t) / 20)}s</span>`;
+      } else {
+        els.sub.innerHTML = `<span class="hud-tcollapse">已塌陷 ${state.fallen} 波</span>`;
+      }
+    }
+  }
+
+  /** 占点复活等待的灰色蒙层；null = 收起 */
+  private setDeathVeil(seconds: number | null) {
+    const on = seconds !== null;
+    this.deathVeil.classList.toggle('hidden', !on);
+    // 灰色滤镜直接加在 3D 画布和名牌层上（backdrop-filter 透不到 #ui-root 外面的 WebGL 画布）
+    document.body.classList.toggle('hud-dead-veil', on);
+    this.deathVeil.classList.toggle('is-mobile', this.mobile);
+    if (on && this.respawnSecEl) this.respawnSecEl.textContent = seconds!.toFixed(1);
+  }
+
+  private showTeamMatchResult(finalState: TickSnapshot, initialFavorite = false) {
+    this.setDeathVeil(null);
+    const t = this.teamSetup!;
+    const map = teamMap(t.mapId);
+    const w = finalState.winner;
+    const rstKey = formatPrimaryBind(shortcutBind(this.settings.get(), 'quickRestart'));
+    const detail =
+      t.mode === 4
+        ? `积分 ${Math.floor((finalState.score?.[0] ?? 0) / 20)} : ${Math.floor((finalState.score?.[1] ?? 0) / 20)}`
+        : t.mode === 5
+          ? w === 0 || w === 1
+            ? `打掉了对方国王`
+            : '两位国王同时出局'
+          : w === 0 || w === 1
+            ? `全歼对手 · 剩 ${finalState.players.filter((p, i) => p.alive && (i < 5 ? 0 : 1) === w).length} 人`
+            : '最后的人同时出局';
+    const humanSide = this.humanSeat >= 0 ? (this.humanSeat < 5 ? 0 : 1) : -1;
+    const verdict = w !== 0 && w !== 1 ? '平局' : humanSide < 0 ? '本局胜者' : humanSide === w ? '胜利' : '失败';
+    const col = (side: 0 | 1) => `
+      <div class="result-team-col">
+        <div class="result-team-name" style="color:${SIDE_COLOR[side]}">${escapeHtmlLite(t.labels[side])}${w === side ? ' 🏆' : ''}</div>
+        ${[0, 1, 2, 3, 4]
+          .map((k) => {
+            const i = side * 5 + k;
+            const s = this.slots[i];
+            const p = finalState.players[i];
+            const killer = p.killer >= 0 && this.slots[p.killer] ? this.slots[p.killer].displayName : undefined;
+            const status = p.alive ? '存活至终场' : t.mode === 4 ? `复活 ${p.revivals ?? 0} 次` : causeLabel(p.cause, killer);
+            const tk = p.kTeam ?? 0;
+            return `
+            <div class="result-row ${s.kind === 'human' ? 'is-first' : ''}">
+              <img class="r-av" src="${s.avatar || ''}" alt="" />
+              <span class="r-name">${escapeHtmlLite(s.displayName)}</span>
+              <span class="r-kills">${Math.max(0, p.kills - tk)} 击杀<span class="r-teamkill ${tk > 0 ? 'has' : ''}">误杀 ${tk}</span></span>
+              <span class="r-cause">${status}</span>
+            </div>`;
+          })
+          .join('')}
+      </div>`;
+    const room = this.roomRole !== null;
+    // 和其他结算一样：右上角回放 / 收藏 / 分享（团队赛观战也进历史，所以不看有没有玩家）；联机对局不放回放按钮
+    const canWatchReplay = !room && Boolean(this.callbacks.onWatchCurrentReplay);
+    const canToggleFav = Boolean(this.callbacks.onToggleCurrentFavorite);
+    const canShare = Boolean(this.callbacks.onShareCurrentMatch);
+    const isFav = Boolean(initialFavorite);
+    const corner =
+      canWatchReplay || canToggleFav || canShare
+        ? `<div class="result-corner-actions">
+            ${canWatchReplay ? `<button type="button" class="result-replay-corner-btn" id="btn-result-replay" title="立即观看本局回放">🎬 回放</button>` : ''}
+            ${
+              canToggleFav
+                ? `<button type="button" class="result-fav-corner-btn ${isFav ? 'is-fav' : ''}" id="btn-result-fav" aria-pressed="${isFav}"
+                    aria-label="${isFav ? '取消收藏此对局' : '收藏此对局'}"
+                    title="${isFav ? '取消收藏此对局（取消后若超出 50 场上限，将在下一场同模式对局后移除）' : '收藏此对局（永久保留，不受每模式 50 场上限控制）'}"
+                  >${renderReplayFavoriteStarSvg(isFav)}<span>${isFav ? '已收藏' : '收藏'}</span></button>`
+                : ''
+            }
+            ${canShare ? `<button type="button" class="result-share-corner-btn" id="btn-result-share" title="上传本局回放，生成短链接发给好友">${renderShareBtnInner()}</button>` : ''}
+          </div>`
+        : '';
+    this.resultOverlay.innerHTML = `
+      <div class="result-card result-card-team ${corner ? 'has-corner-actions' : ''}">
+        ${corner}
+        <div class="result-kicker">${map.title} · ${map.modeLabel} · ${verdict}</div>
+        <div class="result-wname" style="color:${w === 0 || w === 1 ? SIDE_COLOR[w as 0 | 1] : '#fff'}">${
+          w === 0 || w === 1 ? escapeHtmlLite(t.labels[w as 0 | 1]) + ' 获胜' : '平局 (Draw)'
+        }</div>
+        <div class="result-team-detail">${detail}</div>
+        <div class="result-team-table">${col(0)}${col(1)}</div>
+        <div class="result-btn-row result-btn-row-even">
+          <button class="start-btn result-back-btn" id="btn-result-back">返回团队赛</button>
+          <button class="result-restart-btn" id="btn-result-restart" title="原配置重开 (${rstKey})" ${room ? 'disabled' : ''}>重开</button>
+        </div>
+        ${room ? `<div class="result-room-status" id="result-room-status"></div>` : ''}
+      </div>`;
+    this.nameplateLayer.classList.add('hidden');
+    this.resultOverlay.classList.remove('hidden');
+    const backBtn = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-back');
+    backBtn?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onReturnToLobby();
+    });
+    this.resultOverlay.querySelector('#btn-result-restart')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onRestartMatch();
+    });
+    this.resultOverlay.querySelector('#btn-result-replay')?.addEventListener('click', () => {
+      this.clearTimers();
+      this.callbacks.onWatchCurrentReplay?.();
+    });
+    // 团队赛结算不自动返回，留着看完
+    this.bindResultFavoriteBtn(this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-fav'), isFav, () => undefined);
+    this.bindResultShareBtn(this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-share'), () => undefined);
+    // 联机：重开 = 房主发起倒计时 / 其他人表态，状态见 setRoomRematch
+    if (room) this.renderRoomRematch();
+  }
+
+  /** 5v5 联机赛后状态（main 收到中转的 rematch 消息后调用；null = 清空） */
+  public setRoomRematch(view: RoomRematchView | null) {
+    this.roomRematch = view;
+    this.renderRoomRematch();
+  }
+
+  private renderRoomRematch() {
+    if (this.roomRematchTimer !== null) window.clearTimeout(this.roomRematchTimer);
+    this.roomRematchTimer = null;
+    const statusEl = this.resultOverlay.querySelector<HTMLElement>('#result-room-status');
+    const btn = this.resultOverlay.querySelector<HTMLButtonElement>('#btn-result-restart');
+    if (!statusEl || !btn || this.resultOverlay.classList.contains('hidden')) return;
+    const v = this.roomRematch;
+    statusEl.className = 'result-room-status';
+    if (!v) {
+      statusEl.textContent = '';
+      btn.disabled = true;
+      btn.textContent = '重开';
+      return;
+    }
+    if (v.left > 0) {
+      statusEl.textContent = '有玩家退出了房间，不能再来一局';
+      statusEl.classList.add('is-blocked');
+      btn.disabled = true;
+      btn.textContent = '重开';
+      return;
+    }
+    if (v.deadline !== null) {
+      const sec = Math.max(0, Math.ceil((v.deadline - performance.now()) / 1000));
+      statusEl.textContent = `${sec} 秒后原配置重开…（有玩家退出房间就取消）`;
+      statusEl.classList.add('is-countdown');
+      btn.disabled = true;
+      btn.textContent = `重开 (${sec})`;
+      if (sec > 0) this.roomRematchTimer = window.setTimeout(() => this.renderRoomRematch(), 200);
+      return;
+    }
+    statusEl.textContent = v.total > 0 ? `${v.want}/${v.total} 玩家想要再来一局${v.isHost ? '' : ' · 由房主决定'}` : '';
+    if (v.isHost) {
+      btn.disabled = false;
+      btn.textContent = '重开';
+    } else {
+      btn.disabled = !v.amPlayer || v.iWant;
+      btn.textContent = v.iWant ? '已告诉房主' : '重开';
+      btn.title = v.amPlayer ? '告诉房主你想再来一局' : '只有上场的玩家可以发起';
+    }
   }
 
   private clearTimers() {

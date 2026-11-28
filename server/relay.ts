@@ -18,6 +18,8 @@ import {
   summarize, type ClientClass, type MatchRecord, type SeatStats,
 } from './stats.ts';
 import { SiteAnalytics, isMode, isVisitorId, parseBotResults } from './analytics.ts';
+import { SHARE_ID_RE, SHARE_MAX_TEXT_BYTES, ShareStore, validateShareText } from './shares.ts';
+import { createTeamRooms } from './teamRooms.ts';
 
 const READY_MS = 20_000;
 const RECONNECT_MS = 10_000;
@@ -150,6 +152,24 @@ const analyticsDir = process.env.PVP_ANALYTICS_DIR ||
 const analytics = new SiteAnalytics(analyticsDir || null);
 void analytics.load();
 const beatsByIp = new Map<string, WindowCount>();
+// Shared replays (server/shares.ts): PVP_SHARES_DIR, else <StateDirectory>/shares, else <stats dir>/shares; without
+// any of them sharing is off (POST /share answers 503). Kept until unused for PVP_SHARES_TTL_DAYS (default 180), the
+// least recently used evicted first past PVP_SHARES_MAX_MB (default 512).
+const sharesDir = process.env.PVP_SHARES_DIR ||
+  (process.env.STATE_DIRECTORY ? join(process.env.STATE_DIRECTORY.split(':')[0], 'shares') : (statsDir ? join(statsDir, 'shares') : ''));
+const SHARES_MAX_MB = Number(process.env.PVP_SHARES_MAX_MB ?? 512);
+const SHARES_TTL_DAYS = Number(process.env.PVP_SHARES_TTL_DAYS ?? 180);
+if (!(SHARES_MAX_MB >= 1 && SHARES_MAX_MB <= 100_000)) throw new Error('Invalid PVP_SHARES_MAX_MB');
+if (!(SHARES_TTL_DAYS > 0 && SHARES_TTL_DAYS <= 3650)) throw new Error('Invalid PVP_SHARES_TTL_DAYS');
+const shareStore = sharesDir
+  ? new ShareStore(sharesDir, { maxBytes: Math.round(SHARES_MAX_MB * 1024 * 1024), ttlMs: SHARES_TTL_DAYS * 86_400_000 })
+  : null;
+// Uploads per IP: 6 a minute and 30 an hour; at most 2 being checked at once (each holds up to 4 MB unzipped)
+const SHARE_UPLOADS_PER_MINUTE = 6;
+const SHARE_UPLOADS_PER_HOUR = 30;
+const MAX_SHARE_UPLOADS_IN_FLIGHT = 2;
+const sharesByIp = new Map<string, [WindowCount, WindowCount]>();
+let shareUploadsInFlight = 0;
 const regions = new RegionResolver();
 if (statsStore) void regions.open().then(() => log('stats-ready', { dir: statsDir, regions: regions.ready }));
 
@@ -713,6 +733,120 @@ function analyticsRequest(req: IncomingMessage, res: import('node:http').ServerR
   req.on('error', () => undefined);
 }
 
+function withinShareUploadLimit(req: IncomingMessage, time: number): boolean {
+  const ip = ipOf(req);
+  let windows = sharesByIp.get(ip);
+  if (!windows) {
+    if (sharesByIp.size >= 20_000) return false;
+    sharesByIp.set(ip, (windows = [newWindow(), newWindow()]));
+  }
+  return count(windows[0], time, 60_000, SHARE_UPLOADS_PER_MINUTE) &&
+    count(windows[1], time, 3_600_000, SHARE_UPLOADS_PER_HOUR);
+}
+
+// POST /share (body: the share text, CORS "simple" text/plain) → {id}; GET /share/<id> → the text. See server/shares.ts.
+function shareRequest(req: IncomingMessage, res: import('node:http').ServerResponse, path: string) {
+  const headers = { 'Access-Control-Allow-Origin': '*', 'Cross-Origin-Resource-Policy': 'cross-origin' };
+  const noStore = { ...headers, 'Cache-Control': 'no-store' };
+  const json = (status: number, body: object) => {
+    res.writeHead(status, { ...noStore, 'Content-Type': 'application/json; charset=utf-8' }).end(JSON.stringify(body));
+  };
+  if (req.method === 'OPTIONS') {
+    res.writeHead(204, { ...headers, 'Access-Control-Allow-Methods': 'GET, POST', 'Access-Control-Max-Age': '86400' }).end();
+    return;
+  }
+  const time = now();
+  if (path === '/share') {
+    if (req.method !== 'POST') {
+      res.writeHead(405, noStore).end();
+      req.resume();
+      return;
+    }
+    const declared = Number(req.headers['content-length'] ?? 0);
+    const reject = (status: number, error: string) => {
+      json(status, { error });
+      req.resume();
+    };
+    if (!shareStore) return reject(503, 'disabled');
+    if (declared > SHARE_MAX_TEXT_BYTES) return reject(413, 'too-large');
+    if (!withinShareUploadLimit(req, time)) return reject(429, 'rate-limited');
+    if (shareUploadsInFlight >= MAX_SHARE_UPLOADS_IN_FLIGHT) return reject(503, 'busy');
+    shareUploadsInFlight++;
+    let released = false;
+    const release = () => {
+      if (!released) {
+        released = true;
+        shareUploadsInFlight--;
+      }
+    };
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let tooBig = false;
+    req.on('data', (chunk: Buffer) => {
+      if (tooBig) return;
+      size += chunk.length;
+      if (size > SHARE_MAX_TEXT_BYTES) {
+        tooBig = true;
+        chunks.length = 0;
+        release();
+        res.writeHead(413, { ...noStore, 'Content-Type': 'application/json; charset=utf-8', Connection: 'close' })
+          .end(JSON.stringify({ error: 'too-large' }), () => req.destroy());
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('end', () => {
+      if (tooBig) return;
+      const text = Buffer.concat(chunks).toString('utf8').trim();
+      chunks.length = 0;
+      void validateShareText(text)
+        .then(async (reason) => {
+          if (reason) {
+            json(400, { error: reason });
+            return;
+          }
+          const { id, created } = await shareStore.put(text, time);
+          log('share', { id, bytes: text.length, created });
+          json(200, { id });
+        })
+        .catch((err) => {
+          log('share-error', { error: err instanceof Error ? err.message : String(err) });
+          if (!res.headersSent) json(500, { error: 'store-failed' });
+        })
+        .finally(release);
+    });
+    req.on('error', release);
+    req.on('close', () => {
+      if (!req.complete) release();
+    });
+    return;
+  }
+  if (req.method !== 'GET' && req.method !== 'HEAD') {
+    res.writeHead(405, noStore).end();
+    return;
+  }
+  if (!withinPageLimit(req, time)) {
+    res.writeHead(429, noStore).end();
+    return;
+  }
+  const id = path.slice('/share/'.length);
+  if (!shareStore || !SHARE_ID_RE.test(id)) {
+    res.writeHead(404, noStore).end();
+    return;
+  }
+  shareStore.get(id, time)
+    .then((text) => {
+      if (text === null) {
+        res.writeHead(404, noStore).end();
+        return;
+      }
+      // Content-addressed and immutable: the CDN may keep it for a day
+      res.writeHead(200, { ...headers, 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'public, max-age=86400' })
+        .end(req.method === 'HEAD' ? undefined : text);
+    })
+    .catch(() => res.writeHead(500, noStore).end());
+}
+
 const server = createServer((req, res) => {
   const remote = req.socket.remoteAddress;
   const local = remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
@@ -724,6 +858,10 @@ const server = createServer((req, res) => {
   }
   if (url.pathname === '/public-stats' && authorized(req)) {
     publicStatsRequest(req, res);
+    return;
+  }
+  if ((url.pathname === '/share' || url.pathname.startsWith('/share/')) && authorized(req)) {
+    shareRequest(req, res, url.pathname);
     return;
   }
   if (req.method === 'GET' && url.pathname === '/stats') {
@@ -752,9 +890,15 @@ const server = createServer((req, res) => {
   res.writeHead(404).end();
 });
 const sockets = new WebSocketServer({ noServer: true, maxPayload: 2048, perMessageDeflate: false });
+// 5v5 联机房间：独立端点和消息格式（server/teamRooms.ts），不经过 1v1 的预约 / 对战码
+const teamRooms = createTeamRooms(log);
 server.on('upgrade', (req, socket, head) => {
   if (!authorized(req)) {
     socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n');
+    return;
+  }
+  if (req.url === '/team') {
+    teamRooms.handleUpgrade(req, socket, head, ipOf(req));
     return;
   }
   if (req.url !== '/ws') {
@@ -824,6 +968,7 @@ setInterval(() => {
   }
   for (const [ip, window] of challengesByIp) if (time >= window.until) challengesByIp.delete(ip);
   for (const [ip, window] of beatsByIp) if (time >= window.until) beatsByIp.delete(ip);
+  for (const [ip, [minute, hour]] of sharesByIp) if (time >= minute.until && time >= hour.until) sharesByIp.delete(ip);
   for (const [matchId, match] of retained) if (time >= match.removeAt!) evictRetained(matchId, match);
   for (const [token, p] of tokens) {
     if (!p.match && time >= p.expiresAt) {
@@ -837,6 +982,13 @@ setInterval(() => {
 if (statsStore) {
   void statsStore.prune();
   setInterval(() => void statsStore.prune(), 6 * 3_600_000).unref();
+}
+if (shareStore) {
+  void shareStore.prune()
+    .then(() => shareStore.usage())
+    .then((usage) => log('shares-ready', { dir: sharesDir, ...usage, maxMb: SHARES_MAX_MB, ttlDays: SHARES_TTL_DAYS }))
+    .catch((err) => log('shares-error', { error: err instanceof Error ? err.message : String(err) }));
+  setInterval(() => void shareStore.prune().catch(() => undefined), 6 * 3_600_000).unref();
 }
 // Sample online visitors and persist today's analytics once a minute (and on shutdown)
 setInterval(() => void analytics.tick(), Number(process.env.PVP_ANALYTICS_TICK_MS ?? 60_000)).unref();

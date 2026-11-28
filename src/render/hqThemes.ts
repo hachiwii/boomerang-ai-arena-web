@@ -75,16 +75,26 @@ export interface HqGroundColors {
   joint?: RGB;
   strata?: RGB;
   root?: RGB;
+  /** Episode 12 caldera: glowing crack colour / brighter core / heat-baked rim around the lava lake. */
+  glow?: RGB;
+  glow_hi?: RGB;
+  heat?: RGB;
+  /** Episode 12 keeps: inlay colours of the last-collapsing plaza (star + centre). */
+  emblem?: RGB;
+  emblem2?: RGB;
 }
 
 export interface HqRockStyle {
-  kind: 'rocks' | 'garden' | 'menhir' | 'crates' | 'masonry' | 'hoodoo' | 'houses' | 'trees';
+  kind: 'rocks' | 'garden' | 'menhir' | 'crates' | 'masonry' | 'hoodoo' | 'houses' | 'trees' | 'basalt' | 'harbor' | 'castle';
   h: number;
   top: [number, number];
   n: [number, number];
   p: number;
   mossy: number;
   bands?: string[];
+  /** Episode 12 keeps: flag colours that replace the team red / blue (left castle blue, right castle red). */
+  red?: string;
+  blue?: string;
 }
 
 export interface HqLightConfig {
@@ -99,7 +109,8 @@ export interface HqDecorConfig {
   pines: number;
   mix: [number, string][] | null;
   features: string[];
-  waterfall: boolean;
+  /** `'lava'` (episode 12 caldera): a molten-rock fall instead of water, without mist. */
+  waterfall: boolean | 'lava';
   bushes: boolean;
   density: number;
   dz: number;
@@ -117,6 +128,12 @@ export interface HqGroundStyle {
   roots?: boolean;
   petals?: RGB[];
   ticks?: 'none';
+  /** Episode 12 caldera: ash ground, glowing cracks & cooled-lava plates, heat rim around the lava lake. */
+  ash?: boolean;
+  /** Episode 12 harbor: land strips narrower than 2 x deck metres next to the sea become wooden piers. */
+  deck?: number;
+  /** Episode 12 keeps: tiled castle floors, plaza slabs, last-collapse inlay, pond coping. */
+  castle?: boolean;
 }
 
 export interface HqDetailConfig {
@@ -132,6 +149,22 @@ export interface HqAmbientConfig {
   n: number;
   size: number;
   speed: number;
+  /** Rising embers (mostly born over the lava lake) instead of falling bits. */
+  rise?: boolean;
+  /** Emission strength (> 0 = glowing embers). */
+  glow?: number;
+  /** A second kind of floating bits (caldera: ash falling while embers rise). */
+  extra?: HqAmbientConfig;
+}
+
+/** Episode 12 liquid surface in pits (`themes.py` liquid key, `liquid.py`). */
+export interface HqLiquidSpec {
+  kind: 'lava' | 'water';
+  /** Surface height (m, ground = 0). */
+  z: number;
+  /** `enclosed` = only pits surrounded by land that don't touch the map border. */
+  where: 'enclosed' | 'all';
+  minCells: number;
 }
 
 export interface HqThemeSpec {
@@ -145,6 +178,7 @@ export interface HqThemeSpec {
   detail: HqDetailConfig;
   field: string[];
   ambient: HqAmbientConfig | null;
+  liquid: HqLiquidSpec | null;
 }
 
 const BASE_PAL: HqPalette = {
@@ -221,6 +255,7 @@ const BASE_SPEC: HqThemeSpec = {
   detail: { tuft: 1.5, flower: 0.16, pebble: 0.3, leaf: 0.22, extras: [] },
   field: [],
   ambient: { cols: ['#FFFFFF', '#FFF6C8'], n: 14, size: 0.035, speed: 0.7 },
+  liquid: null,
 };
 
 interface PartialThemeOverride {
@@ -233,6 +268,7 @@ interface PartialThemeOverride {
   detail?: Partial<HqDetailConfig>;
   field?: string[];
   ambient?: HqAmbientConfig | null;
+  liquid?: HqLiquidSpec | null;
 }
 
 const OVERRIDES: Record<string, PartialThemeOverride> = {
@@ -823,6 +859,228 @@ const OVERRIDES: Record<string, PartialThemeOverride> = {
     },
     detail: { tuft: 1.8, flower: 0.1, pebble: 0.2, leaf: 1.2, extras: ['mushroom', 'fern'] },
   },
+  // ---------------- Episode 12 (5v5 team matches): themes.py caldera / harbor / keeps
+  caldera: {
+    pal: {
+      lip: '#7A6A6E',
+      soil: '#5E4A4E',
+      rock_a: '#8E7A7C',
+      rock_b: '#6E5E68',
+      rock_c: '#58506A',
+      rock_deep: '#46426E',
+      rock_under: '#3A3868',
+      haze: '#E8C4C0',
+      ledge_hi: '#C9A896',
+      stone_top: '#B4AABC',
+      stone_lit: '#76728A',
+      stone_side: '#5E5C78',
+      stone_shade: '#4A4862',
+      stone_base: '#3A3850',
+      moss: '#FF9A4A',
+      tall_base: '#5E3A34',
+      tall_mid: '#C0603E',
+      tall_tip: '#FFC05A',
+      tall_flower: ['#FFD46A', '#FF9A4A', '#FFE9A8'],
+      tuft_dark: '#6E5A50',
+      tuft_light: '#C8A070',
+      plant0: '#6E5A50',
+      plant1: '#B8946A',
+      flower_main: ['#FFC24A', '#FF8A3A', '#FFE08A'],
+      flower_acc: ['#FF6A3A', '#FFD46A', '#FFFFFF'],
+      flower_core: '#FFF2C0',
+      leaf_fall: ['#8A7E80', '#A89A98', '#6E6466'],
+      grass: '#8A7A78',
+      grass2: '#A08E88',
+      grass_rim: '#B8A498',
+      tree_pals: [
+        [0.6, ['#C8503A', '#E8784A', '#FFB060']],
+        [0.4, ['#8A6A5A', '#A88A6A', '#D6B88A']],
+      ],
+      pine_pal: ['#4A4A5A', '#6A6676', '#A89CA0'],
+      bush_pal: ['#A8503E', '#E8884E'],
+      trunk: '#3E3440',
+      cloud: '#FBEAE6',
+      cloud_shade: '#C8A0B4',
+      sky: '#FFD2B8',
+      sky_deep: '#E0909A',
+      ambient: '#C8A8D0',
+    },
+    ground: {
+      mid: [132, 116, 112],
+      light: [178, 164, 152],
+      dark: [92, 78, 84],
+      lush: [104, 90, 92],
+      rim: [184, 166, 152],
+      clover: [110, 100, 104],
+      dirt: [170, 156, 146],
+      dirt_hi: [190, 176, 164],
+      dirt_lo: [140, 126, 120],
+      tall: [96, 70, 66],
+      dirt_rim: [110, 98, 100],
+      tick_light: [190, 176, 168, 90],
+      tick_dark: [70, 62, 70, 80],
+      pebble_a: [70, 64, 78, 210],
+      pebble_b: [196, 180, 170, 200],
+      glow: [255, 150, 60],
+      glow_hi: [255, 226, 140],
+      heat: [196, 104, 76],
+    },
+    rock: { kind: 'basalt', h: 1.0 },
+    light: { az: 150, el: 50, energy: 4.5, color: [1.0, 0.86, 0.72], ambient: 0.6 },
+    decor: {
+      pines: 0.0,
+      mix: [
+        [0.4, 'basalt'],
+        [0.35, 'charred'],
+        [0.25, 'emberbush'],
+      ],
+      features: ['volcano', 'volcano', 'smoke'],
+      waterfall: 'lava',
+      bushes: false,
+      density: 0.6,
+    },
+    gstyle: { ash: true, ticks: 'none' },
+    detail: { tuft: 0.35, flower: 0.05, pebble: 0.6, leaf: 0.15, extras: ['obsidian', 'vent'] },
+    liquid: { kind: 'lava', z: -0.5, where: 'enclosed', minCells: 1 },
+    ambient: {
+      cols: ['#FFB24A', '#FF7A3A', '#FFE08A'],
+      n: 46,
+      size: 0.035,
+      speed: 0.9,
+      rise: true,
+      glow: 3.0,
+      extra: { cols: ['#B8AEB0', '#8E8488', '#D8D0D0'], n: 26, size: 0.05, speed: 0.6 },
+    },
+  },
+  harbor: {
+    pal: {
+      lip: '#F0DEB0',
+      soil: '#C8A478',
+      rock_a: '#F2DCB0',
+      rock_b: '#E0C09A',
+      rock_c: '#C8A08C',
+      rock_deep: '#8A86B0',
+      rock_under: '#6E74AA',
+      haze: '#CDE6F4',
+      stone_top: '#F4E6CA',
+      stone_lit: '#E2CCA6',
+      stone_side: '#C8AC8A',
+      stone_shade: '#9A8EA2',
+      stone_base: '#7E7494',
+      moss: '#9CC870',
+      tall_base: '#8A8A46',
+      tall_mid: '#C8C070',
+      tall_tip: '#F4ECB0',
+      tuft_dark: '#8AA05A',
+      tuft_light: '#D8DE8A',
+      grass: '#F2E2B4',
+      grass2: '#FAEED0',
+      grass_rim: '#FFF6DE',
+      leaf_fall: ['#FFFFFF', '#F2F2F2', '#E4ECF2'],
+      tree_pals: [
+        [0.7, ['#3E9A58', '#62B862', '#A6DC7E']],
+        [0.3, ['#2E8A6A', '#4EAA7A', '#94D49A']],
+      ],
+      sky: '#A6DCF8',
+      sky_deep: '#4CA4EC',
+      cloud_shade: '#CBDDF4',
+      ambient: '#A8C4F2',
+    },
+    ground: {
+      mid: [240, 222, 172],
+      light: [250, 238, 200],
+      dark: [226, 204, 152],
+      lush: [156, 186, 106],
+      rim: [255, 246, 216],
+      clover: [150, 182, 100],
+      dirt: [222, 196, 146],
+      dirt_hi: [236, 214, 168],
+      dirt_lo: [200, 172, 124],
+      tall: [160, 168, 96],
+      dirt_rim: [214, 190, 140],
+      tick_light: [255, 250, 226, 110],
+      tick_dark: [206, 180, 128, 80],
+      slab: [222, 214, 196],
+      slab_hi: [238, 232, 216],
+      slab_lo: [196, 188, 172],
+      joint: [160, 150, 136],
+    },
+    rock: { kind: 'harbor' },
+    light: { az: 150, el: 55, energy: 4.7, color: [1.0, 0.94, 0.84], ambient: 0.64 },
+    decor: {
+      pines: 0.0,
+      mix: [
+        [0.35, 'house'],
+        [0.4, 'round'],
+        [0.25, 'seastack'],
+      ],
+      features: ['lighthouse', 'boat', 'boat'],
+      waterfall: true,
+      bushes: true,
+      density: 0.7,
+    },
+    gstyle: {
+      deck: 2.0,
+      ripples: true,
+      ticks: 'none',
+      wood: [
+        [196, 150, 104],
+        [170, 124, 86],
+        [216, 174, 124],
+      ],
+    },
+    detail: { tuft: 0.6, flower: 0.05, pebble: 0.4, leaf: 0.0, extras: ['shells', 'drygrass'] },
+    field: ['piers'],
+    liquid: { kind: 'water', z: -0.4, where: 'enclosed', minCells: 1 },
+    ambient: { cols: ['#FFFFFF', '#F2F6FA'], n: 8, size: 0.05, speed: 0.5 },
+  },
+  keeps: {
+    pal: {
+      lip: '#86C060',
+      soil: '#A88A6E',
+      stone_top: '#EEE6D6',
+      stone_lit: '#DCD2BE',
+      stone_side: '#BEB4A4',
+      stone_shade: '#968EA0',
+      stone_base: '#7A7290',
+      moss: '#7CB44E',
+      grass: '#8CC85E',
+      grass2: '#A8D86A',
+      grass_rim: '#C2E480',
+      leaf_fall: ['#9AD06A', '#F2C14E', '#FFB7D0'],
+      tree_pals: [
+        [0.75, ['#3E9A58', '#5EB862', '#A0DC7E']],
+        [0.25, ['#E08A9A', '#F2AABA', '#FFD6E0']],
+      ],
+    },
+    ground: {
+      slab: [220, 214, 200],
+      slab_hi: [236, 232, 220],
+      slab_lo: [196, 190, 178],
+      joint: [150, 144, 136],
+      dirt: [214, 204, 180],
+      dirt_hi: [228, 220, 198],
+      dirt_lo: [186, 176, 154],
+    },
+    rock: { kind: 'castle', red: '#FF5B4D', blue: '#2E8CFF' },
+    decor: {
+      pines: 0.0,
+      mix: [
+        [0.4, 'round'],
+        [0.3, 'cypress'],
+        [0.3, 'house'],
+      ],
+      features: ['keep_tower', 'keep_tower', 'keep_tower'],
+      waterfall: true,
+      bushes: true,
+      density: 0.9,
+    },
+    gstyle: { castle: true },
+    detail: { tuft: 1.3, flower: 0.18, pebble: 0.25, leaf: 0.3, extras: [] },
+    field: ['castle'],
+    liquid: { kind: 'water', z: -0.35, where: 'enclosed', minCells: 1 },
+    ambient: { cols: ['#9AD06A', '#F2C14E', '#FFB7D0', '#FFFFFF'], n: 26, size: 0.06, speed: 0.7 },
+  },
 };
 
 export function getHqTheme(name: string): HqThemeSpec {
@@ -838,5 +1096,6 @@ export function getHqTheme(name: string): HqThemeSpec {
     detail: { ...BASE_SPEC.detail, ...(ov.detail || {}) },
     field: ov.field ? [...ov.field] : [...BASE_SPEC.field],
     ambient: ov.ambient === undefined ? BASE_SPEC.ambient : ov.ambient,
+    liquid: ov.liquid ? { ...ov.liquid } : null,
   };
 }

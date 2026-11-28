@@ -21,6 +21,7 @@ relay bundle.
 ```sh
 node scripts/test_pvp_engine.mjs
 node scripts/test_pvp_relay.mjs
+node scripts/test_replay_share.mjs
 ```
 
 Rebuild only the checked-in game engine with `python3 scripts/build_wasm.py --engine-only`
@@ -74,7 +75,7 @@ minute. The only identity is a random id the browser generated (`localStorage['b
 not stored. Pages built with PvP off (the mirror) send nothing.
 
 The relay keeps: online visitors (heartbeat within 2.5 min), per day (UTC+8) the UV, the per-minute online count
-and its peak, and per mode (ranked-solo / ranked-ffa / cricket / cricket-batch / custom / training / pvp / replay)
+and its peak, and per mode (ranked-solo / ranked-ffa / team / cricket / cricket-batch / custom / training / pvp / replay)
 the unique visitors plus matches started / finished. A quick restart (R / 再来一局) counts the match being left as
 finished. A 排位四人 match left (R or 返回主界面) after the player is out is played out by the bots in the background
 on the page, then reported as finished with every bot's result (an R restart also saves the whole match to 对局历史). PvP matches are counted once by the relay (at GO and at the end), not by the two clients.
@@ -99,6 +100,44 @@ shutdown and reloaded on start. After 90 days a day file is compacted (visitor i
 counts dropped) but kept, so all-time totals never go down. The analytics dir is `PVP_ANALYTICS_DIR`, else
 `$STATE_DIRECTORY/analytics`, else `$PVP_STATS_DIR/analytics`. `stats-report` prints it above the latency report;
 `GET /stats` (loopback) adds `onlineNow` and `visitorsToday`.
+
+## Shared replays
+
+The 分享 button on result screens and in replays (`src/net/replayShareClient.ts`) uploads one match with
+`POST /share`: the body is text, base64url of a gzip'd JSON document (`src/game/replayShare.ts`: the match summary,
+the map and every recorded tick in a delta-coded column layout, typically 3–15 KB), sent as a CORS "simple" text/plain
+request through the CDN (origin key required). The relay checks it is such a document (≤ 1 MiB of text, ≤ 4 MiB
+unzipped, v1 shape), stores it as `<shares dir>/<id>.txt` and answers `{"id": "<10 chars [0-9a-z]>"}`; the id is
+derived from the content, so sharing the same match again gives the same link. The page shows `<page URL>?r=<id>`;
+opening it fetches `GET /share/<id>` (`Cache-Control: public, max-age=86400`, the same 120-per-IP-per-minute page
+limit) and plays the replay. The page re-validates and cleans everything it loads (names, colours, avatars, sizes),
+since anyone can upload. Errors: 400 `{error}` for a malformed upload, 413 too large, 429 over 6 uploads per IP per
+minute or 30 per hour, 503 when sharing is off or two uploads are already being checked; 404 for an unknown id.
+
+The shares dir is `PVP_SHARES_DIR`, else `$STATE_DIRECTORY/shares`, else `$PVP_STATS_DIR/shares`; with none of them
+uploads answer 503. A share is deleted when it has been neither uploaded nor viewed for `PVP_SHARES_TTL_DAYS`
+(default 180; a view refreshes it at most once a day), and past `PVP_SHARES_MAX_MB` (default 512, counted in 4 KiB
+disk blocks: a 1v1 share is ~3 KB = 1 block, a 4-player one 5–15 KB = 2–4, so roughly 30 000–130 000 shares) the least recently used shares are evicted
+down to 90%. Checked at start, every 6 hours and when an upload would go over the cap. Nothing
+about the uploader is stored or logged (the log line is `share` with the id and size). Pages built with PvP off (the
+mirror) show no 分享 button and can't open share links.
+
+## 5v5 rooms
+
+The 团队赛 tab's online rooms use a separate WebSocket endpoint, `/team` (`server/teamRooms.ts`, messages in
+`src/net/teamRoomProtocol.ts`; same origin-key check as `/ws`). The relay only keeps rooms and forwards messages —
+it runs no engine. A room has a 6-digit code, up to 20 members named Alice, Bob, Carol… in join order, and one host
+(the creator; when the host leaves, the earliest remaining member). The host's browser is the referee: it runs the
+engine and all bots, and sends every step's 10 action lines (`frame`, ~250 bytes); the relay fans them out and the
+other members replay them on their own engine (the engine is deterministic for identical actions). Members in a
+seat send their inputs, which the relay passes to the host only. The host also sends the whole lobby state (lineup,
+tactics, spawns, map, speed; ≤ 64 KiB), stored and given to anyone who joins; seat claims / releases go to the host.
+A match in progress (its start message and every frame so far) is replayed to late joiners. After a finished match
+the relay tracks the rematch: which seated players want one, and who has left the room (any leaver blocks it); the
+host's `go` starts a 3-second countdown, cancelled if a player leaves. Rooms are dropped when empty; the host leaving
+ends a running match for everyone. Limits: 200 rooms, 1024 connections (40 per IP), 120 messages/s per connection,
+clients must report the same build id as the room's creator. The log has `team-room-created` / `team-room-closed`
+with the code only.
 
 ## Protocol
 

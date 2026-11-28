@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { DState, PState, PlayerSnapshot, DartSnapshot } from '../game/types';
 import {
   buildSlicedHalves,
@@ -34,6 +35,78 @@ export type PitFallKind = 'walk' | 'kick' | 'ground';
 export interface RigDeathEffectCallbacks {
   onCloudSplash?: (x: number, z: number) => void;
   onPoof?: (x: number, y: number, z: number, size: number) => void;
+  /** Episode 12: the falling body reached a liquid surface (lava lake / sea / pond) at height y. */
+  onLiquidSplash?: (x: number, z: number, y: number) => void;
+}
+
+/** Optional per-rig styling for 5v5 team matches. */
+export interface CharacterRigTeamOptions {
+  /** Team colour: an extra outline shell around body / head / hair and a glowing foot disc with a facing pointer. */
+  teamColor: string;
+}
+
+// chars_voxel.py: TEAM_W outline shell outside the dark ink outline, only on these parts
+const TEAM_PARTS = new Set(['body', 'head', 'hairback', 'tailL', 'tailR', 'tail']);
+const OUTLINE_W_LOCAL = 0.0125;
+const TEAM_W = 0.024;
+
+/**
+ * chars.py `_ring(team=True)`, scaled like the port's regular foot ring (~0.8x): solid team-colour band, faint
+ * filled centre, white outer edge (readable on red ground and blue ice) and a pointer showing the facing (+Z local).
+ */
+function buildTeamDiscGeometry(colorHex: string): THREE.BufferGeometry {
+  const c = new THREE.Color(colorHex);
+  const seg = 48;
+  const rOut = 0.5;
+  const rIn = 0.36;
+  const pos: number[] = [];
+  const col: number[] = [];
+  const idx: number[] = [];
+  const v = (x: number, y: number, z: number, r: number, g: number, b: number, a: number) => {
+    pos.push(x, y, z);
+    col.push(r, g, b, a);
+    return pos.length / 3 - 1;
+  };
+  // band
+  const b0 = pos.length / 3;
+  for (let k = 0; k < seg; k++) {
+    const a = (2 * Math.PI * k) / seg;
+    v(rOut * Math.cos(a), 0, rOut * Math.sin(a), c.r, c.g, c.b, 1);
+    v(rIn * Math.cos(a), 0, rIn * Math.sin(a), c.r, c.g, c.b, 1);
+  }
+  for (let k = 0; k < seg; k++) {
+    const k2 = (k + 1) % seg;
+    idx.push(b0 + 2 * k, b0 + 2 * k2, b0 + 2 * k2 + 1, b0 + 2 * k, b0 + 2 * k2 + 1, b0 + 2 * k + 1);
+  }
+  // faint filled centre
+  const ctr = v(0, -0.001, 0, c.r, c.g, c.b, 0.2);
+  const f0 = pos.length / 3;
+  for (let k = 0; k < seg; k++) {
+    const a = (2 * Math.PI * k) / seg;
+    v(rIn * Math.cos(a), -0.001, rIn * Math.sin(a), c.r, c.g, c.b, 0.42);
+  }
+  for (let k = 0; k < seg; k++) idx.push(ctr, f0 + k, f0 + ((k + 1) % seg));
+  // white outer edge
+  const w0 = pos.length / 3;
+  for (let k = 0; k < seg; k++) {
+    const a = (2 * Math.PI * k) / seg;
+    v((rOut + 0.004) * Math.cos(a), -0.0005, (rOut + 0.004) * Math.sin(a), 1, 1, 1, 0.95);
+    v((rOut + 0.04) * Math.cos(a), -0.0005, (rOut + 0.04) * Math.sin(a), 1, 1, 1, 0.95);
+  }
+  for (let k = 0; k < seg; k++) {
+    const k2 = (k + 1) % seg;
+    idx.push(w0 + 2 * k, w0 + 2 * k2, w0 + 2 * k2 + 1, w0 + 2 * k, w0 + 2 * k2 + 1, w0 + 2 * k + 1);
+  }
+  // facing pointer
+  const p0 = v(-0.1, 0, rOut - 0.012, c.r, c.g, c.b, 1);
+  const p1 = v(0.1, 0, rOut - 0.012, c.r, c.g, c.b, 1);
+  const p2 = v(0, 0, rOut + 0.14, c.r, c.g, c.b, 1);
+  idx.push(p0, p1, p2);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
+  geo.setIndex(idx);
+  return geo;
 }
 
 export interface SliceAnimState {
@@ -61,6 +134,8 @@ export interface FallAnimState {
   kicked: boolean;
   kind: PitFallKind;
   splashFired: boolean;
+  /** Episode 12: liquid surface height under the fall (null = open pit to the cloud sea). */
+  liquidY: number | null;
 }
 
 export interface SlashFallAnimState {
@@ -210,6 +285,13 @@ export class CharacterRig {
   public lastDartLandTick = -999;
   /** Training ground: last tick an invincible target was hit (white flash); stays -999 in every other mode. */
   public lastHurtTick = -999;
+  /** 5v5 control: tick this seat respawned (drop-in out of the light beam); -999 = none. */
+  public respawnTick = -999;
+  /** 5v5 king: white flash forced from outside (invulnerability blink), 0..1. */
+  public externalFlash = 0;
+  /** 5v5: team colour (team outline + foot disc), null outside team matches. */
+  public readonly teamColor: string | null;
+  private readonly cdRingScale: number;
   public actionDirAngle = 0;
 
   // Smoothed continuous walk phase and facing
@@ -248,11 +330,14 @@ export class CharacterRig {
     parentScene: THREE.Scene,
     highQuality = true,
     dartOutline = true,
+    team?: CharacterRigTeamOptions,
   ) {
     this.seat = seat;
     this.model = model;
     this.color = model.color;
     this.ringColor = ringColor;
+    this.teamColor = team?.teamColor ?? null;
+    this.cdRingScale = team ? 1.16 : 1;
     this.highQuality = highQuality;
     this.dartOutline = dartOutline;
 
@@ -275,7 +360,23 @@ export class CharacterRig {
       mesh.castShadow = false;
       grp.add(mesh);
       if (outlineGeo) {
-        const om = new THREE.Mesh(outlineGeo, omat);
+        let og = outlineGeo;
+        if (this.teamColor && TEAM_PARTS.has(nm)) {
+          // Team-colour shell just outside the dark ink outline, merged into the same draw call
+          const shell = buildVoxelPartGeometry(part, VOX_U, OUTLINE_W_LOCAL + TEAM_W).outlineGeo;
+          if (shell) {
+            const tc = new THREE.Color(this.teamColor);
+            const ca = shell.getAttribute('color') as THREE.BufferAttribute;
+            for (let i = 0; i < ca.count; i++) ca.setXYZ(i, tc.r, tc.g, tc.b);
+            const merged = mergeGeometries([outlineGeo, shell]);
+            if (merged) {
+              og = merged;
+              outlineGeo.dispose();
+            }
+            shell.dispose();
+          }
+        }
+        const om = new THREE.Mesh(og, omat);
         grp.add(om);
       }
       const rx = part.pivot[0] * VOX_U;
@@ -366,16 +467,29 @@ export class CharacterRig {
     parentScene.add(this.shadowBlob2);
 
     // Colored foot ring (slightly bolder & bright highlight for Human player!)
-    const ringGeo = new THREE.RingGeometry(isHuman ? 0.38 : 0.37, isHuman ? 0.49 : 0.45, 28);
-    ringGeo.rotateX(-Math.PI / 2);
-    const ringMat = new THREE.MeshBasicMaterial({
-      color: ringColor,
-      transparent: true,
-      opacity: isHuman ? 0.92 : 0.78,
-      depthWrite: false,
-      side: THREE.DoubleSide,
-    });
-    this.groundRing = new THREE.Mesh(ringGeo, ringMat);
+    if (this.teamColor) {
+      // 5v5: glowing team disc with a facing pointer (chars.py _ring team=True)
+      const discMat = new THREE.MeshBasicMaterial({
+        vertexColors: true,
+        transparent: true,
+        opacity: 1,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+        toneMapped: false,
+      });
+      this.groundRing = new THREE.Mesh(buildTeamDiscGeometry(this.teamColor), discMat);
+    } else {
+      const ringGeo = new THREE.RingGeometry(isHuman ? 0.38 : 0.37, isHuman ? 0.49 : 0.45, 28);
+      ringGeo.rotateX(-Math.PI / 2);
+      const ringMat = new THREE.MeshBasicMaterial({
+        color: ringColor,
+        transparent: true,
+        opacity: isHuman ? 0.92 : 0.78,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      this.groundRing = new THREE.Mesh(ringGeo, ringMat);
+    }
     this.groundRing.position.y = 0.022;
     parentScene.add(this.groundRing);
 
@@ -543,6 +657,7 @@ export class CharacterRig {
     vz: number,
     kicked: boolean,
     kind: PitFallKind = kicked ? 'kick' : 'walk',
+    liquidY: number | null = null,
   ) {
     this.fallState = {
       active: true,
@@ -554,6 +669,7 @@ export class CharacterRig {
       kicked,
       kind,
       splashFired: false,
+      liquidY,
     };
     this.groundRing.visible = false;
     this.dashCdRing.visible = false;
@@ -583,6 +699,8 @@ export class CharacterRig {
     this.lastStunFaceYaw = null;
     this.lastDartLandTick = -999;
     this.lastHurtTick = -999;
+    this.respawnTick = -999;
+    this.externalFlash = 0;
     this.walkDist = 0;
     this.initializedPos = false;
     this.stealthBlend = 0;
@@ -898,6 +1016,33 @@ export class CharacterRig {
       if (faceMode === 'open') faceMode = u < 4 ? 'tight' : faceMode;
     }
 
+    // 5v5 control respawn (pose.py, life > 0): drop out of the light beam, squash-bounce on landing, flash, happy face
+    let respawnScale = 1;
+    if (this.respawnTick > -900 && gt >= this.respawnTick && gt - this.respawnTick < 12) {
+      const u = gt - this.respawnTick;
+      if (u < 3.0) {
+        const w = 1 - u / 3.0;
+        posY = posY * (1 - w) + 1.4 * w * w;
+        sy = sy * (1 - w) + 1.18 * w;
+        sx = sx * (1 - w) + 0.9 * w;
+        armAF *= 1 - w;
+        armASide = armASide * (1 - w) + 0.3 * w;
+        armAU = armAU * (1 - w) + 0.72 * w;
+        armBF *= 1 - w;
+        armBSide = armBSide * (1 - w) - 0.3 * w;
+        armBU = armBU * (1 - w) + 0.72 * w;
+        hairBack = hairBack * (1 - w) + 1.3 * w;
+        respawnScale = 0.55 + 0.45 * eout(u / 3.0);
+      } else {
+        const q = Math.exp(-(u - 3) / 2.2) * Math.cos((u - 3) * 1.3);
+        sy *= 1 - 0.3 * q;
+        sx *= 1 + 0.22 * q;
+      }
+      flash = Math.max(flash, 0.7 * clamp(1 - u / 7.0));
+      if (u < 10) faceMode = 'happy';
+    }
+    if (this.externalFlash > 0) flash = Math.max(flash, this.externalFlash);
+
     // Grass stealth crouch & tint
     const targetStealth = inGrassStealth ? 1 : 0;
     this.stealthBlend += (targetStealth - this.stealthBlend) * Math.min(1, frameDt * 12);
@@ -947,7 +1092,7 @@ export class CharacterRig {
     // Apply transforms to root
     this.root.position.set(x, posY, z);
     this.root.rotation.set(lean, this.smoothedYaw, roll, 'YXZ');
-    const baseScale = CHAR_SCALE * (this.model.scale || 1.0);
+    const baseScale = CHAR_SCALE * (this.model.scale || 1.0) * respawnScale;
     this.rigRoot.scale.set(baseScale * sx, baseScale * sy, baseScale * sz);
 
     // Apply transforms to parts
@@ -1004,14 +1149,16 @@ export class CharacterRig {
 
       this.groundRing.visible = true;
       this.groundRing.position.set(x, 0.022, z);
+      if (this.teamColor) this.groundRing.rotation.set(0, this.smoothedYaw, 0);
       (this.groundRing.material as THREE.MeshBasicMaterial).opacity =
-        (1 - 0.72 * this.stealthBlend) * 0.86 * this.visibilityAlpha;
+        (1 - 0.72 * this.stealthBlend) * (this.teamColor ? 1 : 0.86) * this.visibilityAlpha;
 
       if (currP.cd > 0) {
         this.dashCdRing.visible = true;
         this.dashCdRing.position.set(x, 0.024, z);
         const pct = currP.cd / 20;
-        this.dashCdRing.scale.set(0.85 + 0.15 * pct, 1, 0.85 + 0.15 * pct);
+        const cs = (0.85 + 0.15 * pct) * this.cdRingScale;
+        this.dashCdRing.scale.set(cs, 1, cs);
         (this.dashCdRing.material as THREE.MeshBasicMaterial).opacity = 0.45 * pct * this.visibilityAlpha;
       } else {
         this.dashCdRing.visible = false;
@@ -1411,7 +1558,7 @@ export class CharacterRig {
 
     if (!hq) {
       const y = -0.055 * u * u - 0.08 * u;
-      if (y < -12) {
+      if (y < -12 || (F.liquidY !== null && y < F.liquidY - 0.5)) {
         this.root.visible = false;
         return;
       }
@@ -1435,16 +1582,30 @@ export class CharacterRig {
     const kind = F.kind;
     const hang = FALL_HANG[kind];
     const f = Math.max(0, u - hang);
-    const y = -0.5 * FALL_G * f * f - (kind === 'ground' ? 0.05 * f : 0);
+    let y = -0.5 * FALL_G * f * f - (kind === 'ground' ? 0.05 * f : 0);
+    const drift = (kind === 'kick' ? 3.2 : 2.2) * (1 - Math.exp(-u / 3.0));
+    const curX = F.x + F.vx * drift;
+    const curZ = F.z + F.vz * drift;
+    if (F.liquidY !== null && y < F.liquidY) {
+      // Episode 12: fell into lava / water — splash at the surface, then sink 0.06 m per step and vanish 0.6 m under
+      const ly = F.liquidY;
+      const k1 = kind === 'ground' ? 0.05 : 0;
+      const fc = (-k1 + Math.sqrt(k1 * k1 - 2 * FALL_G * ly)) / FALL_G;
+      if (!F.splashFired) {
+        F.splashFired = true;
+        deathEvents?.onLiquidSplash?.(curX, curZ, ly);
+      }
+      y = ly - 0.06 * Math.max(0, f - fc);
+      if (y < ly - 0.6) {
+        this.root.visible = false;
+        return;
+      }
+    }
     if (y < -13.5) {
       this.root.visible = false;
       return;
     }
     this.root.visible = true;
-
-    const drift = (kind === 'kick' ? 3.2 : 2.2) * (1 - Math.exp(-u / 3.0));
-    const curX = F.x + F.vx * drift;
-    const curZ = F.z + F.vz * drift;
 
     // Trigger billowing cloud-sea splash when passing y = -10.5 (pose.py:781-783)
     if (y <= FALL_SPLASH_Y && !F.splashFired) {

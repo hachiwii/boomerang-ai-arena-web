@@ -26,6 +26,7 @@ import { FXSystem } from './fxSystem';
 import { ArenaMover, HqArenaMap3D, IArenaMap } from './hqMapBuilder';
 import { getHqTheme } from './hqThemes';
 import { ArenaMap3D } from './mapBuilder';
+import { isTeamMatchSetup, seatTeam, TEAM_COLORS, TeamVisuals, withCrown } from './teamVisuals';
 import { getTheme } from './themes';
 import { VoxelModelData } from './voxelBuilder';
 
@@ -144,7 +145,12 @@ export class GameRenderer {
   private liveImpactImpulses: { startRealMs: number; amp: number; punch: number; seed: number }[] = [];
   private nextWinnerRibbonSec = -1;
   private winnerRibbonWave = 0;
-  private pendingEndConfetti: { seat: number; triggerTick: number } | null = null;
+  private pendingEndConfetti: { seats: number[]; triggerTick: number } | null = null;
+
+  // 5v5 team matches (mapData.mode 3/4/5 or slots with `side`): team outlines / discs, mode visuals, team winner
+  private teamMode = false;
+  private seatTeams: (0 | 1)[] = [];
+  private teamVisuals: TeamVisuals | null = null;
 
   // Raycasting & camera scratch (zero allocation per frame)
   private readonly _raycaster = new THREE.Raycaster();
@@ -563,6 +569,12 @@ export class GameRenderer {
     }
   }
 
+  /** 空闲时预先画好某张图的地面（只在高画质下有用：普通画质不画地面纹理） */
+  public prewarmMapGround(mapData: EngineMapData, themeName: string) {
+    if (this.graphicsQuality !== 'high') return;
+    HqArenaMap3D.prewarmGround(mapData, themeName);
+  }
+
   public async loadPreviewMap(mapData: EngineMapData, themeName: string) {
     this.clearMatchObjects();
     this.previewMode = true;
@@ -607,12 +619,28 @@ export class GameRenderer {
     // Load voxel character models & construct rigs
     const hq = this.graphicsQuality === 'high';
     const models = await Promise.all(slots.map((s) => this.loadCharModel(s.charKey)));
+    // 5v5: team colour per seat (team 0 = left = blue, team 1 = right = red); kings wear a pixel crown
+    this.teamMode = isTeamMatchSetup(mapData, slots);
+    this.seatTeams = slots.map((_, k) => seatTeam(slots, k, initialState.players[k]));
+    const kings = this.teamMode && mapData.mode === 5 ? mapData.kings ?? [-1, -1] : [-1, -1];
     this.rigs = slots.map((slot, idx) => {
-      const ringCol = slot.ringAccent || slot.color;
-      const rig = new CharacterRig(idx, models[idx], ringCol, slot.kind === 'human' && !slot.remote, this.scene, hq, this.dartOutline);
+      const teamCol = this.teamMode ? TEAM_COLORS[this.seatTeams[idx]] : null;
+      const model = teamCol && kings.includes(idx) ? withCrown(models[idx], teamCol) : models[idx];
+      const ringCol = teamCol ?? (slot.ringAccent || slot.color);
+      const rig = new CharacterRig(
+        idx,
+        model,
+        ringCol,
+        slot.kind === 'human' && !slot.remote,
+        this.scene,
+        hq,
+        this.dartOutline,
+        teamCol ? { teamColor: teamCol } : undefined,
+      );
       rig.setSunDirection(this.sunDirVec.x, this.sunDirVec.y, this.sunDirVec.z);
       return rig;
     });
+    this.teamVisuals = this.teamMode ? new TeamVisuals(this.scene, mapData, slots, initialState) : null;
 
     this.fx = new FXSystem(
       this.scene,
@@ -779,6 +807,7 @@ export class GameRenderer {
       const el = document.createElement('div');
       el.className = `nameplate ${s.kind === 'human' && !s.remote ? 'nameplate-human' : ''}`;
       el.innerHTML = `<span class="np-eye" data-eye="none"></span><span class="np-dot" style="background:${s.ringAccent || s.color}"></span><span class="np-txt">${s.displayName}</span>`;
+      if (this.teamMode) el.style.borderColor = TEAM_COLORS[this.seatTeams[i] ?? 0];
       this.nameplateLayer.appendChild(el);
       this.nameplates.push(el);
       this.nameplateEyeEls.push(el.querySelector<HTMLSpanElement>('.np-eye'));
@@ -971,6 +1000,7 @@ export class GameRenderer {
       this.pvpSmoothing = null;
     }
     if (this.trainingMode) prev = this.applyTrainingTransitions(prev, next);
+    if (this.teamMode) prev = this.applyTeamTransitions(prev, next);
     this.prevState = prev;
     this.currState = next;
     if (tickDurationMs && tickDurationMs > 0) {
@@ -1107,8 +1137,12 @@ export class GameRenderer {
             const mvx = (vp.x - vpPrev.x) / 1000;
             const mvz = (vp.y - vpPrev.y) / 1000;
             const kind = this.classifyPitFallKind(vp.x, vp.y, killerIdx, gt);
-            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0, kind);
+            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0, kind, this.liquidYAt(vp.x, vp.y, gt));
           }
+        } else if (ev.name === 'RESPAWN' && this.rigs[ev.a]) {
+          // 5v5 control: back in play — clear the death animation, replay the drop-in if it's recent
+          this.rigs[ev.a].resetDynamicState();
+          this.rigs[ev.a].respawnTick = gt - 1;
         } else if (targetT - gt <= 20) {
           if (ev.name === 'RELEASE' && this.rigs[ev.a]) this.rigs[ev.a].lastThrowTick = gt;
           else if (ev.name === 'SWING' && this.rigs[ev.a]) {
@@ -1136,6 +1170,7 @@ export class GameRenderer {
 
     this.prevState = ticks[Math.max(0, idx - 1)];
     this.currState = ticks[idx];
+    this.teamVisuals?.rebuildFromHistory(ticks, idx);
     this.overElapsedSimSec = 0;
     this.overElapsedRealSec = 0;
     this.overElapsedReal1xSec = 0;
@@ -1161,9 +1196,46 @@ export class GameRenderer {
     const killBornSec = useUpstreamKillFx ? nowSec + deathBornOffsetSec : nowSec;
 
     if (this.trainingMode) this.processTrainingEvents(curr, events, nowSec);
+    if (this.teamVisuals) this.teamVisuals.onEvents(events, gt);
 
     for (const ev of events) {
       switch (ev.name) {
+        case 'CAPTURE': {
+          // 5v5 control: point a flipped from team b to team c
+          const pt = this.activeMapData?.points?.[ev.a];
+          if (pt && ev.c >= 0) {
+            this.fx.spawnCapture(pt.x / 1000, pt.y / 1000, pt.r / 1000, TEAM_COLORS[ev.c] ?? '#ffffff', nowSec);
+            this.sfx.playCapture(); // 上游同款翻点音
+          }
+          break;
+        }
+        case 'RESPAWN': {
+          // 5v5 control: seat a is back at (b, c)
+          const seat = ev.a;
+          const rrig = this.rigs[seat];
+          if (rrig && rrig.respawnTick !== gt - 1) {
+            // (live play already did this in applyTeamTransitions; offline export only sees the event)
+            rrig.resetDynamicState();
+            rrig.respawnTick = gt - 1;
+          }
+          this.fx.spawnRespawnBurst(ev.b / 1000, ev.c / 1000, TEAM_COLORS[this.seatTeams[seat] ?? 0], nowSec);
+          if (this.graphicsQuality === 'high') this.fx.spawnDust(ev.b / 1000, ev.c / 1000, nowSec, 4, 1.2);
+          // 上游复活不出声
+          break;
+        }
+        case 'LIFE': {
+          // 5v5 king: seat a lost a life (b left) to killer c
+          const kp = curr.players[ev.a];
+          if (kp) {
+            const kx = kp.x / 1000;
+            const kz = kp.y / 1000;
+            this.fx.spawnKingHit(kx, kz, nowSec);
+            if (ev.b > 0) this.fx.spawnHit(kx, kz, ev.c >= 0 ? this.slots[ev.c]?.color || '#ffffff' : '#ffffff', nowSec);
+            this.shakeAmp = Math.max(this.shakeAmp, 0.28);
+            this.sfx.playKingLife(); // 上游同款国王掉命音
+          }
+          break;
+        }
         case 'RELEASE': {
           const seat = ev.a;
           if (this.rigs[seat]) this.rigs[seat].lastThrowTick = gt;
@@ -1370,7 +1442,7 @@ export class GameRenderer {
             const mvx = (vp.x - vpPrev.x) / 1000;
             const mvz = (vp.y - vpPrev.y) / 1000;
             const kind = this.classifyPitFallKind(vp.x, vp.y, killerIdx, gt);
-            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0, kind);
+            rig.triggerPitFall(gt, vx, vz, mvx, mvz, killerIdx >= 0, kind, this.liquidYAt(vp.x, vp.y, gt));
             if (this.graphicsQuality === 'high') {
               this.fx.spawnFallCry(vx, vz, nowSec);
             }
@@ -1379,10 +1451,11 @@ export class GameRenderer {
           break;
         }
         case 'END': {
-          const winner = ev.a;
-          if (winner >= 0 && curr.players[winner]?.alive) {
+          // 5v5: the winner is a team (0 / 1, -1 draw) — every living member celebrates
+          const seats = this.teamMode ? this.winnerSeats(curr) : ev.a >= 0 && curr.players[ev.a]?.alive ? [ev.a] : [];
+          if (seats.length) {
             this.pendingEndConfetti = {
-              seat: winner,
+              seats,
               triggerTick: curr.t + WINNER_CELEBRATE_DELAY_TICKS,
             };
           }
@@ -1391,6 +1464,50 @@ export class GameRenderer {
         }
       }
     }
+  }
+
+  /** Is seat k a winner of the finished match (5v5: a living member of the winning team; else the winning seat)? */
+  private isWinnerSeat(snap: TickSnapshot, k: number): boolean {
+    if (snap.winner < 0) return false;
+    if (this.teamMode) return this.seatTeams[k] === snap.winner && snap.players[k]?.alive === 1;
+    return snap.winner === k;
+  }
+
+  /** Living seats that celebrate the win (5v5: the whole winning team; draw: none). */
+  private winnerSeats(snap: TickSnapshot): number[] {
+    const out: number[] = [];
+    if (snap.winner < 0) return out;
+    for (let k = 0; k < snap.players.length; k++) if (this.isWinnerSeat(snap, k) && snap.players[k]?.alive) out.push(k);
+    return out;
+  }
+
+  /** Liquid surface height (m) under a map point at a tick (episode 12 lava / sea / ponds), else null. */
+  private liquidYAt(xMm: number, yMm: number, tick: number): number | null {
+    if (!this.arena?.liquidZAt) return null;
+    const freeze = this.currState?.over ? this.currState.t : undefined;
+    return this.arena.liquidZAt(xMm, yMm, tick, freeze);
+  }
+
+  /**
+   * 5v5 control respawns: a seat that comes back to life gets its death animation cleared, appears at its respawn
+   * point right away (no slide from where it died) and plays the drop-in out of the light beam.
+   */
+  private applyTeamTransitions(prev: TickSnapshot, next: TickSnapshot): TickSnapshot {
+    let patched: PlayerSnapshot[] | null = null;
+    for (let k = 0; k < next.players.length; k++) {
+      const p0 = prev.players[k];
+      const p1 = next.players[k];
+      if (!p0 || !p1 || !(p0.alive === 0 && p1.alive === 1)) continue;
+      patched ??= prev.players.slice();
+      patched[k] = { ...p1 };
+      const rig = this.rigs[k];
+      if (rig) {
+        rig.resetDynamicState();
+        rig.respawnTick = next.t - 1;
+      }
+      if (k === this.humanSeat) this.resetHumanPrediction();
+    }
+    return patched ? { ...prev, players: patched } : prev;
   }
 
   /**
@@ -1509,6 +1626,7 @@ export class GameRenderer {
     const me = snap.players[this.humanSeat];
     const target = snap.players[seat];
     if (!me || me.alive !== 1 || !target || target.alive !== 1) return false;
+    if (this.teamMode && this.seatTeams[seat] === this.seatTeams[this.humanSeat]) return false; // teammates always visible
     return ((target.visMask >> this.humanSeat) & 1) === 0;
   }
 
@@ -1546,9 +1664,11 @@ export class GameRenderer {
     if (this.graphicsQuality !== 'high' || !this.fx) return undefined;
     const fx = this.fx;
     const col = this.slots[seat]?.color || '#ffffff';
+    const liquidKind = this.arena?.liquidKind ?? null;
     return {
       onCloudSplash: (x, z) => fx.spawnCloudSplash(x, z, nowSec),
       onPoof: (x, y, z, size) => fx.spawnPoof(x, y, z, col, nowSec, size),
+      onLiquidSplash: (x, z, y) => fx.spawnLiquidSplash(x, z, y, liquidKind ?? 'water', nowSec),
     };
   }
 
@@ -1626,20 +1746,21 @@ export class GameRenderer {
       return;
     }
     if (this.pendingEndConfetti && gt >= this.pendingEndConfetti.triggerTick) {
-      const seat = this.pendingEndConfetti.seat;
+      const seats = this.pendingEndConfetti.seats;
       this.pendingEndConfetti = null;
-      const wp = curr.players[seat];
-      if (wp && wp.alive) {
-        this.fx.spawnConfetti(wp.x / 1000, wp.y / 1000, this.slots[seat].color, nowSec);
+      for (const seat of seats) {
+        const wp = curr.players[seat];
+        if (wp && wp.alive) {
+          const c = this.teamMode ? TEAM_COLORS[this.seatTeams[seat] ?? 0] : this.slots[seat].color;
+          this.fx.spawnConfetti(wp.x / 1000, wp.y / 1000, c, nowSec);
+        }
       }
     }
     if (!cinePose || cinePose.winnerBlend < 0.2 || gt < curr.t + WINNER_CELEBRATE_DELAY_TICKS) {
       return;
     }
-    const wp = curr.players[curr.winner];
-    if (!wp || !wp.alive) return;
-    const slot = this.slots[curr.winner];
-    const col = slot?.ringAccent || slot?.color || '#ffe04d';
+    const winners = this.teamMode ? this.winnerSeats(curr) : curr.players[curr.winner]?.alive ? [curr.winner] : [];
+    if (!winners.length) return;
 
     if (this.nextWinnerRibbonSec < 0 || nowSec < this.nextWinnerRibbonSec - 1.5) {
       this.nextWinnerRibbonSec = nowSec;
@@ -1647,13 +1768,13 @@ export class GameRenderer {
     // Periodic 360-degree confetti ribbon shower every 0.72s while winner close-up is active!
     let guard = 0;
     while (nowSec >= this.nextWinnerRibbonSec && guard < 4) {
-      this.fx.spawnWinnerConfettiBurst(
-        wp.x / 1000,
-        wp.y / 1000,
-        col,
-        this.nextWinnerRibbonSec,
-        this.winnerRibbonWave++,
-      );
+      for (const w of winners) {
+        const wp = curr.players[w];
+        const slot = this.slots[w];
+        const col = this.teamMode ? TEAM_COLORS[this.seatTeams[w] ?? 0] : slot?.ringAccent || slot?.color || '#ffe04d';
+        this.fx.spawnWinnerConfettiBurst(wp.x / 1000, wp.y / 1000, col, this.nextWinnerRibbonSec, this.winnerRibbonWave);
+      }
+      this.winnerRibbonWave++;
       this.nextWinnerRibbonSec += 0.72;
       guard++;
     }
@@ -1722,6 +1843,9 @@ export class GameRenderer {
     let lookY = camLook.y;
     let lookZ = camLook.z;
 
+    // 震屏已移除：击杀冲击只保留顿帧和镜头推近（zoomMul），不再平移镜头
+    impRight = 0;
+    impUp = 0;
     if (Math.abs(impRight) > 1e-5 || Math.abs(impUp) > 1e-5) {
       this._camFwd.set(-vx, -vy, -vz).normalize();
       this._camRight.crossVectors(this._camFwd, this._worldUp).normalize();
@@ -1742,14 +1866,9 @@ export class GameRenderer {
     let sx = 0;
     let sz = 0;
     const decayDt = realFrameDt ?? frameDt;
-    if (this.shakeAmp > 0.002) {
-      const legacyScale = Math.max(0.18, Math.min(1.0, distNow / Math.max(1, this.camDist)));
-      sx = Math.sin(this.elapsedSec * 72) * this.shakeAmp * legacyScale;
-      sz = Math.cos(this.elapsedSec * 64) * this.shakeAmp * legacyScale;
-      this.shakeAmp *= Math.exp(-decayDt * 12);
-    } else {
-      this.shakeAmp = 0;
-    }
+    // 震屏已移除（镖撞镖、格挡、踢中、塌陷、击杀、国王掉命都不再晃镜头）
+    this.shakeAmp = 0;
+    void decayDt;
 
     this.camera.position.set(posX + sx, posY, posZ + sz);
     this.camera.lookAt(lookX + sx * 0.4, lookY, lookZ + sz * 0.4);
@@ -1762,6 +1881,9 @@ export class GameRenderer {
    */
   public renderFrame(input: HumanInputController) {
     const tWork0 = performance.now();
+    // A long gap means the tab/pane was hidden: logic kept ticking and spawning bursts stamped with the frozen
+    // clock, so they would all play at once on the first visible frame. Drop that backlog instead.
+    if (tWork0 - this.lastFrameMs > 1000) this.fx?.dropBursts();
     const frameDt = Math.min(0.05, Math.max(0.0005, (tWork0 - this.lastFrameMs) / 1000));
     this.lastFrameMs = tWork0;
 
@@ -2016,8 +2138,10 @@ export class GameRenderer {
         const hiddenFromHuman = this.isPlayerHiddenFromHuman(this.currState, k);
 
         // Eye indicator above opponent AI heads when human is standing in grass!
+        // 5v5: teammates always see each other (rule 7.2), so they get no eye and never count as "spotted"
+        const isTeammate = meHuman?.team !== undefined && currP.team !== undefined && currP.team === meHuman.team;
         let eyeState: 'none' | 'closed' | 'open' = 'none';
-        if (humanInGrass && meHuman && k !== this.humanSeat && currP.alive === 1) {
+        if (humanInGrass && meHuman && k !== this.humanSeat && currP.alive === 1 && !isTeammate) {
           const aiCanSeeMe = ((meHuman.visMask >> k) & 1) !== 0;
           if (aiCanSeeMe) spottedByAny = true;
           if (!hiddenFromHuman) {
@@ -2038,6 +2162,7 @@ export class GameRenderer {
         const interpYMm = prevP.y + (currP.y - prevP.y) * alpha;
         const onGround = this.isCellSolidAt(interpXMm, interpYMm, this.currState.t);
 
+        if (this.teamVisuals) this.rigs[k].externalFlash = this.teamVisuals.kingFlash(k, currP, gt);
         this.rigs[k].update(
           prevP,
           currP,
@@ -2046,7 +2171,7 @@ export class GameRenderer {
           alpha,
           gt,
           this.currState.t,
-          this.currState.winner === k,
+          this.isWinnerSeat(this.currState, k),
           this.currState.over,
           hiddenFromHuman,
           inGrassStealth,
@@ -2066,7 +2191,7 @@ export class GameRenderer {
             this._projVec.project(this.camera);
             const behindCam = this._projVec.z > 1.0 || this._projVec.z < -1.0;
             const winFade =
-              this.currState.over && this.currState.winner === k && cinePose
+              this.currState.over && this.isWinnerSeat(this.currState, k) && cinePose
                 ? Math.max(0, 1 - cinePose.winnerBlend * 1.4)
                 : 1;
             const baseOp = inGrassStealth ? 0.52 : 0.96;
@@ -2081,6 +2206,22 @@ export class GameRenderer {
             }
           }
         }
+      }
+
+      // 5v5 mode visuals: control points, respawn countdown & beam, king hearts
+      if (this.teamVisuals) {
+        const freezeT = this.currState.over ? this.currState.t : undefined;
+        this.teamVisuals.update({
+          prev: fxPrevState,
+          curr: fxCurrState,
+          alpha,
+          gt,
+          camera: this.camera,
+          viewH: screenH,
+          hidden: (seat) => this.isPlayerHiddenFromHuman(this.currState!, seat),
+          liquidZAt: (x, y, t) => this.arena?.liquidZAt?.(x, y, t, freezeT) ?? null,
+          solidAt: (x, y, t) => this.isCellSolidAt(x, y, t),
+        });
       }
 
       // Ground captions (training zones)
@@ -2485,6 +2626,7 @@ export class GameRenderer {
       const interpYMm = prevP.y + (currP.y - prevP.y) * alpha;
       const onGround = this.isCellSolidAt(interpXMm, interpYMm, curr.t);
 
+      if (this.teamVisuals) this.rigs[k].externalFlash = this.teamVisuals.kingFlash(k, currP, gt);
       this.rigs[k].update(
         prevP,
         currP,
@@ -2493,7 +2635,7 @@ export class GameRenderer {
         alpha,
         gt,
         curr.t,
-        curr.winner === k,
+        this.isWinnerSeat(curr, k),
         curr.over,
         false,
         inGrassStealth,
@@ -2510,7 +2652,7 @@ export class GameRenderer {
         this._projVec.project(this.camera);
         const behindCam = this._projVec.z > 1.0 || this._projVec.z < -1.0;
         const winFade =
-          curr.over && curr.winner === k && cinePose
+          curr.over && this.isWinnerSeat(curr, k) && cinePose
             ? Math.max(0, 1 - cinePose.winnerBlend * 1.4)
             : 1;
         const finalOp = behindCam ? 0 : (inGrassStealth ? 0.56 : 0.96) * winFade;
@@ -2526,6 +2668,21 @@ export class GameRenderer {
     }
 
     this.maybeEmitWinnerConfetti(curr, cinePose, elapsedSec, gt);
+
+    if (this.teamVisuals) {
+      const freezeT = curr.over ? curr.t : undefined;
+      this.teamVisuals.update({
+        prev,
+        curr,
+        alpha,
+        gt,
+        camera: this.camera,
+        viewH: screenH,
+        hidden: () => false,
+        liquidZAt: (x, y, t) => this.arena?.liquidZAt?.(x, y, t, freezeT) ?? null,
+        solidAt: (x, y, t) => this.isCellSolidAt(x, y, t),
+      });
+    }
 
     if (this.fx) {
       this.fx.update(elapsedSec, prev, curr, alpha, -1, 0, 0, false);
@@ -2567,6 +2724,12 @@ export class GameRenderer {
       this.fx.dispose();
       this.fx = null;
     }
+    if (this.teamVisuals) {
+      this.teamVisuals.dispose();
+      this.teamVisuals = null;
+    }
+    this.teamMode = false;
+    this.seatTeams = [];
     this.disposeCountdownArrow();
     this.countdownStage = null;
     this.countdownPulseMs = 0;

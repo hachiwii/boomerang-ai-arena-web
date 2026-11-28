@@ -9,6 +9,10 @@ import { EloUpdateResult, LeaderboardStore } from './game/leaderboard';
 import { CountdownStage, MatchController, type MatchCallbacks } from './game/matchController';
 import { buildPvpMatchConfig } from './game/pvpConfig';
 import { PvpMatchController } from './game/pvpMatchController';
+import { RoomHostNet, TeamGuestController } from './game/teamRoomRuntime';
+import { roomMatchConfig } from './game/teamRoomMatch';
+import { teamRoom } from './net/teamRoomClient';
+import type { RoomMatchStart } from './net/teamRoomProtocol';
 import { getPvpLobbyClient, getPvpMatchLink } from './net/pvpLobbyClient';
 import type { PvpRematchState, PvpSeriesStats } from './net/pvpTypes';
 import { exportReplayClipToGif, triggerGifDownload } from './game/gifExporter';
@@ -57,6 +61,10 @@ import { MobileExportModal } from './ui/mobileExportModal';
 import { SettingsModal } from './ui/settingsUI';
 import { TrainingPanel } from './ui/trainingUI';
 import { releaseUnfinished, startAnalytics, trackBackgroundEnd, trackMatchEnd, trackMatchRestart, trackMatchStart } from './net/analytics';
+import {
+  clearShareIdFromLocation, fetchSharedReplay, isReplayShareAvailable, readShareIdFromLocation, uploadReplayShare,
+} from './net/replayShareClient';
+import { openShareDialog, showShareOpening } from './ui/shareDialog';
 import { rankedBotResults, type BotResult } from './game/botResults';
 
 function parseQuickPreviewMap(map: MapMeta): EngineMapData {
@@ -101,6 +109,15 @@ async function bootstrap() {
   const canvas = document.getElementById('game-canvas') as HTMLCanvasElement;
   const uiRoot = document.getElementById('ui-root') as HTMLDivElement;
 
+  // Opened from a share link (?r=<id>): straight into that replay. Fetch it right away behind a cover, so neither
+  // the lobby nor the control-scheme chooser shows first (the chooser waits until the player reaches the lobby).
+  const sharedId = readShareIdFromLocation();
+  const sharedReplay = sharedId !== null ? fetchSharedReplay(sharedId) : null;
+  sharedReplay?.catch(() => undefined); // handled where it's awaited, at the end of bootstrap
+  let openingShare = sharedReplay !== null;
+  const hideShareOpening = openingShare ? showShareOpening() : null;
+  let askSchemeInLobby: (() => void) | null = null;
+
   const [mapsResp, rosterResp] = await Promise.all([
     fetch(`/assets/maps/manifest.json?v=${__BUILD_ID__}`),
     fetch(`/assets/chars/roster.json?v=${__BUILD_ID__}`),
@@ -121,11 +138,15 @@ async function bootstrap() {
   const settings = new SettingsStore();
   const platform = new PlatformManager(settings);
   // Touch devices open on a launch page: 移动端 = landscape + fullscreen in one tap, or 桌面端
+  let markLaunched: () => void = () => undefined;
+  const launched = new Promise<void>((resolve) => (markLaunched = resolve)); // a shared replay (?r=) waits for it
   if (!platform.isLaunchDone()) {
     showLaunchScreen({
       fullscreenSupported: platform.isFullscreenSupported() || platform.isStandaloneApp(),
-      onChoose: (choice) => platform.launch(choice),
+      onChoose: (choice) => platform.launch(choice).finally(markLaunched),
     });
+  } else {
+    markLaunched();
   }
   const sfx = new SoundFX();
   sfx.applySettings(settings.get().soundEnabled, settings.get().volume);
@@ -206,8 +227,13 @@ async function bootstrap() {
   let trainingPanel: TrainingPanel;
   let controller: MatchController;
   let pvpController: PvpMatchController | null = null;
+  // 5v5 联机：其他人一侧的对局（房主一侧用的就是 controller + RoomHostNet）
+  let teamGuest: TeamGuestController | null = null;
+  let roomHostNet: RoomHostNet | null = null;
+  let roomHostStart: RoomMatchStart | null = null;
+  let roomRematchTimer: number | null = null;
   let pvpRematchState: PvpRematchState | null = null;
-  const liveController = () => pvpController ?? controller;
+  const liveController = () => pvpController ?? teamGuest ?? controller;
   let replayController: ReplayController;
   let historyModal: HistoryModal;
   let replayPlaylist: string[] = [];
@@ -728,6 +754,7 @@ async function bootstrap() {
     }
     const wasPvp = activeConfig?.matchMode === 'pvp';
     if (wasPvp) pvpLobby.leaveRematch();
+    leaveRoomMatch();
     finishAbandonedInBackground(false);
     disposePvpMatch();
     setUiHidden(false);
@@ -750,9 +777,13 @@ async function bootstrap() {
     activeMapData = null;
     replayMapData = null;
     lastFinishedBundle = null;
+    clearShareIdFromLocation(); // left a shared replay (?r=): a refresh shouldn't reopen it
+    const askScheme = askSchemeInLobby; // first time in the lobby after arriving by a share link
+    askSchemeInLobby = null;
+    askScheme?.();
     bgm.enterLobby();
-    lobbyUI.show(wasPvp ? 'pvp' : opts?.openLeaderboard ? 'ranked' : undefined, opts);
-    const m = lobbyUI.getSelectedMap();
+    lobbyUI.show(wasPvp ? 'pvp' : teamRoom.inRoom ? 'team' : opts?.openLeaderboard ? 'ranked' : undefined, opts);
+    const m = lobbyUI.getLobbyPreviewMap();
     void renderer.loadPreviewMap(parseQuickPreviewMap(m), m.theme);
     if (opts?.openHistory) {
       void historyModal.open();
@@ -778,7 +809,7 @@ async function bootstrap() {
     activeMapData = null;
     replayMapData = null;
     replayIsLiveAi = true;
-    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots });
+    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots, teamMode: cfg.team?.mode });
 
     let liveBundle: MatchReplayBundle | null = null;
     let liveMapData: EngineMapData | null = null;
@@ -1005,6 +1036,12 @@ async function bootstrap() {
   };
 
   const canQuickRestart = (): boolean => {
+    if (activeConfig?.teamRoom) {
+      // 联机：出局不能重开；打完后 R = 再来一局（房主发起倒计时，其他人只是表态）
+      if (mode !== 'playing') return false;
+      const st = teamGuest ? teamGuest.getCurrentState() : controller.getCurrentState();
+      return Boolean(st?.over) && roomRematchAllowed();
+    }
     if (!activeConfig || restarting || pvpController) return false;
     if (mode === 'replay' && replayIsLiveAi) return true;
     if (mode !== 'playing') return false;
@@ -1015,12 +1052,21 @@ async function bootstrap() {
     if (!st) return false;
     // Once a ranked match is finished (result screen), R can also launch New Match
     if (st.over && isRankedMatchMode(activeConfig.matchMode)) return true;
-    // During live match, only allowed once human is eliminated (spectating)
     const me = st.players[hSeat];
+    if (activeConfig.matchMode === 'team') {
+      // 5v5：打完随时 R 原配置重开；歼灭、刺王出局后也能直接重开（占点出局 3 秒后会复活，不算）
+      if (st.over) return true;
+      return !!me && !me.alive && activeConfig.team?.mode !== 4;
+    }
+    // During live match, only allowed once human is eliminated (spectating)
     return !!me && !me.alive;
   };
 
   const restartCurrentMatch = () => {
+    if (activeConfig?.teamRoom) {
+      roomRematch();
+      return;
+    }
     if (!activeConfig || restarting || pvpController) return;
     restarting = true;
     const background = finishAbandonedInBackground(true);
@@ -1111,6 +1157,8 @@ async function bootstrap() {
       const s = settings.get();
       cfg = {
         ...activeConfig,
+        // 5v5：种子只决定每人开局的小偏移，重开换一个（阵容、战术、布阵原样）
+        ...(activeConfig.matchMode === 'team' ? { seed: generateSpawnSeed() } : {}),
         spawnSeed: generateSpawnSeed(),
         bgmSeed: generateBgmSeed(),
         slots: activeConfig.slots.map((s) => ({ ...s })),
@@ -1122,7 +1170,7 @@ async function bootstrap() {
     }
 
     activeConfig = cfg;
-    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots });
+    bgm.prepareMatchLaunch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots, teamMode: cfg.team?.mode });
     renderer.resetCameraToOverview();
     void controller
       .start(cfg, { cinematic: getCinematicOptions(settings.get()) })
@@ -1282,6 +1330,25 @@ async function bootstrap() {
       if (!bundle) return;
       return toggleBundleFavorite(bundle, nextFavorite);
     },
+    // 分享对局（src/net/replayShareClient.ts）：只有有中转服务器的站点才显示按钮
+    ...(isReplayShareAvailable()
+      ? {
+          onShareCurrentMatch: () => {
+            let bundle = lastFinishedBundle;
+            if (!bundle && activeConfig && activeMapData) {
+              const ticks = liveController().getRecordedTicks().slice();
+              if (ticks.length > 0) {
+                bundle = buildMatchHistoryBundle(activeConfig, activeMapData, ticks, pendingMatchElo?.elo ?? null, false);
+                lastFinishedBundle = bundle; // 收藏 / 再分享用同一份
+              }
+            }
+            if (!bundle) return;
+            const target = bundle;
+            openShareDialog(() => uploadReplayShare(target));
+          },
+          onShareReplay: (bundle: MatchReplayBundle) => openShareDialog(() => uploadReplayShare(bundle)),
+        }
+      : {}),
     onOpenSettings: () => {
       settingsModal.open();
     },
@@ -1359,6 +1426,7 @@ async function bootstrap() {
           matchMode: bundle.summary.matchMode,
           bgmSeed: bundle.summary.bgmSeed ?? bundle.summary.seed,
           slots: bundle.summary.slots,
+          teamMode: bundle.summary.team?.mode,
         },
         bundle.replay.ticks[0],
       );
@@ -1430,7 +1498,7 @@ async function bootstrap() {
       renderer.setWorldLabels([]);
       mode = 'playing';
       lobbyUI.hide();
-      bgm.beginMatch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots }, initialState);
+      bgm.beginMatch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots, teamMode: cfg.team?.mode }, initialState);
       hudUI.showMatch(cfg, hSeat);
       setTrainingChrome(isTraining);
       hudUI.updateTick(initialState, mapData.colStart, mapData.colEvery);
@@ -1450,6 +1518,7 @@ async function bootstrap() {
       if (!pvpController && controller.isTraining()) trainingPanel.onTick(next, controller.getHumanSeat());
     },
     onMatchOver: (finalState, director) => {
+      if (activeConfig?.teamRoom?.role === 'host') teamRoom.send({ type: 'end', matchId: activeConfig.teamRoom.matchId, aborted: false });
       if (activeConfig && !matchRecorded) trackMatchEnd(activeConfig.matchMode, rankedBotResultsSafe(activeConfig, finalState));
       mobileControls?.hide();
       document.body.classList.remove('m-aim-slowmo');
@@ -1485,7 +1554,8 @@ async function bootstrap() {
       // Live human matches (and live AI matches with only winnerCam) glide smoothly to the winner front close-up;
       // if already spectating (4P eliminated human), also run upstream final-kill hit-stop + punch when killFx is ON!
       let activeDirector = director ?? null;
-      if (!activeDirector && activeMapData) {
+      // 5v5 的 winner 是队伍号，不做单人胜者特写
+      if (!activeDirector && activeMapData && activeConfig?.matchMode !== 'team') {
         const curSettings = settings.get();
         const hSeat = liveController().getHumanSeat();
         const recorded = liveController().getRecordedTicks();
@@ -1596,6 +1666,174 @@ async function bootstrap() {
     });
   };
 
+  // ---------------------------------------------------------------- 5v5 联机房间
+  const roomRematchAllowed = () => {
+    const rm = teamRoom.state.rematch;
+    return Boolean(activeConfig?.teamRoom && rm && rm.matchId === activeConfig.teamRoom.matchId && rm.left.length === 0);
+  };
+
+  /** 结算页的重开 / R：房主发起 3 秒倒计时，其他人告诉房主自己想再来一局 */
+  const roomRematch = () => {
+    const tr = activeConfig?.teamRoom;
+    const rm = teamRoom.state.rematch;
+    if (!tr || !rm || rm.matchId !== tr.matchId || rm.left.length > 0) return;
+    if (teamRoom.isHost) {
+      if (rm.countdownUntil === null) teamRoom.send({ type: 'rematch', matchId: tr.matchId, choice: 'go' });
+    } else if (rm.players.includes(teamRoom.state.me) && !rm.want.includes(teamRoom.state.me)) {
+      teamRoom.send({ type: 'rematch', matchId: tr.matchId, choice: 'want' });
+    }
+  };
+
+  /** 离开（或被结束）当前的联机对局：房主中途离开要告诉大家；其他人停掉自己的重放 */
+  const leaveRoomMatch = () => {
+    const tr = activeConfig?.teamRoom;
+    if (roomRematchTimer !== null) window.clearTimeout(roomRematchTimer);
+    roomRematchTimer = null;
+    hudUI.setRoomRematch(null);
+    if (tr?.role === 'host') {
+      const st = controller.getCurrentState();
+      if (!st?.over && teamRoom.state.match?.matchId === tr.matchId) teamRoom.send({ type: 'end', matchId: tr.matchId, aborted: true });
+      controller.setTeamHostNet(null);
+      roomHostNet = null;
+    }
+    if (teamGuest) {
+      teamGuest.stop();
+      teamGuest = null;
+    }
+    if (tr) mobileControls?.setBulletTimeAllowed(true);
+  };
+
+  const resetForRoomMatch = (config: MatchConfig) => {
+    clearMatchOverTimer();
+    matchRecorded = false;
+    historyRecorded = false;
+    pendingMatchElo = null;
+    resultOverlayShown = false;
+    restarting = false;
+    replayIsLiveAi = false;
+    clearReplayPlaylist();
+    lastFinishedBundle = null;
+    replayController.stop();
+    renderer.resetCameraToOverview();
+    historyModal.close();
+    if (settingsModal.isOpen()) settingsModal.close();
+    activeMapData = null;
+    activeConfig = config;
+    mobileControls.setBulletTimeAllowed(false);
+    bgm.prepareMatchLaunch({ matchMode: config.matchMode, bgmSeed: config.bgmSeed ?? config.seed, slots: config.slots, teamMode: config.team?.mode });
+  };
+
+  /** 房主开局：把开局信息发给房间，本机照常开局（bot 在本机跑），别人的操作由 RoomHostNet 填进他们的座位 */
+  const startRoomHostMatch = (start: RoomMatchStart) => {
+    if (!teamRoom.isHost || pvpController) return;
+    leaveRoomMatch();
+    roomHostStart = start;
+    teamRoom.send({ type: 'start', start });
+    const cfg = roomMatchConfig(start, teamRoom.state.me, 'host');
+    roomHostNet = new RoomHostNet(start.seats, (t, acts) => teamRoom.send({ type: 'frame', matchId: start.matchId, t, acts }));
+    controller.setTeamHostNet(roomHostNet);
+    resetForRoomMatch(cfg);
+    lobbyUI.setLoading('初始化 WASM 引擎与 AI...');
+    void controller.start(cfg, { cinematic: getCinematicOptions(settings.get()) }).catch((err) => {
+      console.error(err);
+      lobbyUI.setLoading(null);
+      alert(`启动失败：${err instanceof Error ? err.message : String(err)}`);
+      returnToLobby();
+    });
+  };
+
+  /** 其他人：按房主的开局信息在本机重放这局；自己有座位就把操作发给房主 */
+  const startRoomGuestMatch = (start: RoomMatchStart) => {
+    leaveRoomMatch();
+    controller.stop();
+    const cfg = roomMatchConfig(start, teamRoom.state.me, 'guest');
+    resetForRoomMatch(cfg);
+    const guest = new TeamGuestController(
+      input,
+      cfg,
+      {
+        ...matchCallbacks,
+        onAborted: (reason) => {
+          if (teamGuest !== guest) return;
+          teamGuest = null;
+          showPlatformToast(reason === 'host_left' ? '房主离开了房间，这局结束' : '房主结束了这局');
+          returnToLobby();
+        },
+        onError: (err) => {
+          if (teamGuest !== guest) return;
+          matchCallbacks.onError?.(err);
+        },
+      },
+      (action) => teamRoom.send({ type: 'input', matchId: start.matchId, action }),
+    );
+    teamGuest = guest;
+    lobbyUI.setLoading('同步房主的对局…');
+    void guest.start().catch((err) => {
+      console.error(err);
+      if (teamGuest !== guest) return;
+      lobbyUI.setLoading(null);
+      alert(`加入对局失败：${err instanceof Error ? err.message : String(err)}`);
+      returnToLobby();
+    });
+  };
+
+  teamRoom.onInput(({ from, action }) => roomHostNet?.onInput(from, action));
+  teamRoom.onStart((start) => {
+    if (teamRoom.isHost) return;
+    // 在大厅，或正在看上一局联机对局（含结算页）时自动进入；别的对局 / 回放里不打断，可以之后从房间条进入
+    const inRoomScreen = mode === 'lobby' || (mode === 'playing' && Boolean(activeConfig?.teamRoom));
+    if (inRoomScreen) startRoomGuestMatch(start);
+  });
+  teamRoom.onFrames(({ matchId, from, acts }) => {
+    if (teamGuest && teamGuest.matchId() === matchId) teamGuest.pushFrames(from, acts);
+  });
+  teamRoom.onEnd(({ matchId, aborted, reason }) => {
+    if (teamGuest && teamGuest.matchId() === matchId) teamGuest.end(aborted, reason);
+  });
+  teamRoom.onChange((snap) => {
+    const tr = activeConfig?.teamRoom;
+    if (tr && snap.status !== 'in-room') {
+      // 断开或退出了房间：联机对局没法继续
+      if (mode === 'playing' && !(tr.role === 'host' ? controller.getCurrentState()?.over : teamGuest?.isFinished())) {
+        showPlatformToast('已离开房间，这局结束');
+      }
+      if (mode === 'playing') returnToLobby();
+      return;
+    }
+    const rm = snap.rematch;
+    if (!tr || !rm || rm.matchId !== tr.matchId) {
+      hudUI.setRoomRematch(null);
+      return;
+    }
+    hudUI.setRoomRematch({
+      want: rm.want.length,
+      total: rm.players.length,
+      left: rm.left.length,
+      iWant: rm.want.includes(snap.me),
+      amPlayer: rm.players.includes(snap.me),
+      isHost: snap.room?.hostId === snap.me,
+      deadline: rm.localDeadline,
+    });
+    if (roomRematchTimer !== null) window.clearTimeout(roomRematchTimer);
+    roomRematchTimer = null;
+    if (snap.room?.hostId === snap.me && rm.localDeadline !== null && rm.left.length === 0 && roomHostStart) {
+      const base = roomHostStart;
+      roomRematchTimer = window.setTimeout(() => {
+        roomRematchTimer = null;
+        const now = teamRoom.state.rematch;
+        if (!now || now.matchId !== rm.matchId || now.left.length > 0 || now.countdownUntil === null || !teamRoom.isHost) return;
+        // 原配置重开：同一份阵容、战术、布阵和座位，只换随机种子
+        startRoomHostMatch({
+          ...base,
+          matchId: `${Date.now().toString(36)}${Math.floor(Math.random() * 1e6).toString(36)}`,
+          seed: generateSpawnSeed(),
+          spawnSeed: generateSpawnSeed(),
+          bgmSeed: generateBgmSeed(),
+        });
+      }, Math.max(0, rm.localDeadline - performance.now()));
+    }
+  });
+
   startAnalytics(); // site analytics heartbeat (no-op when PvP is off, e.g. the mirror build)
   lobbyUI = new LobbyUI(uiRoot, maps, roster, leaderboard, cricketStore, settings, {
     onSelectMap: (map) => {
@@ -1603,6 +1841,23 @@ async function bootstrap() {
         void renderer.loadPreviewMap(parseQuickPreviewMap(map), map.theme);
       }
     },
+    onPrewarmMaps: (maps) => {
+      // 一次画一张，等浏览器空闲再画下一张；离开大厅就停
+      const queue = [...maps];
+      const idle = (cb: () => void) => {
+        if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(cb, { timeout: 3000 });
+        else setTimeout(cb, 400);
+      };
+      const next = () => {
+        const m = queue.shift();
+        if (!m || mode !== 'lobby') return;
+        renderer.prewarmMapGround(parseQuickPreviewMap(m), m.theme);
+        idle(next);
+      };
+      idle(next);
+    },
+    onStartRoomMatch: (start) => startRoomHostMatch(start),
+    onWatchRoomMatch: () => teamRoom.send({ type: 'sync' }),
     onStartMatch: (config) => {
       const isPureAiSpectator =
         (config.matchMode === 'custom' || config.matchMode === 'cricket') &&
@@ -1732,6 +1987,10 @@ async function bootstrap() {
   // PC players who never picked a control scheme choose one once (标准 / MOBA); touch devices never ask
   const askControlScheme = () => {
     if (platform.isMobile() || settings.get().controlScheme !== null || mode !== 'lobby') return;
+    if (openingShare) {
+      askSchemeInLobby = askControlScheme; // a share link goes straight to its replay; ask back in the lobby
+      return;
+    }
     showControlSchemeChooser(settings);
   };
   platform.onChange(() => askControlScheme());
@@ -1902,11 +2161,29 @@ async function bootstrap() {
   platform.onChange(() => autoFit.schedule());
 
   // Load initial 3D island preview behind the lobby
+  // (a share link skips it: the replay loads its own map, and leaving the replay loads the lobby's)
   const firstMap = lobbyUI.getSelectedMap();
-  await renderer.loadPreviewMap(parseQuickPreviewMap(firstMap), firstMap.theme);
+  if (!sharedReplay) await renderer.loadPreviewMap(parseQuickPreviewMap(firstMap), firstMap.theme);
 
   // Start high-refresh render loop!
   startRenderLoop();
+
+  // Share link: into the replay as soon as it's downloaded (and the touch launch page, if any, is done)
+  if (sharedReplay) {
+    lobbyUI.hide();
+    try {
+      const [bundle] = await Promise.all([sharedReplay, launched]);
+      if (mode === 'lobby') await startReplayBundle(bundle, false);
+    } catch (err) {
+      console.warn('Failed to open shared replay:', err);
+      returnToLobby();
+      alert(`无法打开分享的回放：${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      openingShare = false;
+      hideShareOpening?.();
+      if (mode === 'lobby') askControlScheme(); // the link failed: ask now
+    }
+  }
 }
 
 void bootstrap();

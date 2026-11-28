@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import roster from '../public/assets/chars/roster.json' with { type: 'json' };
 
 export const ONLINE_WINDOW_MS = 150_000; // a visitor counts as online for 2.5 min after its last heartbeat
-export const MODES = ['ranked-solo', 'ranked-ffa', 'cricket', 'cricket-batch', 'custom', 'training', 'pvp', 'replay'] as const;
+export const MODES = ['ranked-solo', 'ranked-ffa', 'team', 'cricket', 'cricket-batch', 'custom', 'training', 'pvp', 'replay'] as const;
 export type Mode = (typeof MODES)[number];
 const MODE_SET = new Set<string>(MODES);
 export const isMode = (v: unknown): v is Mode => typeof v === 'string' && MODE_SET.has(v);
@@ -104,7 +104,7 @@ const hourOf = (ms: number) => new Date(ms + 8 * 3_600_000).toISOString().slice(
 const HOUR_MS = 3_600_000;
 
 /** Modes shown on the public stats panel (match counts) and the ranked modes with bot tables. */
-export const PUBLIC_MODES = ['ranked-solo', 'ranked-ffa', 'cricket', 'custom', 'pvp'] as const;
+export const PUBLIC_MODES = ['ranked-solo', 'ranked-ffa', 'team', 'cricket', 'custom', 'pvp'] as const;
 export type PublicMode = (typeof PUBLIC_MODES)[number];
 export const RANKED_MODES = ['ranked-solo', 'ranked-ffa'] as const;
 type RankedMode = (typeof RANKED_MODES)[number];
@@ -121,7 +121,7 @@ export interface PublicStats {
   bots: Record<RankedMode, Record<string, BotTally>>;
 }
 
-const zeroModes = (): Record<PublicMode, number> => ({ 'ranked-solo': 0, 'ranked-ffa': 0, cricket: 0, custom: 0, pvp: 0 });
+const zeroModes = (): Record<PublicMode, number> => ({ 'ranked-solo': 0, 'ranked-ffa': 0, team: 0, cricket: 0, custom: 0, pvp: 0 });
 const isPublicMode = (m: string): m is PublicMode => (PUBLIC_MODES as readonly string[]).includes(m);
 
 export interface ModeCounts {
@@ -568,7 +568,7 @@ export async function readDays(dir: string, days: number, now = Date.now()): Pro
 }
 
 const MODE_LABEL: Record<string, string> = {
-  'ranked-solo': '排位 SOLO', 'ranked-ffa': '排位 四人', cricket: '斗蛐蛐', 'cricket-batch': '斗蛐蛐 批量', custom: '自定义',
+  'ranked-solo': '排位 SOLO', 'ranked-ffa': '排位 四人', team: '团队赛', cricket: '斗蛐蛐', 'cricket-batch': '斗蛐蛐 批量', custom: '自定义',
   training: '训练场', pvp: 'PvP', replay: '回放',
 };
 

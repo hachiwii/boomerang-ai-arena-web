@@ -530,17 +530,19 @@ export class FXSystem {
         toneMapped: !hot,
       });
 
-    this.rings = new MeshPool(scene, 40, createFeatheredRingGeo(0.88), vcolMat(0.95, false), 4);
-    this.discs = new MeshPool(scene, 16, createGlowDiscGeo(), vcolMat(0.95, true), 9);
-    this.stars = new MeshPool(scene, 16, createStarGeo(8, 0.3, 0.62), vcolMat(1.0, true), 11);
-    this.arcs = new MeshPool(scene, 12, createCrescentArcGeo(), vcolMat(0.95, true), 10);
-    this.streaks = new MeshPool(scene, 14, createFeatheredStreakGeo(), vcolMat(1.0, true), 11);
-    this.starSparks = new MeshPool(scene, 110, createStarGeo(4, 0.22, 1.0), vcolMat(1.0, true), 10);
+    // 5v5 team matches (10 seats) get bigger pools; 1v1 / 4-player / training (<= 8 seats) keep the original sizes
+    const big = slotColors.length > 8;
+    this.rings = new MeshPool(scene, big ? 64 : 40, createFeatheredRingGeo(0.88), vcolMat(0.95, false), 4);
+    this.discs = new MeshPool(scene, big ? 24 : 16, createGlowDiscGeo(), vcolMat(0.95, true), 9);
+    this.stars = new MeshPool(scene, big ? 24 : 16, createStarGeo(8, 0.3, 0.62), vcolMat(1.0, true), 11);
+    this.arcs = new MeshPool(scene, big ? 20 : 12, createCrescentArcGeo(), vcolMat(0.95, true), 10);
+    this.streaks = new MeshPool(scene, big ? 22 : 14, createFeatheredStreakGeo(), vcolMat(1.0, true), 11);
+    this.starSparks = new MeshPool(scene, big ? 180 : 110, createStarGeo(4, 0.22, 1.0), vcolMat(1.0, true), 10);
 
     const sparkGeo = new THREE.OctahedronGeometry(0.14, 0);
     this.sparks = new MeshPool(
       scene,
-      96,
+      big ? 140 : 96,
       sparkGeo,
       new THREE.MeshBasicMaterial({
         color: '#ffffff',
@@ -552,7 +554,7 @@ export class FXSystem {
     const puffGeo = new THREE.IcosahedronGeometry(0.28, 1);
     this.puffs = new MeshPool(
       scene,
-      110,
+      big ? 160 : 110,
       puffGeo,
       new THREE.MeshBasicMaterial({
         color: '#fffbf2',
@@ -1479,6 +1481,116 @@ export class FXSystem {
     }
   }
 
+  // ------------------------------------------------------------------ Episode 12 (5v5) bursts, fx.py timings
+  /** King loses a life (`kinghit`): big gold shock ring, white tilted ring, gold star and gold / white sparks. */
+  public spawnKingHit(x: number, z: number, nowSec: number) {
+    const G = new THREE.Color('#FFC93A');
+    const base = { vx: 0, vy: 0, vz: 0, rotY: 0, spin: 0, gravity: 0, bornSec: nowSec };
+    this.bursts.push({ ...base, kind: 'ring', x, y: 0.05, z, scale0: 0.6, scale1: 3.0, expandSec: 0.35, color: G, lifeSec: 0.5, fadePow: 1.3, alpha0: 0.95, yFloor: 0 });
+    this.bursts.push({ ...base, kind: 'ring', x, y: 0.9, z, scale0: 0.4, scale1: 1.8, expandSec: 0.25, color: this._white.clone(), lifeSec: 0.35, flat: false, alpha0: 0.8 });
+    this.bursts.push({
+      ...base,
+      kind: 'star',
+      x,
+      y: 1.0,
+      z,
+      scale0: 0.05,
+      scale1: 1.5,
+      expandSec: 0.06,
+      holdSec: 0.125,
+      color: G.clone().lerp(this._white, 0.3),
+      lifeSec: 0.3,
+      rotY: nowSec * 7,
+    });
+    this.spawnSparks(x, 1.0, z, 12, 4.5, G, nowSec, 0.6, 0.18, this._white);
+  }
+
+  /** Control point flipped (`capture`): a ring rushes out from the circle edge in the new owner's colour, sparks rise. */
+  public spawnCapture(x: number, z: number, r: number, colorHex: string, nowSec: number) {
+    const tc = new THREE.Color(colorHex);
+    const base = { vx: 0, vy: 0, vz: 0, rotY: 0, spin: 0, gravity: 0, bornSec: nowSec };
+    this.bursts.push({ ...base, kind: 'ring', x, y: 0.05, z, scale0: r, scale1: r * 1.5, expandSec: 0.4, color: tc.clone().lerp(this._white, 0.2), lifeSec: 0.7, fadePow: 1.2, alpha0: 0.95, yFloor: 0 });
+    this.bursts.push({ ...base, kind: 'disc', x, y: 0.03, z, scale0: r * 1.05, scale1: r * 1.05, color: tc.clone().lerp(this._white, 0.5), lifeSec: 0.3, fadePow: 1, alpha0: 0.35, yFloor: 0 });
+    const sc = tc.clone().lerp(this._white, 0.4);
+    for (let j = 0; j < 10; j++) {
+      const a = (2 * Math.PI * j) / 10;
+      this.bursts.push({
+        ...base,
+        kind: 'spark',
+        x: x + r * Math.cos(a),
+        y: 0.1,
+        z: z + r * Math.sin(a),
+        vx: -Math.sin(a) * 0.5,
+        vy: 1.8,
+        vz: Math.cos(a) * 0.5,
+        rotY: j,
+        scale0: 0.17,
+        scale1: 0.02,
+        color: sc,
+        lifeSec: 1.0,
+        spin: 10,
+        gravity: 3.2,
+        flat: false,
+      });
+    }
+  }
+
+  /** Someone fell into a liquid (`splash` with liquid): lava = orange sparks, glow & smoke; water = white splash rings. */
+  public spawnLiquidSplash(x: number, z: number, y: number, kind: 'lava' | 'water', nowSec: number) {
+    if (!this.highQuality) return;
+    const base = { vx: 0, vy: 0, vz: 0, rotY: 0, spin: 0, gravity: 0, bornSec: nowSec, yFloor: y - 0.1 };
+    if (kind === 'lava') {
+      const O = new THREE.Color('#FF8A2A');
+      const R2 = new THREE.Color('#FFD45A');
+      this.spawnSparks(x, y + 0.1, z, 14, 3.4, O, nowSec, 0.65, 0.16, R2, y - 0.1, 1.6);
+      this.bursts.push({ ...base, kind: 'ring', x, y: y + 0.04, z, scale0: 0.4, scale1: 1.9, expandSec: 0.3, color: R2, lifeSec: 0.45, fadePow: 1.3, alpha0: 0.9 });
+      this.bursts.push({ ...base, kind: 'disc', x, y: y + 0.03, z, scale0: 0.1, scale1: 0.9, expandSec: 0.1, color: new THREE.Color('#FFF0B0'), lifeSec: 0.25, fadePow: 1, alpha0: 0.7 });
+      this.spawnLiquidPuffs(x, y, z, 5, 0.6, 0.55, 0.75, 0.6, '#9A6A66', nowSec);
+    } else {
+      const Wt = new THREE.Color('#E8F6FF');
+      this.spawnSparks(x, y + 0.1, z, 12, 2.4, Wt, nowSec, 0.55, 0.15, this._white, y - 0.1, 1.8);
+      this.bursts.push({ ...base, kind: 'ring', x, y: y + 0.03, z, scale0: 0.4, scale1: 2.2, expandSec: 0.35, color: this._white.clone(), lifeSec: 0.55, fadePow: 1.3, alpha0: 0.85 });
+      this.bursts.push({ ...base, kind: 'ring', x, y: y + 0.03, z, scale0: 0.2, scale1: 1.2, expandSec: 0.45, color: this._white.clone(), lifeSec: 0.65, holdSec: 0.15, alpha0: 0.6 });
+      this.spawnLiquidPuffs(x, y, z, 6, 0.5, 0.45, 0.6, 0.85, '#FFFFFF', nowSec);
+    }
+  }
+
+  /** Respawn landing: a ring rushes out on the ground and team-coloured motes pop up (`respawn`, u >= 0). */
+  public spawnRespawnBurst(x: number, z: number, colorHex: string, nowSec: number) {
+    const tc = new THREE.Color(colorHex);
+    const base = { vx: 0, vy: 0, vz: 0, rotY: 0, spin: 0, gravity: 0, bornSec: nowSec };
+    this.bursts.push({ ...base, kind: 'ring', x, y: 0.04, z, scale0: 0.4, scale1: 1.9, expandSec: 0.3, color: tc.clone().lerp(this._white, 0.4), lifeSec: 0.4, fadePow: 1.3, alpha0: 0.9, yFloor: 0 });
+    this.spawnSparks(x, 0.3, z, 8, 2.6, tc.clone().lerp(this._white, 0.5), nowSec, 0.5, 0.13, this._white, undefined, 1.2);
+  }
+
+  private spawnLiquidPuffs(x: number, y: number, z: number, n: number, spread: number, size: number, lifeSec: number, alpha: number, colHex: string, nowSec: number) {
+    const col = new THREE.Color(colHex);
+    for (let j = 0; j < n; j++) {
+      const a = (2 * Math.PI * (j + Math.random() * 0.7)) / n;
+      const sp = spread * (0.6 + 0.8 * Math.random()) * 2.5;
+      this.bursts.push({
+        kind: 'puff',
+        x,
+        y: y + 0.1,
+        z,
+        vx: Math.cos(a) * sp,
+        vy: 1.2,
+        vz: Math.sin(a) * sp,
+        rotY: Math.random() * 6,
+        scale0: size * 1.2,
+        scale1: size * 2.6,
+        color: col,
+        bornSec: nowSec,
+        lifeSec,
+        spin: 1.2,
+        gravity: 0,
+        alpha0: alpha,
+        drag: 2.5,
+        yFloor: y - 0.1,
+      });
+    }
+  }
+
   private spawnSparks(
     x: number,
     y: number,
@@ -1490,6 +1602,8 @@ export class FXSystem {
     lifeSec: number,
     starSize = 0.15,
     color2?: THREE.Color,
+    yFloor?: number,
+    upMul = 1,
   ) {
     const hq = this.highQuality;
     for (let i = 0; i < count; i++) {
@@ -1503,7 +1617,7 @@ export class FXSystem {
         y,
         z,
         vx: Math.cos(a) * sp,
-        vy: 1.4 + Math.random() * 2.2,
+        vy: (1.4 + Math.random() * 2.2) * upMul,
         vz: Math.sin(a) * sp,
         rotY: Math.random() * 6,
         scale0: sz,
@@ -1515,6 +1629,7 @@ export class FXSystem {
         gravity: 6.8,
         flat: false,
         drag: hq ? 2.4 : undefined,
+        ...(yFloor !== undefined ? { yFloor } : {}),
       });
     }
   }
@@ -1952,6 +2067,11 @@ export class FXSystem {
       this.stealthRing.visible = false;
       if (!showStealth) this.stealthAlpha = 0;
     }
+  }
+
+  /** Forget queued one-shot bursts (rings, sparks, puffs…); trails and markers are left alone. */
+  public dropBursts() {
+    this.bursts.length = 0;
   }
 
   public clearAll() {
