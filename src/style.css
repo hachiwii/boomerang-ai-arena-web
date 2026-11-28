@@ -12968,3 +12968,26 @@ body.is-mobile .team-spectate-btn {
   width: 16px;
   height: 16px;
 }
+
+/* 联机 5v5：真人角色名牌右侧的延迟 */
+.np-ping {
+  margin-left: 1px;
+  padding-left: 5px;
+  border-left: 1px solid rgba(255, 255, 255, 0.22);
+  font-size: 10px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #7ff0b0;
+}
+
+.np-ping[hidden] {
+  display: none;
+}
+
+.np-ping[data-level='ok'] {
+  color: #ffd36b;
+}
+
+.np-ping[data-level='bad'] {
+  color: #ff8a7a;
+}

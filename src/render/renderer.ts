@@ -200,6 +200,8 @@ export class GameRenderer {
   private nameplates: HTMLDivElement[] = [];
   private nameplateEyeEls: (HTMLSpanElement | null)[] = [];
   private nameplateEyeStates: ('none' | 'closed' | 'open')[] = [];
+  /** 联机 5v5：真人名牌右侧的延迟（毫秒）；没有为 null（本地对局、bot 席位） */
+  private nameplatePingEls: (HTMLSpanElement | null)[] = [];
 
   // Render Hz & frame-time telemetry
   public renderHz = 0;
@@ -802,17 +804,35 @@ export class GameRenderer {
     this.nameplates = [];
     this.nameplateEyeEls = [];
     this.nameplateEyeStates = [];
+    this.nameplatePingEls = [];
     for (let i = 0; i < this.slots.length; i++) {
       const s = this.slots[i];
       const el = document.createElement('div');
       el.className = `nameplate ${s.kind === 'human' && !s.remote ? 'nameplate-human' : ''}`;
-      el.innerHTML = `<span class="np-eye" data-eye="none"></span><span class="np-dot" style="background:${s.ringAccent || s.color}"></span><span class="np-txt">${s.displayName}</span>`;
+      el.innerHTML = `<span class="np-eye" data-eye="none"></span><span class="np-dot" style="background:${s.ringAccent || s.color}"></span><span class="np-txt">${s.displayName}</span>${s.kind === 'human' ? '<span class="np-ping" hidden></span>' : ''}`;
+      this.nameplatePingEls.push(el.querySelector<HTMLSpanElement>('.np-ping'));
       if (this.teamMode) el.style.borderColor = TEAM_COLORS[this.seatTeams[i] ?? 0];
       this.nameplateLayer.appendChild(el);
       this.nameplates.push(el);
       this.nameplateEyeEls.push(el.querySelector<HTMLSpanElement>('.np-eye'));
       this.nameplateEyeStates.push('none');
     }
+  }
+
+  /** 联机 5v5：每个座位的延迟（毫秒，null = 不显示），只对真人名牌生效 */
+  public setNameplatePings(pings: (number | null)[]) {
+    this.nameplatePingEls.forEach((el, seat) => {
+      if (!el) return;
+      const ms = pings[seat];
+      if (ms === null || ms === undefined) {
+        el.hidden = true;
+        return;
+      }
+      el.hidden = false;
+      const text = `${Math.round(ms)}ms`;
+      if (el.textContent !== text) el.textContent = text;
+      el.dataset.level = ms <= 80 ? 'good' : ms <= 160 ? 'ok' : 'bad';
+    });
   }
 
   private setNameplateEyeState(seat: number, next: 'none' | 'closed' | 'open') {

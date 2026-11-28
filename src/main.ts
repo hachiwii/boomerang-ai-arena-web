@@ -1497,6 +1497,7 @@ async function bootstrap() {
       renderer.setTrainingMode(isTraining);
       renderer.setWorldLabels([]);
       mode = 'playing';
+      if (cfg.teamRoom) applyRoomPings();
       lobbyUI.hide();
       bgm.beginMatch({ matchMode: cfg.matchMode, bgmSeed: cfg.bgmSeed ?? cfg.seed, slots: cfg.slots, teamMode: cfg.team?.mode }, initialState);
       hudUI.showMatch(cfg, hSeat);
@@ -1777,6 +1778,14 @@ async function bootstrap() {
     });
   };
 
+  /** 联机 5v5：真人名牌右侧显示他到中转的延迟 */
+  const applyRoomPings = () => {
+    const tr = activeConfig?.teamRoom;
+    if (!tr || mode !== 'playing') return;
+    const rtts = teamRoom.state.rtts;
+    renderer.setNameplatePings(tr.seats.map((id) => (id === null ? null : (rtts[id] ?? null))));
+  };
+
   teamRoom.onInput(({ from, action }) => roomHostNet?.onInput(from, action));
   teamRoom.onStart((start) => {
     if (teamRoom.isHost) return;
@@ -1791,6 +1800,7 @@ async function bootstrap() {
     if (teamGuest && teamGuest.matchId() === matchId) teamGuest.end(aborted, reason);
   });
   teamRoom.onChange((snap) => {
+    applyRoomPings();
     const tr = activeConfig?.teamRoom;
     if (tr && snap.status !== 'in-room') {
       // 断开或退出了房间：联机对局没法继续

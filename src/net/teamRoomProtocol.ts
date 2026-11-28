@@ -66,7 +66,8 @@ export type RoomClientMessage =
   | { type: 'create' }
   | { type: 'join'; code: string }
   | { type: 'leave' }
-  | { type: 'ping'; t: number }
+  /** rttMs：自己最近一次测到的往返延迟，中转汇总后发给房间里所有人 */
+  | { type: 'ping'; t: number; rttMs?: number }
   | { type: 'lobby'; lobby: unknown }
   | { type: 'claim'; side: number; slot: number }
   | { type: 'unclaim' }
@@ -98,6 +99,8 @@ export type RoomServerMessage =
   | { type: 'left' }
   | { type: 'error'; reason: RoomErrorReason }
   | { type: 'pong'; t: number }
+  /** 每 2 秒：房间里每个人到中转的往返延迟 [成员 id, 毫秒] */
+  | { type: 'rtts'; rtts: [number, number][] }
   | { type: 'lobby'; lobby: unknown }
   | { type: 'claim'; from: number; side: number; slot: number }
   | { type: 'unclaim'; from: number }

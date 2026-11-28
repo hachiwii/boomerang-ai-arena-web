@@ -29,6 +29,8 @@ interface Member {
   hello: boolean;
   pingAt: number | null;
   lastPong: number;
+  /** 客户端自己报的到中转的往返延迟（毫秒） */
+  rtt: number | null;
   window: { until: number; count: number };
 }
 
@@ -205,6 +207,7 @@ export function createTeamRooms(log: (event: string, details?: object) => void):
     }
     if (!m.hello) return;
     if (msg.type === 'ping') {
+      if (Number.isInteger(msg.rttMs) && (msg.rttMs as number) >= 0 && (msg.rttMs as number) <= 5000) m.rtt = msg.rttMs as number;
       if (Number.isSafeInteger(msg.t)) send(m, { type: 'pong', t: msg.t });
       return;
     }
@@ -317,6 +320,17 @@ export function createTeamRooms(log: (event: string, details?: object) => void):
     }
   };
 
+  // 每 2 秒把房间里每个人的延迟发给所有人（联机对局里显示在真人角色名牌右侧）
+  setInterval(() => {
+    for (const room of rooms.values()) {
+      const rtts: [number, number][] = [];
+      for (const m of room.members.values()) if (m.rtt !== null) rtts.push([m.id, m.rtt]);
+      if (!rtts.length) continue;
+      const text = JSON.stringify({ type: 'rtts', rtts });
+      for (const m of room.members.values()) sendRaw(m, text);
+    }
+  }, 2000).unref();
+
   setInterval(() => {
     const t = now();
     for (const m of conns) {
@@ -340,7 +354,7 @@ export function createTeamRooms(log: (event: string, details?: object) => void):
       wss.handleUpgrade(req, socket, head, (ws) => {
         req.socket.setNoDelay(true);
         const m: Member = {
-          id: 0, name: '', ws, ip, room: null, buildId: null, hello: false, pingAt: null, lastPong: now(),
+          id: 0, name: '', ws, ip, room: null, buildId: null, hello: false, pingAt: null, lastPong: now(), rtt: null,
           window: { until: 0, count: 0 },
         };
         conns.add(m);

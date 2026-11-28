@@ -22,6 +22,8 @@ export interface TeamRoomSnapshot {
   /** 房间里正在进行的对局（开局信息），没有为 null */
   match: RoomMatchStart | null;
   rematch: (RoomRematchState & { localDeadline: number | null }) | null;
+  /** 房间里每个人到中转的往返延迟（成员 id → 毫秒），中转每 2 秒发一次 */
+  rtts: Record<number, number>;
 }
 
 type Listener<T> = (v: T) => void;
@@ -51,7 +53,12 @@ export class TeamRoomClient {
   private ws: WebSocket | null = null;
   private pending: RoomClientMessage | null = null;
   private pingTimer: number | null = null;
-  private snap: TeamRoomSnapshot = { status: 'idle', room: null, me: 0, rttMs: null, error: null, match: null, rematch: null };
+  /** 当前这一轮连发里收到的往返时间；这一轮结束时取最小值 */
+  private burstSamples: number[] = [];
+  private burstTimers: number[] = [];
+  /** 最近几轮的最小值，显示它们的中位数 */
+  private recentRtts: number[] = [];
+  private snap: TeamRoomSnapshot = { status: 'idle', room: null, me: 0, rttMs: null, error: null, match: null, rematch: null, rtts: {} };
   private readonly listeners = new Set<Listener<TeamRoomSnapshot>>();
   private readonly lobbyListeners = new Set<Listener<unknown>>();
   private readonly claimListeners = new Set<Listener<{ from: number; side: number; slot: number } | { from: number; unclaim: true }>>();
@@ -180,8 +187,16 @@ export class TeamRoomClient {
         if (this.snap.status !== 'in-room') this.close(true);
         return;
       case 'pong':
-        this.set({ rttMs: Math.max(0, Math.round(performance.now() - msg.t)) });
+        this.burstSamples.push(Math.max(0, performance.now() - msg.t));
         return;
+      case 'rtts': {
+        const rtts: Record<number, number> = {};
+        for (const [id, ms] of msg.rtts) rtts[id] = ms;
+        // 自己的用本机刚测到的（更新）
+        if (this.snap.rttMs !== null) rtts[this.snap.me] = this.snap.rttMs;
+        this.set({ rtts });
+        return;
+      }
       case 'lobby':
         this.lastLobby = msg.lobby;
         for (const fn of this.lobbyListeners) fn(msg.lobby);
@@ -218,22 +233,57 @@ export class TeamRoomClient {
     }
   }
 
+  /**
+   * 延迟测量：每 2 秒连发 3 个 ping（间隔 60ms），这一轮取最小值，显示最近 5 轮的中位数。
+   * 只发一个时，手机网卡省电（空闲时要先唤醒）和页面主线程忙（回复要等渲染做完才处理）都会把数字放大；
+   * 连发的后几个赶上网卡已醒、取最小值又避开卡顿，得到的接近真实网络往返，也就是对局里（数据不断）的延迟。
+   */
   private startPing() {
+    this.stopPing();
+    const burst = () => {
+      this.burstSamples = [];
+      for (let i = 0; i < 3; i++) {
+        this.burstTimers.push(
+          window.setTimeout(() => {
+            const rtt = this.snap.rttMs;
+            this.send({ type: 'ping', t: Math.round(performance.now()), ...(i === 0 && rtt !== null ? { rttMs: rtt } : {}) });
+          }, i * 60),
+        );
+      }
+      this.burstTimers.push(window.setTimeout(() => this.finishBurst(), 900));
+    };
+    burst();
+    this.pingTimer = window.setInterval(() => {
+      this.burstTimers = [];
+      burst();
+    }, 2000);
+  }
+
+  private finishBurst() {
+    if (!this.burstSamples.length) return;
+    this.recentRtts.push(Math.min(...this.burstSamples));
+    if (this.recentRtts.length > 5) this.recentRtts.shift();
+    const sorted = [...this.recentRtts].sort((a, b) => a - b);
+    this.set({ rttMs: Math.round(sorted[Math.floor(sorted.length / 2)]) });
+  }
+
+  private stopPing() {
     if (this.pingTimer !== null) window.clearInterval(this.pingTimer);
-    const ping = () => this.send({ type: 'ping', t: Math.round(performance.now()) });
-    ping();
-    this.pingTimer = window.setInterval(ping, 2000);
+    this.pingTimer = null;
+    for (const t of this.burstTimers) window.clearTimeout(t);
+    this.burstTimers = [];
+    this.burstSamples = [];
   }
 
   private close(keepError = false) {
-    if (this.pingTimer !== null) window.clearInterval(this.pingTimer);
-    this.pingTimer = null;
+    this.stopPing();
+    this.recentRtts = [];
     const ws = this.ws;
     this.ws = null;
     this.pending = null;
     if (ws && ws.readyState <= WebSocket.OPEN) ws.close();
     this.lastLobby = null;
-    this.set({ status: 'idle', room: null, me: 0, rttMs: null, match: null, rematch: null, error: keepError ? this.snap.error : null });
+    this.set({ status: 'idle', room: null, me: 0, rttMs: null, match: null, rematch: null, rtts: {}, error: keepError ? this.snap.error : null });
   }
 }
 
