@@ -520,6 +520,33 @@ export class HqArenaMap3D implements IArenaMap {
     return this.getChunkForCell(Math.floor(mx / cs), Math.floor(my / cs));
   }
 
+  /**
+   * Chunk of the solid cell under a map point; for a point over a pit (a prop hanging past an edge) the nearest solid
+   * cell's within 2 m, so it falls with the ground it hangs from instead of staying with the permanent core.
+   */
+  private getChunkNearWorld(mx: number, my: number): CollapseChunk {
+    const { nx, ny, cells } = this.mapData;
+    const cs = this.mapData.cell / 1000;
+    const gx = Math.floor(mx / cs);
+    const gy = Math.floor(my / cs);
+    const solid = (x: number, y: number) => x >= 0 && y >= 0 && x < nx && y < ny && cells[y * nx + x] !== CellType.PIT;
+    if (solid(gx, gy)) return this.getChunkForCell(gx, gy);
+    let best: [number, number] | null = null;
+    let bestD = Infinity;
+    const R = Math.ceil(2 / cs);
+    for (let y = gy - R; y <= gy + R; y++) {
+      for (let x = gx - R; x <= gx + R; x++) {
+        if (!solid(x, y)) continue;
+        const d = Math.hypot((x + 0.5) * cs - mx, (y + 0.5) * cs - my);
+        if (d < bestD) {
+          bestD = d;
+          best = [x, y];
+        }
+      }
+    }
+    return best ? this.getChunkForCell(best[0], best[1]) : this.chunks[0];
+  }
+
   private registerOccluder(meshes: THREE.Mesh[], wave: number, isGrass = false, hideOnOcclude = false): OccluderEntry | null {
     const box = new THREE.Box3();
     const opaqueMaterials: THREE.Material[] = [];
@@ -1566,19 +1593,26 @@ export class HqArenaMap3D implements IArenaMap {
       }
     }
 
-    // Bridge posts & draped ropes (`sunset`, `canyon`)
+    // Bridge posts & draped ropes (`sunset`, `canyon`). They ride on the collapse chunks of the ground they stand on or
+    // hang from (like obstacles and tall grass), not on a wave's static details: a bridge spans several chunks, often of
+    // different waves, and its outline can reach over pits, so each post falls with the ground next to it and a rope is
+    // cut where that ground changes chunk.
     if (this.hqTheme.field.includes('bridges')) {
       const ropeCol = hexLin('#E8D2A0');
+      const chunkBuilders = new Map<CollapseChunk, HqMeshBuilder>();
+      const builderOn = (chunk: CollapseChunk) => {
+        let b = chunkBuilders.get(chunk);
+        if (!b) chunkBuilders.set(chunk, (b = new HqMeshBuilder()));
+        return b;
+      };
       for (const br of bridges as BridgeSpec[]) {
         const px = -br.ay, py = br.ax;
         const hl2 = Math.max(0.2, br.hl - 0.12);
-        const w = waveOfWorld(br.bx, br.by);
-        const mb = getWaveB(w);
         for (const sa of [-1, 1]) {
           for (const sp of [-1, 1]) {
             const mx = br.bx + br.ax * hl2 * sa + px * (br.hw - 0.03) * sp;
             const my = br.by + br.ay * hl2 * sa + py * (br.hw - 0.03) * sp;
-            addBridgePost(mb, mx, -my);
+            addBridgePost(builderOn(this.getChunkNearWorld(mx, my)), mx, -my);
           }
         }
         for (const sp of [-1, 1]) {
@@ -1590,8 +1624,30 @@ export class HqArenaMap3D implements IArenaMap {
             const off = br.hw + 0.03 + 0.05 * (1 - (2 * t - 1) ** 2);
             pts.push([br.bx + br.ax * u + px * off * sp, -(br.by + br.ay * u + py * off * sp), sag]);
           }
-          mb.tube(pts, 0.022, ropeCol, { seg: 5 });
+          // One piece per run of segments on the same chunk (a segment goes with the ground nearest its middle)
+          const chunkOfSeg = (i: number) =>
+            this.getChunkNearWorld((pts[i][0] + pts[i + 1][0]) / 2, -(pts[i][1] + pts[i + 1][1]) / 2);
+          let piece: Vec3[] = [pts[0]];
+          let pieceChunk = chunkOfSeg(0);
+          for (let i = 0; i < 8; i++) {
+            const segChunk = chunkOfSeg(i);
+            if (segChunk !== pieceChunk) {
+              builderOn(pieceChunk).tube(piece, 0.022, ropeCol, { seg: 5 });
+              piece = [pts[i]];
+              pieceChunk = segChunk;
+            }
+            piece.push(pts[i + 1]);
+          }
+          builderOn(pieceChunk).tube(piece, 0.022, ropeCol, { seg: 5 });
         }
+      }
+      for (const [chunk, b] of chunkBuilders) {
+        if (!b.hasAny()) continue;
+        const { meshes } = b.buildMeshes({ castShadow: false, receiveShadow: true, sharedMats: this.sharedBucketMats });
+        const localGrp = new THREE.Group();
+        localGrp.position.set(-chunk.cx, 0, -chunk.cz);
+        for (const m of meshes) localGrp.add(m);
+        chunk.propMount.add(localGrp);
       }
     }
 
