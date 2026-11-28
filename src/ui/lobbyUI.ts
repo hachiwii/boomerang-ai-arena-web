@@ -28,6 +28,15 @@ function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c] || c);
 }
 
+/** A community bot's author (roster `author`), or null for every other bot. */
+const botAuthor = (b: RosterEntry | undefined): string | null => (b?.category === 'community' && b.author ? b.author : null);
+
+/** Small pink "@author" placed after a community bot's name (empty for other bots). */
+function authorTagHtml(b: RosterEntry | undefined, extraClass = ''): string {
+  const author = botAuthor(b);
+  return author ? `<span class="bot-author ${extraClass}" title="作者 ${escapeHtml(author)}">@${escapeHtml(author)}</span>` : '';
+}
+
 interface DraftSlot {
   kind: 'human' | 'bot';
   botId: string;
@@ -926,6 +935,7 @@ export class LobbyUI {
             <div class="pm-name-row">
               ${rankChip}
               <span class="pm-name">${escapeHtml(b.name)}</span>
+              ${authorTagHtml(b)}
             </div>
           </div>
           ${scoreHtml}
@@ -1311,9 +1321,10 @@ export class LobbyUI {
         : isCustom
           ? `<span class="cc-elo is-custom" title="自定义 Bot（没有 ELO 分数）">自定义</span>`
           : isCommunity
-            ? `<span class="cc-elo is-community" title="社区 Bot · 暂无 ELO 分数">未评级</span>`
+            ? '' // unrated community bot: no ELO and no badge
             : `<span class="cc-elo is-sparring" title="陪练角色">陪练</span>`;
-    const tooltip = `${escapeHtml(entry.name)}${isCommunity ? ' · 社区' : ''}${elo !== null ? ` · 固定 ELO ${elo}` : isCustom ? ' · 自定义 Bot' : isCommunity ? ' · 暂无 ELO 分数' : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
+    const author = botAuthor(entry);
+    const tooltip = `${escapeHtml(entry.name)}${author ? ` @${escapeHtml(author)}` : ''}${isCommunity ? ' · 社区' : ''}${elo !== null ? ` · 固定 ELO ${elo}` : isCustom ? ' · 自定义 Bot' : isCommunity ? '' : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
 
     return `
       <div
@@ -1322,12 +1333,13 @@ export class LobbyUI {
         data-bot-tier="${tier}"
         title="${tooltip}"
       >
-        <div class="cc-top">
+        <div class="cc-top ${author ? 'has-author' : ''}">
           <img class="cc-avatar" src="${avatarForBotEntry(entry)}" alt="${escapeHtml(entry.shortName)}" style="border-color:${entry.color}" draggable="false" />
           <div class="cc-name-wrap">
             <span class="cc-name">${escapeHtml(entry.shortName)}</span>
           </div>
           ${eloHtml}
+          ${authorTagHtml(entry, 'cc-author')}
         </div>
         <div class="cc-metrics">
           <span class="cc-metric ${hasGames ? '' : 'is-empty'}">胜率 <strong>${winPct}</strong></span>
@@ -2448,6 +2460,7 @@ export class LobbyUI {
                     <div class="pk-body">
                       <div class="pk-title-line">
                         <span class="pk-name">${slot.displayName}</span>
+                        ${authorTagHtml(botEntry)}
                         ${slot.copyNumber ? `<span class="dup-pill">副本 #${slot.copyNumber}</span>` : ''}
                         ${roleChip}
                       </div>

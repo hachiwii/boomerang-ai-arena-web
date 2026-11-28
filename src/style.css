@@ -1930,6 +1930,41 @@ body.ui-hidden .lobby-overlay {
   text-overflow: ellipsis;
 }
 
+/* A community bot's author after its name (picker, lineup, Cricket card): small pink "@author" (Bilibili pink) that gives
+   way first */
+.bot-author {
+  flex: 0 100 auto;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fb7299;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bot-author.cc-author {
+  display: block;
+  font-size: 10px;
+  line-height: 1.2;
+}
+
+/* A Cricket card with an author: the "@author" line runs under both the name and the ELO badge (narrow mobile cards) */
+.cc-top.has-author {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 0 5px;
+}
+
+.cc-top.has-author .cc-avatar {
+  grid-row: span 2;
+}
+
+.cc-top.has-author .cc-author {
+  grid-column: 2 / 4;
+}
+
 .pm-taken-pill {
   font-size: 10px;
   font-weight: 700;

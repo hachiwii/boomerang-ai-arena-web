@@ -5,7 +5,8 @@ For each entry below this script
   - copies the bot's character model into public/assets/chars/<charKey>.json (with the bot's colour and label),
   - draws a pixel avatar from the model's head into public/assets/avatars/<charKey>.svg
     (same front-view method as custom models, src/game/customBots/customModel.ts),
-  - inserts / replaces the bot's entry in public/assets/chars/roster.json, right before the sparring bots.
+  - inserts / replaces the bot's entry in public/assets/chars/roster.json, right before the sparring bots
+    (with `author` when the entry names one: the lobby shows it as a small pink "@author" after the bot's name).
 The bot's C++ source lives in wasm/bots/<id>.cpp and is compiled by scripts/build_wasm.py like the others.
 
 Ratings are on the contest scale (13 official bots average 0; the in-game ELO is rating x 2 + 1000, as for the
@@ -43,6 +44,7 @@ COMMUNITY_BOTS = [
         "charKey": "kf_lena",
         "name": "RLHF-KF",
         "shortName": "RLHF-KF",
+        "author": "透明人没有影子",
         "model": ROOT / "custom-bots" / "kf-lena.json",
         "color": "#383845",
         "rating": None,
@@ -118,6 +120,7 @@ def main():
             "rank": None, "rating": elo(b["rating"]), "category": "community",
             "duelRating": elo(b["duel_rating"]), "ffaRating": elo(b["ffa_rating"]),
             "color": b["color"], "avatar": f"/assets/avatars/{b['charKey']}.svg",
+            **({"author": b["author"]} if b.get("author") else {}),
         })
     at = next((i for i, r in enumerate(roster) if r.get("category") == "sparring"), len(roster))
     roster[at:at] = entries

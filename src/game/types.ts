@@ -82,6 +82,7 @@ export interface RosterEntry {
   category: 'official' | 'community' | 'sparring' | 'custom';
   color: string;
   avatar: string | null;
+  author?: string; // community bots: who wrote it, shown as a small pink "@author" after the name in the lobby
 }
 
 export interface SlotConfig {
