@@ -196,6 +196,20 @@
     "avatar": "/assets/avatars/dragon_girl.svg"
   },
   {
+    "id": "astra-rlhf-kf",
+    "seat": "astra_rlhf_kf",
+    "charKey": "kf_lena",
+    "name": "RLHF-KF",
+    "shortName": "RLHF-KF",
+    "rank": null,
+    "rating": null,
+    "category": "community",
+    "duelRating": null,
+    "ffaRating": null,
+    "color": "#383845",
+    "avatar": "/assets/avatars/kf_lena.svg"
+  },
+  {
     "id": "sparring-strong",
     "seat": "strong",
     "charKey": "demo_red",

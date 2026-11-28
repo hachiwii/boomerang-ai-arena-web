@@ -1310,8 +1310,10 @@ export class LobbyUI {
         ? `<span class="cc-elo ${isCommunity ? 'is-community' : ''}" title="${isCommunity ? '社区 Bot · 固定 ELO 分数（不进入排位）' : '固定 ELO 分数'}">${elo}</span>`
         : isCustom
           ? `<span class="cc-elo is-custom" title="自定义 Bot（没有 ELO 分数）">自定义</span>`
-          : `<span class="cc-elo is-sparring" title="陪练角色">陪练</span>`;
-    const tooltip = `${escapeHtml(entry.name)}${isCommunity ? ' · 社区' : ''}${elo !== null ? ` · 固定 ELO ${elo}` : isCustom ? ' · 自定义 Bot' : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
+          : isCommunity
+            ? `<span class="cc-elo is-community" title="社区 Bot · 暂无 ELO 分数">未评级</span>`
+            : `<span class="cc-elo is-sparring" title="陪练角色">陪练</span>`;
+    const tooltip = `${escapeHtml(entry.name)}${isCommunity ? ' · 社区' : ''}${elo !== null ? ` · 固定 ELO ${elo}` : isCustom ? ' · 自定义 Bot' : isCommunity ? ' · 暂无 ELO 分数' : ' · 陪练'}${hasGames ? ` · ${st.wins}胜/${st.matches}场 · ${st.kills}杀/${st.deaths}死` : ' · 暂无斗蛐蛐战绩'}`;
 
     return `
       <div
