@@ -83,8 +83,10 @@ Ranked matches played to the end also carry each bot's result, and the human pla
 (`bots: [{b, r: w|d|l, rank, kills?, death?}]`, `src/game/botResults.ts`): per mode and id the relay keeps wins /
 draws / losses, the sum and count of final places (average place), kills by cause (melee, dart, kicked into a pit)
 and deaths by cause (those three, plus fell off on its own — walk or dash — and ground collapsed); the report sums
-them into total kills and deaths. Malformed results are dropped (the finish still counts); at most 64 bot
-ids per mode and day.
+them into total kills and deaths. Malformed results are dropped (the finish still counts), and so are a match's
+results when one id is not an official bot from `public/assets/chars/roster.json` (the only bots ranked picks; read when
+the relay is built) or `human`, or an id repeats: a modified client can't add rows to the 全球统计 bot table. Ids
+stored before this check are dropped when the relay loads today's file and skipped in past days.
 
 `GET /public-stats` (through the CDN like the other page requests, CORS, `Cache-Control: max-age=15`, same per-IP
 limit) feeds the lobby's 全球统计 panel (`src/ui/globalStatsUI.ts`) with aggregates only: online now, all-time players

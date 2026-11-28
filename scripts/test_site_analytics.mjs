@@ -75,34 +75,39 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   // known death causes, a winner never died, at most one winner, a win is not a draw
   assert.deepEqual(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', kills: { dart: 1 } }]), [{ b: 'glm-5.3', r: 'w', kills: { dart: 1 } }]);
   assert.deepEqual(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'd', death: 'collapse' }]), [{ b: 'glm-5.3', r: 'd', death: 'collapse' }]);
-  assert.deepEqual(parseBotResults('ranked-ffa', [{ b: 'a', r: 'w', kills: { melee: 2, kick: 1 } }, { b: 'b', r: 'l', death: 'kick' }]),
-    [{ b: 'a', r: 'w', kills: { melee: 2, kick: 1 } }, { b: 'b', r: 'l', death: 'kick' }]);
-  assert.deepEqual(parseBotResults('ranked-solo', [{ b: 'a', r: 'l', kills: {} }]), [{ b: 'a', r: 'l' }]);
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'w', kills: { dart: 2 } }]), null, 'more kills than opponents');
-  assert.equal(parseBotResults('ranked-ffa', [{ b: 'a', r: 'w', kills: { dart: 2, melee: 2 } }]), null);
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'w', kills: { fall: 1 } }]), null, 'a fall has no killer');
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'w', kills: { dart: 0.5 } }]), null);
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'w', kills: [1] }]), null);
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'w', death: 'dart' }]), null, 'a winner is alive');
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'l', death: 'walk' }]), null, 'unknown cause');
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'l' }, { b: 'b', r: 'l' }]), null);
-  assert.equal(parseBotResults('ranked-ffa', [{ b: 'a', r: 'l' }, { b: 'b', r: 'l' }, { b: 'c', r: 'l' }, { b: 'd', r: 'l' }]), null);
-  assert.equal(parseBotResults('ranked-ffa', [{ b: 'a', r: 'w' }, { b: 'b', r: 'w' }]), null);
-  assert.equal(parseBotResults('ranked-ffa', [{ b: 'a', r: 'w' }, { b: 'b', r: 'd' }]), null);
+  assert.deepEqual(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'w', kills: { melee: 2, kick: 1 } }, { b: 'kimi-k3.1-pro', r: 'l', death: 'kick' }]),
+    [{ b: 'glm-5.3', r: 'w', kills: { melee: 2, kick: 1 } }, { b: 'kimi-k3.1-pro', r: 'l', death: 'kick' }]);
+  assert.deepEqual(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'l', kills: {} }]), [{ b: 'glm-5.3', r: 'l' }]);
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', kills: { dart: 2 } }]), null, 'more kills than opponents');
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'w', kills: { dart: 2, melee: 2 } }]), null);
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', kills: { fall: 1 } }]), null, 'a fall has no killer');
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', kills: { dart: 0.5 } }]), null);
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', kills: [1] }]), null);
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', death: 'dart' }]), null, 'a winner is alive');
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'l', death: 'walk' }]), null, 'unknown cause');
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'l' }, { b: 'kimi-k3.1-pro', r: 'l' }]), null);
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'l' }, { b: 'kimi-k3.1-pro', r: 'l' }, { b: 'qwen4-max', r: 'l' }, { b: 'grok-4.7', r: 'l' }]), null);
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'w' }, { b: 'kimi-k3.1-pro', r: 'w' }]), null);
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'w' }, { b: 'kimi-k3.1-pro', r: 'd' }]), null);
   assert.equal(parseBotResults('ranked-solo', [{ b: '<script>', r: 'l' }]), null, 'bot ids are plain names');
   assert.equal(parseBotResults('ranked-solo', [{ b: 'x'.repeat(41), r: 'l' }]), null);
-  assert.equal(parseBotResults('custom', [{ b: 'a', r: 'l' }]), null, 'ranked modes only');
+  assert.equal(parseBotResults('custom', [{ b: 'glm-5.3', r: 'l' }]), null, 'ranked modes only');
   assert.equal(parseBotResults('ranked-solo', 'nope'), null);
   // The human player rides along under `human` (one per match); places are 1..players and a winner is 1st
   assert.deepEqual(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', rank: 1 }, { b: 'human', r: 'l', rank: 2, death: 'dart' }]),
     [{ b: 'glm-5.3', r: 'w', rank: 1 }, { b: 'human', r: 'l', rank: 2, death: 'dart' }]);
   assert.equal(parseBotResults('ranked-solo', [{ b: 'human', r: 'l' }, { b: 'human', r: 'l' }]), null, 'one human');
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'l' }, { b: 'b', r: 'l' }, { b: 'human', r: 'w' }]), null, 'SOLO has one bot');
-  assert.ok(parseBotResults('ranked-ffa', [{ b: 'a', r: 'l' }, { b: 'b', r: 'l' }, { b: 'c', r: 'l' }, { b: 'human', r: 'w', rank: 1 }]));
-  assert.equal(parseBotResults('ranked-ffa', [{ b: 'a', r: 'l', rank: 5 }]), null, 'four places in 四人');
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'l', rank: 0 }]), null);
-  assert.equal(parseBotResults('ranked-solo', [{ b: 'a', r: 'w', rank: 2 }]), null, 'a winner is first');
-  assert.equal(parseBotResults('ranked-ffa', [{ b: 'a', r: 'l', rank: 2.5 }]), null);
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'l' }, { b: 'kimi-k3.1-pro', r: 'l' }, { b: 'human', r: 'w' }]), null, 'SOLO has one bot');
+  assert.ok(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'l' }, { b: 'kimi-k3.1-pro', r: 'l' }, { b: 'qwen4-max', r: 'l' }, { b: 'human', r: 'w', rank: 1 }]));
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'l', rank: 5 }]), null, 'four places in 四人');
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'l', rank: 0 }]), null);
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'glm-5.3', r: 'w', rank: 2 }]), null, 'a winner is first');
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'l', rank: 2.5 }]), null);
+  // Only the bots ranked picks (official roster) and the human: a modified client's bot drops the whole match
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'fuyukawa-yukina', r: 'd', rank: 1 }, { b: 'human', r: 'd', rank: 1 }]), null, 'not in the roster');
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'astra-rlhf', r: 'l' }]), null, 'community bots are not ranked');
+  assert.equal(parseBotResults('ranked-solo', [{ b: 'sparring-strong', r: 'l' }]), null, 'sparring bots are not ranked');
+  assert.equal(parseBotResults('ranked-ffa', [{ b: 'glm-5.3', r: 'l' }, { b: 'glm-5.3', r: 'l' }, { b: 'human', r: 'w', rank: 1 }]), null, 'distinct bots');
   assert.equal(parseBotResults('ranked-solo', []), null);
 
   const dir = mkdtempSync(join(tmpdir(), 'site-analytics-bots-'));
@@ -116,7 +121,7 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
     { b: 'gpt-6.2-astra', r: 'w', kills: { dart: 1, melee: 1 } }, { b: 'glm-5.3', r: 'l', kills: { dart: 1 }, death: 'melee' },
     { b: 'glm-5.3', r: 'l', death: 'collapse' },
   ]);
-  for (let i = 0; i < 70; i++) a.matchFinished(id(4), 'ranked-ffa', T0, [{ b: `spam-${i}`, r: 'l' }]);
+  for (let i = 0; i < 70; i++) a.matchFinished(id(4), 'ranked-ffa', T0, [{ b: `spam-${i}`, r: 'l' }]); // not counted
   // Places: an average over the results that carried one
   a.matchFinished(id(5), 'ranked-ffa', T0, [{ b: 'human', r: 'l', rank: 3, death: 'fall' }]);
   a.matchFinished(id(5), 'ranked-ffa', T0, [{ b: 'human', r: 'w', rank: 1, kills: { dart: 3 } }]);
@@ -126,14 +131,20 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   assert.deepEqual(snap.bots['ranked-solo']['kimi-k3.1-pro'], { w: 0, d: 0, l: 1, rankSum: 0, ranked: 0, kills: {}, deaths: { fall: 1 } });
   assert.deepEqual(snap.bots['ranked-ffa']['glm-5.3'], { w: 0, d: 0, l: 2, rankSum: 0, ranked: 0, kills: { dart: 1 }, deaths: { melee: 1, collapse: 1 } });
   assert.deepEqual(snap.bots['ranked-ffa']['gpt-6.2-astra'], { w: 1, d: 0, l: 0, rankSum: 0, ranked: 0, kills: { dart: 1, melee: 1 }, deaths: {} });
-  assert.equal(Object.keys(snap.bots['ranked-ffa']).filter((b) => b !== 'human').length, 64, 'distinct bot ids per mode and day are capped');
-  assert.deepEqual(snap.bots['ranked-ffa'].human, { w: 1, d: 0, l: 1, rankSum: 4, ranked: 2, kills: { dart: 3 }, deaths: { fall: 1 } }, 'human is kept past the cap');
+  assert.deepEqual(Object.keys(snap.bots['ranked-ffa']).sort(), ['glm-5.3', 'gpt-6.2-astra', 'human'], 'only roster bots and the human');
+  assert.deepEqual(snap.bots['ranked-ffa'].human, { w: 1, d: 0, l: 1, rankSum: 4, ranked: 2, kills: { dart: 3 }, deaths: { fall: 1 } });
 
-  // Survives a restart and sums over days in the report (kill and death totals)
+  // Survives a restart and sums over days in the report (kill and death totals); ids that are not ranked bots, stored
+  // by a relay before the roster check, are dropped on load
   await a.tick(T0);
+  const file = join(dir, `${dayOf(T0)}.json`);
+  const saved = JSON.parse(readFileSync(file, 'utf8'));
+  saved.bots['ranked-solo']['fuyukawa-yukina'] = { w: 0, d: 1, l: 0, rankSum: 1, ranked: 1, kills: {}, deaths: {} };
+  writeFileSync(file, JSON.stringify(saved));
   const b = new SiteAnalytics(dir, 90, T0 + 60_000);
   await b.load(T0 + 60_000);
   assert.deepEqual(b.snapshot(T0 + 60_000).bots['ranked-solo']['glm-5.3'], snap.bots['ranked-solo']['glm-5.3']);
+  assert.deepEqual(Object.keys(b.snapshot(T0 + 60_000).bots['ranked-solo']).sort(), ['glm-5.3', 'kimi-k3.1-pro']);
   const next = T0 + 86_400_000;
   b.matchFinished(id(1), 'ranked-solo', next, [{ b: 'glm-5.3', r: 'w', kills: { dart: 1 } }]);
   await b.tick(next);
@@ -156,7 +167,10 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
     // Players before players.json existed: rebuilt from these (replay-only viewers are not players)
     modeIds: { 'ranked-solo': [id(7), id(8)], pvp: [id(8)], replay: [id(9)] },
     modes: { 'ranked-solo': { visitors: 1, started: 7, finished: 7 }, pvp: { visitors: 1, started: 3, finished: 3 } },
-    bots: { 'ranked-solo': { 'glm-5.3': { w: 2, d: 0, l: 1, rankSum: 0, ranked: 0, kills: { dart: 2 }, deaths: { fall: 1 } } } },
+    bots: { 'ranked-solo': {
+      'glm-5.3': { w: 2, d: 0, l: 1, rankSum: 0, ranked: 0, kills: { dart: 2 }, deaths: { fall: 1 } },
+      'fuyukawa-yukina': { w: 0, d: 1, l: 0, rankSum: 1, ranked: 1, kills: {}, deaths: {} }, // not a ranked bot: left out
+    } },
     hours: { 12: { 'ranked-solo': 7 } },
   }));
   writeFileSync(join(dir, '2026-11-27.json'), day('2026-11-27', {
@@ -186,6 +200,7 @@ const T0 = Date.parse('2026-11-26T04:00:00Z'); // 12:00 UTC+8
   assert.equal(st.last24h.from, '2026-11-27T04:00:00.000Z');
   assert.equal(st.last24h.to, '2026-11-28T03:30:00.000Z');
   assert.deepEqual(st.bots['ranked-solo']['glm-5.3'], { w: 3, d: 0, l: 1, rankSum: 0, ranked: 0, kills: { dart: 2, melee: 1 }, deaths: { fall: 1 } });
+  assert.deepEqual(Object.keys(st.bots['ranked-solo']), ['glm-5.3']);
   assert.deepEqual(st.bots['ranked-ffa'], {});
   assert.equal(JSON.stringify(st).includes(id(7)), false, 'no visitor ids');
   // Hourly buckets persist with today's snapshot
@@ -275,7 +290,7 @@ await sleep(400); // a couple of analytics ticks
 const stats = await (await fetch(`${base}/stats?days=1`)).json();
 assert.equal(stats.onlineNow, 2);
 assert.equal(stats.visitorsToday, 2);
-const files = readdirSync(analyticsDir).filter((n) => /^\d{4}-/.test(n));
+const files = readdirSync(analyticsDir).filter((n) => /^\d{4}-\d{2}-\d{2}\.json$/.test(n)); // not a .tmp mid-write
 assert.equal(files.length, 1);
 assert.deepEqual(JSON.parse(readFileSync(join(analyticsDir, 'players.json'), 'utf8')).ids.sort(), [id(1), id(2)]);
 const onDisk = readFileSync(join(analyticsDir, files[0]), 'utf8');

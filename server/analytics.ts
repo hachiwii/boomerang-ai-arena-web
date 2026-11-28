@@ -8,6 +8,7 @@
 // count (browsers that started at least one match, replays aside) keeps its own id list in <dir>/players.json.
 import { mkdir, readdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import roster from '../public/assets/chars/roster.json' with { type: 'json' };
 
 export const ONLINE_WINDOW_MS = 150_000; // a visitor counts as online for 2.5 min after its last heartbeat
 export const MODES = ['ranked-solo', 'ranked-ffa', 'cricket', 'cricket-batch', 'custom', 'training', 'pvp', 'replay'] as const;
@@ -24,8 +25,6 @@ export const KILL_CAUSES = ['melee', 'dart', 'kick'] as const;
 export type KillCause = (typeof KILL_CAUSES)[number];
 const DEATH_SET = new Set<string>(DEATH_CAUSES);
 const KILL_SET = new Set<string>(KILL_CAUSES);
-const BOT_ID = /^[a-z0-9][a-z0-9._-]{0,39}$/i;
-const MAX_BOTS_PER_MODE = 64; // distinct bot ids kept per mode and day (the roster has 17)
 /** One bot in one match: result, final place, players it knocked out by cause, how it went out (if it did). */
 export interface BotResult {
   b: string;
@@ -44,10 +43,17 @@ export interface BotTally {
 
 /** Result id of the human player in a ranked match (all human players are summed under it). */
 export const HUMAN_ID = 'human';
+/**
+ * Ranked matches only ever pick official bots (src/game/leaderboard.ts pickRankedOpponents), so results are kept only
+ * for those and the human: any other id comes from a modified client or a hand-made request. Read from the roster
+ * when the relay is built, so a new official bot is counted once the relay is redeployed.
+ */
+const RANKED_BOT_IDS = new Set((roster as { id: string; category: string }[]).filter((r) => r.category === 'official').map((r) => r.id));
+const isResultId = (b: string) => b === HUMAN_ID || RANKED_BOT_IDS.has(b);
 
 /**
  * Validate a client's results for a finished ranked match: its bots plus, under `human`, the human player (pages from
- * before that only send the bots). null if malformed (the finish still counts).
+ * before that only send the bots). null if malformed or naming a bot ranked never picks (the finish still counts).
  */
 export function parseBotResults(mode: Mode, raw: unknown): BotResult[] | null {
   if (!Array.isArray(raw)) return null;
@@ -57,7 +63,7 @@ export function parseBotResults(mode: Mode, raw: unknown): BotResult[] | null {
   for (const item of raw) {
     if (!item || typeof item !== 'object') return null;
     const { b, r, rank, kills, death } = item as Record<string, unknown>;
-    if (typeof b !== 'string' || !BOT_ID.test(b) || (r !== 'w' && r !== 'd' && r !== 'l')) return null;
+    if (typeof b !== 'string' || !isResultId(b) || (r !== 'w' && r !== 'd' && r !== 'l')) return null;
     const result: BotResult = { b, r };
     if (rank !== undefined) {
       if (!Number.isInteger(rank) || (rank as number) < 1 || (rank as number) > opponents + 1) return null;
@@ -82,8 +88,8 @@ export function parseBotResults(mode: Mode, raw: unknown): BotResult[] | null {
     }
     out.push(result);
   }
-  const humans = out.filter((x) => x.b === HUMAN_ID).length;
-  if (humans > 1 || out.length - humans > opponents) return null; // one human, at most 1 (SOLO) / 3 (四人) bots
+  if (new Set(out.map((x) => x.b)).size < out.length) return null; // one human, distinct bots (as ranked picks them)
+  if (out.filter((x) => x.b !== HUMAN_ID).length > opponents) return null; // at most 1 (SOLO) / 3 (四人) bots
   const wins = out.filter((x) => x.r === 'w').length;
   if (wins > 1 || (wins === 1 && out.some((x) => x.r === 'd'))) return null; // one winner, and a win is not a draw
   return out;
@@ -221,7 +227,7 @@ export class SiteAnalytics {
         d.hours.set(hour, new Map(Object.entries(modes ?? {}).map(([m, n]) => [m, count(n)])));
       }
       for (const [mode, bots] of Object.entries(snap.bots ?? {})) {
-        d.bots.set(mode, new Map(Object.entries(bots ?? {}).filter(([b]) => BOT_ID.test(b)).map(([b, t]) => [b, readTally(t)])));
+        d.bots.set(mode, new Map(Object.entries(bots ?? {}).filter(([b]) => isResultId(b)).map(([b, t]) => [b, readTally(t)])));
       }
       d.peakOnline = snap.peakOnline | 0;
       d.peakAt = snap.peakAt ?? null;
@@ -324,11 +330,9 @@ export class SiteAnalytics {
     if (!t.bots.has(mode)) t.bots.set(mode, new Map());
     const byBot = t.bots.get(mode)!;
     for (const { b, r, rank, kills, death } of bots) {
+      if (!isResultId(b)) continue;
       let tally = byBot.get(b);
-      if (!tally) {
-        if (b !== HUMAN_ID && byBot.size >= MAX_BOTS_PER_MODE) continue; // the human row is always kept
-        byBot.set(b, (tally = newTally()));
-      }
+      if (!tally) byBot.set(b, (tally = newTally()));
       const one = newTally();
       one[r] = 1;
       if (rank) {
@@ -519,7 +523,7 @@ async function readPastDays(dir: string | null, today: string): Promise<PastDays
     for (const m of PUBLIC_MODES) out.total[m] = (out.total[m] ?? 0) + count(snap.modes?.[m]?.started);
     for (const mode of RANKED_MODES) {
       for (const [b, raw] of Object.entries(snap.bots?.[mode] ?? {})) {
-        if (!BOT_ID.test(b)) continue;
+        if (!isResultId(b)) continue;
         if (!bots.has(mode)) bots.set(mode, new Map());
         const acc = bots.get(mode)!.get(b) ?? newTally();
         addTally(acc, readTally(raw));
